@@ -79,3 +79,11 @@ Next: Stage 11.3 structured notifications and lifecycle events.
 Structured notifications, the `libwoven` userspace API boundary, and hardened
 ELF/W^X loader validation passed their individual 1/2/4-CPU QEMU gates,
 freestanding Clippy, and host tests. See [audit](audit-stage11-3-5-2026-09-16.md).
+
+## Stage 12.1 — accepted on 2026-09-16
+
+The VFS 2.0 typed interface and SystemVfs adapter passed build, freestanding
+Clippy, and QEMU validation on 1/2/4 CPUs. See
+[audit](audit-stage12-1-2026-09-16.md).
+
+Next: Stage 12.2 WovenFS metadata and crash-consistency design.

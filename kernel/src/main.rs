@@ -16,6 +16,8 @@ mod deadline;
 mod thread;
 #[cfg(feature = "stage11-3-test")]
 mod notifications;
+#[cfg(feature = "stage12-1-test")]
+mod vfs_api;
 #[cfg(feature = "stage10-8-test")]
 mod async_acceptance;
 mod audit;
@@ -1710,6 +1712,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             qemu_test_exit_failure();
         }
         serial::write_line(format_args!("[S11.3] notifications: PASSED"));
+        qemu_test_exit_success();
+    }
+    #[cfg(feature = "stage12-1-test")]
+    {
+        if !vfs_api::structural_self_test() {
+            serial::write_line(format_args!("[S12.1] VFS boundary: FAILED"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!("[S12.1] VFS boundary: PASSED"));
         qemu_test_exit_success();
     }
     #[cfg(feature = "stage11-4-test")]
