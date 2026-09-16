@@ -158,3 +158,12 @@ scheduler/lock doubles. `stage10_8.S` tests the real Ring-3 ABI;
 `RUN-STAGE10.8.ps1` preserves Stage 10.7 and adds 1/2/4-CPU completion-port boots.
 Timers, event objects, IPC completion integration and per-thread cleanup remain
 later roadmap work.
+
+## Stage 10.9 timers and events
+
+`async_events.rs` owns bounded generation-tagged timer and manual-reset event
+slots. Timer deadlines use the monotonic tick source and are pumped by an
+event-driven worker. Syscalls 87–94 expose create, wait, set, close and
+sleep-until operations; timer and event waits produce the same generic async
+completion records as other operations. Owner teardown cancels outstanding
+waiters and releases every slot.

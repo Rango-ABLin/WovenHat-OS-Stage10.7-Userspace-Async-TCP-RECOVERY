@@ -246,9 +246,7 @@ pub fn network_progress() {
     // read Pending=false, then the worker retries and clears the bridge, then
     // read bridge=false. The request never leaves this queue while being tried.
     let active = QUEUE.lock().has_work();
-    if active {
-        if let Some(worker) = worker { let _ = task::signal_event(worker); }
-    }
+    if let Some(worker) = worker.filter(|_| active) { let _ = task::signal_event(worker); }
 }
 
 fn worker_task() -> ! {

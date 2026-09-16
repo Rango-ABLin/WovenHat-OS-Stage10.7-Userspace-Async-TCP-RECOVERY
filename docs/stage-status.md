@@ -45,5 +45,12 @@ Focused serial evidence is retained in timestamped `audit-artifacts/stage10.8-*`
 directories. See [ABI contract](completion-port-abi.md) and
 [audit](audit-stage10-8-2026-09-16.md).
 
-Next: Stage 10.9 timers/events, followed by Stage 10.10 runtime integration.
-Stage 10 is not closed; Stage 11 follows its closure.
+## Stage 10.9 — accepted on 2026-09-16
+
+Timers, deadlines, asynchronous event objects, cancellation and sleep-until
+are implemented under bounded process ownership. The 1/2/4-CPU QEMU gate,
+build, warning-denying Clippy and Rust regressions passed. See
+[audit](audit-stage10-9-2026-09-16.md).
+
+Stage 10.10 runtime integration remains before Stage 10 can close; Stage 11
+follows that closure.

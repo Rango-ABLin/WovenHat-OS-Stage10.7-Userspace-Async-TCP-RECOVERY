@@ -1339,7 +1339,7 @@ pub fn spawn_user_process(
 /// Ordinary applications remain in `SecurityDomain::User` and cannot acquire
 /// raw storage/device authority. Stage 10.4 uses this path for the storage ABI
 /// acceptance probe, and later service-manager work can reuse the same boundary.
-#[cfg(feature = "stage10-4-test")]
+#[cfg(any(feature = "stage10-4-test", feature = "stage10-9-test"))]
 pub fn spawn_user_system_service(
     name: &'static str,
     program: userspace::UserProgram,
@@ -2195,6 +2195,7 @@ pub fn exit_current_process(exit_code: i32) -> ! {
         // Producers racing this teardown are serialized by async_op::TABLE;
         // a late completion sees a stale generation-tagged handle.
         crate::async_network::release_owner(task_id);
+        crate::async_events::release_owner(exiting_pid);
         crate::async_file::release_owner(task_id);
         crate::block_io::release_owner(task_id);
         crate::async_op::release_owner(task_id);
@@ -3377,6 +3378,7 @@ pub fn wake_task(id: TaskId) -> bool {
 
         task.state = TaskState::Ready;
         task.wake_tick = 0;
+        task.event_deadline = None;
         task.cpu
     };
     crate::smp::reschedule_cpu(cpu);
@@ -4418,6 +4420,7 @@ fn complete_process_termination(task_id: TaskId, signal: u8) {
         return;
     }
     crate::completion_port::release_owner(process.id.as_u64());
+    crate::async_events::release_owner(process.id.as_u64());
     process.pending_signal = u64::from(signal);
     process.state = ProcessState::Exited;
     process.exit_code = 128 + i32::from(signal);

@@ -26,7 +26,7 @@ pub fn init() {
 }
 
 pub fn record_tick() {
-    TICKS.fetch_add(1, Ordering::Relaxed);
+    let _ = TICKS.try_update(Ordering::Relaxed, Ordering::Relaxed, |ticks| Some(ticks.saturating_add(1)));
 }
 
 pub fn ticks() -> u64 {

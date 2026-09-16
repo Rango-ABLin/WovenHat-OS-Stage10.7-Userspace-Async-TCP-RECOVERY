@@ -10,10 +10,11 @@ import time
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--stage', choices=('10.8',), default='10.8')
+    parser.add_argument('--stage', choices=('10.8', '10.9'), default='10.8')
     parser.add_argument('--cpus', type=int, choices=(1, 2, 4), default=1)
     parser.add_argument('--qemu', default=shutil.which('qemu-system-x86_64') or r'C:\Program Files\qemu\qemu-system-x86_64.exe')
     parser.add_argument('--firmware', type=Path)
+    parser.add_argument('--timeout', type=float, default=180)
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     qemu = Path(args.qemu)
@@ -39,14 +40,16 @@ def main():
     with (out / 'qemu.log').open('w') as output:
         try:
             result = subprocess.run(command, cwd=root, stdout=output, stderr=output,
-                                    timeout=180, creationflags=flags)
+                                    timeout=args.timeout, creationflags=flags)
         except subprocess.TimeoutExpired:
             print('QEMU timeout; evidence:', out, file=sys.stderr)
             return 1
     log = serial.read_text(errors='replace') if serial.exists() else ''
     required = [f'[SMP] online={args.cpus} expected={args.cpus}',
                 '[S10.3] userspace async completion ABI + cancellation/teardown: PASSED',
-                '[S10.8] completion ports + batch/cancel/timeout/teardown/SMP: PASSED']
+                ( '[S10.8] completion ports + batch/cancel/timeout/teardown/SMP: PASSED'
+                  if args.stage == '10.8' else
+                  '[S10.9] timers/events/deadlines/cancellation/teardown: PASSED')]
     if result.returncode != 33 or any(marker not in log for marker in required):
         print(log[-12000:], file=sys.stderr)
         print('FAILED; evidence:', out, file=sys.stderr)

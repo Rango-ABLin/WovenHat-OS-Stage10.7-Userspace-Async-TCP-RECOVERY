@@ -253,6 +253,14 @@ pub enum Number {
     CompletionPortAssociate = 84,
     CompletionPortPoll = 85,
     CompletionPortWait = 86,
+    TimerCreate = 87,
+    TimerWait = 88,
+    EventCreate = 89,
+    EventSet = 90,
+    EventWait = 91,
+    TimerClose = 92,
+    EventClose = 93,
+    SleepUntil = 94,
 }
 
 pub fn entry_address() -> u64 {
@@ -1379,6 +1387,8 @@ fn authorize_async_class(class: crate::async_op::AsyncClass) -> bool {
         // File operations are created only through the dedicated Stage 10.5
         // submission syscalls, which authorize the exact descriptor/scope.
         crate::async_op::AsyncClass::File => false,
+        crate::async_op::AsyncClass::Timer => crate::task::current_has(crate::capability::Capability::TimerRead),
+        crate::async_op::AsyncClass::Event => crate::task::current_has(crate::capability::Capability::Ipc),
     }
 }
 
@@ -1403,7 +1413,8 @@ fn sys_async_create(class: u64) -> u64 {
     };
     // Ring 3 may directly manufacture only Service operations. Hardware-backed
     // classes receive handles from their dedicated submission syscalls.
-    if class != crate::async_op::AsyncClass::Service || !authorize_async_class(class) {
+    if !matches!(class, crate::async_op::AsyncClass::Service | crate::async_op::AsyncClass::Timer | crate::async_op::AsyncClass::Event)
+        || !authorize_async_class(class) {
         return SYSCALL_ERROR;
     }
     match crate::async_op::allocate_current(class) {
@@ -1422,7 +1433,8 @@ fn sys_async_poll(raw_handle: u64, user_completion: u64) -> u64 {
     let Ok(class) = crate::async_op::class_current(handle) else {
         return SYSCALL_ERROR;
     };
-    if class != crate::async_op::AsyncClass::Service || !authorize_async_class(class) {
+    if !matches!(class, crate::async_op::AsyncClass::Service | crate::async_op::AsyncClass::Timer | crate::async_op::AsyncClass::Event)
+        || !authorize_async_class(class) {
         return SYSCALL_ERROR;
     }
     match crate::async_op::peek_current(handle) {
@@ -1451,7 +1463,12 @@ fn sys_async_wait(raw_handle: u64, user_completion: u64) -> u64 {
     let Ok(class) = crate::async_op::class_current(handle) else {
         return SYSCALL_ERROR;
     };
-    if class != crate::async_op::AsyncClass::Service || !authorize_async_class(class) {
+    if !matches!(
+        class,
+        crate::async_op::AsyncClass::Service
+            | crate::async_op::AsyncClass::Timer
+            | crate::async_op::AsyncClass::Event
+    ) || !authorize_async_class(class) {
         return SYSCALL_ERROR;
     }
     let Ok(completion) = crate::async_op::wait_ready(handle) else {
@@ -1465,6 +1482,46 @@ fn sys_async_wait(raw_handle: u64, user_completion: u64) -> u64 {
     }
     ASYNC_ABI_COMPLETIONS.fetch_or(ASYNC_WAIT, Ordering::Release);
     1
+}
+
+fn sys_timer_create(relative: u64, period: u64) -> u64 {
+    if !crate::task::current_has(crate::capability::Capability::TimerRead) { return SYSCALL_ERROR; }
+    let deadline = crate::timer::ticks().checked_add(relative).filter(|&value| value != u64::MAX);
+    deadline.and_then(|value| crate::async_events::create_timer(crate::task::current_process_id(), value, period).ok()).unwrap_or(SYSCALL_ERROR)
+}
+
+fn sys_timer_wait(raw: u64) -> u64 {
+    if !crate::task::current_has(crate::capability::Capability::TimerRead) { return SYSCALL_ERROR; }
+    crate::async_events::wait_current(raw, true).map_or(SYSCALL_ERROR, |handle| handle.to_raw())
+}
+
+fn sys_event_create(initial: u64) -> u64 {
+    if !crate::task::current_has(crate::capability::Capability::Ipc) { return SYSCALL_ERROR; }
+    crate::async_events::create_event(crate::task::current_process_id(), initial != 0).unwrap_or(SYSCALL_ERROR)
+}
+
+fn sys_event_set(raw: u64, state: u64) -> u64 {
+    if !crate::task::current_has(crate::capability::Capability::Ipc) { return SYSCALL_ERROR; }
+    crate::async_events::set_event(crate::task::current_process_id(), raw, state != 0).map_or(SYSCALL_ERROR, |()| 0)
+}
+
+fn sys_event_wait(raw: u64) -> u64 {
+    if !crate::task::current_has(crate::capability::Capability::Ipc) { return SYSCALL_ERROR; }
+    crate::async_events::wait_current(raw, false).map_or(SYSCALL_ERROR, |handle| handle.to_raw())
+}
+
+fn sys_timer_close(raw: u64) -> u64 {
+    crate::async_events::close(crate::task::current_process_id(), raw, true).map_or(SYSCALL_ERROR, |()| 0)
+}
+
+fn sys_event_close(raw: u64) -> u64 {
+    crate::async_events::close(crate::task::current_process_id(), raw, false).map_or(SYSCALL_ERROR, |()| 0)
+}
+
+fn sys_sleep_until(deadline: u64) -> u64 {
+    if !crate::task::current_has(crate::capability::Capability::TimerRead) { return SYSCALL_ERROR; }
+    crate::task::wait_for_event_until(deadline);
+    0
 }
 
 fn sys_async_cancel(raw_handle: u64) -> u64 {
@@ -1483,6 +1540,8 @@ fn sys_async_cancel(raw_handle: u64) -> u64 {
         let _ = crate::async_file::cancel(handle);
     } else if class == crate::async_op::AsyncClass::Network {
         let _ = crate::async_network::cancel(handle);
+    } else if matches!(class, crate::async_op::AsyncClass::Timer | crate::async_op::AsyncClass::Event) {
+        crate::async_events::cancel(handle);
     }
     match crate::async_op::cancel_current(handle) {
         Ok(()) => {
@@ -1880,6 +1939,14 @@ pub extern "C" fn wovenhat_syscall_dispatch(
             .and_then(|handle| crate::async_op::associate_current(handle, arg1, arg2).ok()).map_or(SYSCALL_ERROR, |()| 0),
         value if value == Number::CompletionPortPoll as u64 => sys_port_read(arg0, arg1, arg2, false),
         value if value == Number::CompletionPortWait as u64 => sys_port_read(arg0, arg1, arg2, true),
+        value if value == Number::TimerCreate as u64 => sys_timer_create(arg0, arg1),
+        value if value == Number::TimerWait as u64 => sys_timer_wait(arg0),
+        value if value == Number::EventCreate as u64 => sys_event_create(arg0),
+        value if value == Number::EventSet as u64 => sys_event_set(arg0, arg1),
+        value if value == Number::EventWait as u64 => sys_event_wait(arg0),
+        value if value == Number::TimerClose as u64 => sys_timer_close(arg0),
+        value if value == Number::EventClose as u64 => sys_event_close(arg0),
+        value if value == Number::SleepUntil as u64 => sys_sleep_until(arg0),
         _ => u64::MAX,
     };
 

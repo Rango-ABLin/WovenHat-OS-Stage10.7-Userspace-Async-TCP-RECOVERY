@@ -10,6 +10,8 @@ mod ata;
 mod async_op;
 mod async_file;
 mod async_network;
+mod async_events;
+mod deadline;
 #[cfg(feature = "stage10-8-test")]
 mod async_acceptance;
 mod audit;
@@ -297,6 +299,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             console.println("ASYNC FILE WORKER: START FAILED");
             halt();
         }
+        if !async_events::start_worker() { panic!("timer/event worker startup failed"); }
         if !async_network::start_worker() {
             console.println("ASYNC NETWORK WORKER: START FAILED");
             halt();
@@ -1062,6 +1065,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         console.println("BLOCK I/O WORKER: START FAILED");
         halt();
     }
+    #[cfg(feature = "stage10-9-test")]
+    if !async_events::start_worker() {
+        console.println("TIMER/EVENT WORKER: START FAILED");
+        halt();
+    }
     if block_io::async_completion_self_test() {
         serial::write_line(format_args!("[BLOCK IO] worker completion: PASSED"));
     } else {
@@ -1677,6 +1685,18 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     serial::write_line(format_args!(
         "[S10.3] userspace async completion ABI + cancellation/teardown: PASSED"
     ));
+    #[cfg(feature = "stage10-9-test")]
+    {
+        if !async_events::structural_self_test()
+            || async_events::active_count() != 0
+            || async_op::stats().active != 0
+        {
+            serial::write_line(format_args!("[S10.9] timers/events: FAILED"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!("[S10.9] timers/events/deadlines/cancellation/teardown: PASSED"));
+        qemu_test_exit_success();
+    }
     #[cfg(feature = "stage10-8-test")]
     {
         let before = completion_port::active_count();

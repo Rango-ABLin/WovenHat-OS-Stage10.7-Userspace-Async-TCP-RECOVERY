@@ -28,6 +28,8 @@ pub enum AsyncClass {
     Device = 2,
     Service = 3,
     File = 4,
+    Timer = 5,
+    Event = 6,
 }
 
 impl AsyncClass {
@@ -38,6 +40,8 @@ impl AsyncClass {
             2 => Some(Self::Device),
             3 => Some(Self::Service),
             4 => Some(Self::File),
+            5 => Some(Self::Timer),
+            6 => Some(Self::Event),
             _ => None,
         }
     }

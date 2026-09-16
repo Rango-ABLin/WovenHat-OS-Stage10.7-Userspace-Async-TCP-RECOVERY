@@ -1310,10 +1310,8 @@ pub fn create_file_in_directory(
         return Err(err);
     }
 
-    if let Some(cluster) = existing_first {
-        if cluster >= 2 {
-            free_cluster_chain(device, volume, cluster)?;
-        }
+    if let Some(cluster) = existing_first.filter(|&cluster| cluster >= 2) {
+        free_cluster_chain(device, volume, cluster)?;
     }
     Ok(())
 }
@@ -1882,12 +1880,13 @@ pub fn rename_path(
         rollback_reserved_slot(device, volume, new_slot);
         return Err(err);
     }
-    if is_directory {
-        if let Err(err) = update_dotdot(device, volume, old_slot.entry.first_cluster, new_parent) {
-            let _ = mark_directory_entry_deleted(device, new_slot.lba, new_slot.offset);
-            rollback_reserved_slot(device, volume, new_slot);
-            return Err(err);
-        }
+    let parent_update = if is_directory {
+        update_dotdot(device, volume, old_slot.entry.first_cluster, new_parent)
+    } else { Ok(()) };
+    if let Err(err) = parent_update {
+        let _ = mark_directory_entry_deleted(device, new_slot.lba, new_slot.offset);
+        rollback_reserved_slot(device, volume, new_slot);
+        return Err(err);
     }
     if let Err(err) = mark_directory_entry_deleted(device, old_slot.lba, old_slot.offset) {
         let _ = mark_directory_entry_deleted(device, new_slot.lba, new_slot.offset);
