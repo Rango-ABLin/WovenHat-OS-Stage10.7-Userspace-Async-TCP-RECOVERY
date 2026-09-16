@@ -31,3 +31,9 @@ when the discovered topology contains an APIC ID above 255, and otherwise
 retains xAPIC MMIO. The 1/2/4 CPU logs record `APIC mode: xAPIC`; the x2APIC
 branch requires a host or VM that exposes x2APIC and is therefore not claimed
 as hardware-qualified by this QEMU run.
+
+After these changes, `python scripts/test-release.py` passed all release gates:
+warning-denying kernel/host lint, standalone host regressions, 1/2/4 CPU debug
+memory/storage/network, legacy-PIC fallback, 4 CPU release memory/storage/
+network, release build, and shell/SMP smoke. The current freeze report is
+`target/release-validation/results.json`.
