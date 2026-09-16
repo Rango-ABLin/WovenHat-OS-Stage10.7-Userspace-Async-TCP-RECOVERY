@@ -85,11 +85,12 @@ pub struct KeyHandle(u64);
 struct KeySlot {
     generation: u32,
     in_use: bool,
+    owner: u64,
     key: [u8; KEY_SIZE],
 }
 
 impl KeySlot {
-    const EMPTY: Self = Self { generation: 0, in_use: false, key: [0; KEY_SIZE] };
+    const EMPTY: Self = Self { generation: 0, in_use: false, owner: 0, key: [0; KEY_SIZE] };
 
     fn wipe(&mut self) {
         for byte in &mut self.key {
@@ -109,7 +110,7 @@ impl KeyVault {
         Self { slots: [KeySlot::EMPTY; MAX_KEYS], next_generation: 1 }
     }
 
-    fn provision(&mut self, key: [u8; KEY_SIZE]) -> Option<KeyHandle> {
+    fn provision(&mut self, owner: u64, key: [u8; KEY_SIZE]) -> Option<KeyHandle> {
         if !key.iter().any(|byte| *byte != 0) { return None; }
         let slot = self.slots.iter().position(|entry| !entry.in_use)?;
         let mut generation = self.next_generation;
@@ -118,23 +119,24 @@ impl KeyVault {
             generation = 1;
             self.next_generation = 2;
         }
-        self.slots[slot] = KeySlot { generation, in_use: true, key };
+        self.slots[slot] = KeySlot { generation, in_use: true, owner, key };
         Some(KeyHandle((u64::from(generation) << 8) | slot as u64))
     }
 
-    fn lookup(&self, handle: KeyHandle) -> Option<[u8; KEY_SIZE]> {
+    fn lookup(&self, owner: u64, handle: KeyHandle) -> Option<[u8; KEY_SIZE]> {
         let slot = (handle.0 & 0xff) as usize;
         let generation = (handle.0 >> 8) as u32;
         let entry = self.slots.get(slot)?;
-        (entry.in_use && entry.generation == generation).then_some(entry.key)
+        (entry.in_use && entry.owner == owner && entry.generation == generation).then_some(entry.key)
     }
 
-    fn revoke(&mut self, handle: KeyHandle) -> bool {
+    fn revoke(&mut self, owner: u64, handle: KeyHandle) -> bool {
         let slot = (handle.0 & 0xff) as usize;
         let generation = (handle.0 >> 8) as u32;
         let Some(entry) = self.slots.get_mut(slot) else { return false; };
-        if !entry.in_use || entry.generation != generation { return false; }
+        if !entry.in_use || entry.owner != owner || entry.generation != generation { return false; }
         entry.wipe();
+        entry.owner = 0;
         true
     }
 }
@@ -163,19 +165,36 @@ pub fn open(key: &[u8; KEY_SIZE], nonce: u64, aad: &[u8], data: &mut [u8], tag: 
     true
 }
 
-/// Provision a key into the bounded kernel vault.
-pub fn provision(key: [u8; KEY_SIZE]) -> Option<KeyHandle> { KEY_VAULT.lock().provision(key) }
+/// Provision a key into the bounded kernel vault for an owning identity.
+pub fn provision_for(owner: u64, key: [u8; KEY_SIZE]) -> Option<KeyHandle> {
+    KEY_VAULT.lock().provision(owner, key)
+}
+
+/// Kernel-owned compatibility form for internal volume services.
+pub fn provision(key: [u8; KEY_SIZE]) -> Option<KeyHandle> { provision_for(0, key) }
 
 /// Revoke a key and erase its slot. Old handles cannot address a replacement.
-pub fn revoke(handle: KeyHandle) -> bool { KEY_VAULT.lock().revoke(handle) }
+pub fn revoke_for(owner: u64, handle: KeyHandle) -> bool { KEY_VAULT.lock().revoke(owner, handle) }
+
+pub fn revoke(handle: KeyHandle) -> bool { revoke_for(0, handle) }
 
 pub fn seal_with_handle(handle: KeyHandle, nonce: u64, aad: &[u8], data: &mut [u8]) -> Option<Tag> {
-    let key = KEY_VAULT.lock().lookup(handle)?;
+    let key = KEY_VAULT.lock().lookup(0, handle)?;
+    seal(&key, nonce, aad, data)
+}
+
+pub fn seal_with_owner(owner: u64, handle: KeyHandle, nonce: u64, aad: &[u8], data: &mut [u8]) -> Option<Tag> {
+    let key = KEY_VAULT.lock().lookup(owner, handle)?;
     seal(&key, nonce, aad, data)
 }
 
 pub fn open_with_handle(handle: KeyHandle, nonce: u64, aad: &[u8], data: &mut [u8], tag: &Tag) -> bool {
-    let Some(key) = KEY_VAULT.lock().lookup(handle) else { return false; };
+    let Some(key) = KEY_VAULT.lock().lookup(0, handle) else { return false; };
+    open(&key, nonce, aad, data, tag)
+}
+
+pub fn open_with_owner(owner: u64, handle: KeyHandle, nonce: u64, aad: &[u8], data: &mut [u8], tag: &Tag) -> bool {
+    let Some(key) = KEY_VAULT.lock().lookup(owner, handle) else { return false; };
     open(&key, nonce, aad, data, tag)
 }
 
@@ -207,10 +226,11 @@ pub fn structural_self_test() -> bool {
     if open(&key, 9, b"wrong", &mut data, &tag) { return false; }
     if !open(&key, 9, b"header", &mut data, &tag) || data != original { return false; }
 
-    let Some(handle) = provision(key) else { return false; };
+    let Some(handle) = provision_for(1000, key) else { return false; };
     let mut via_vault = original;
-    let Some(vault_tag) = seal_with_handle(handle, 10, b"header", &mut via_vault) else { return false; };
-    if !open_with_handle(handle, 10, b"header", &mut via_vault, &vault_tag) || via_vault != original { return false; }
-    if !revoke(handle) || open_with_handle(handle, 10, b"header", &mut via_vault, &vault_tag) { return false; }
+    let Some(vault_tag) = seal_with_owner(1000, handle, 10, b"header", &mut via_vault) else { return false; };
+    if open_with_owner(999, handle, 10, b"header", &mut via_vault, &vault_tag) { return false; }
+    if !open_with_owner(1000, handle, 10, b"header", &mut via_vault, &vault_tag) || via_vault != original { return false; }
+    if !revoke_for(1000, handle) || open_with_owner(1000, handle, 10, b"header", &mut via_vault, &vault_tag) { return false; }
     true
 }

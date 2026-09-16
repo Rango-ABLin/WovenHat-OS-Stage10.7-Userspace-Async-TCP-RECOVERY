@@ -8,10 +8,12 @@ arithmetic so it builds on `x86_64-unknown-none` without architecture-specific
 SIMD code-generation failures.
 
 The bounded key vault holds eight 256-bit keys. Provisioning rejects an all-zero
-key, returns a generation-safe opaque handle, and revocation erases the slot.
-Stale handles cannot address a subsequently provisioned key. The structural
+key, records the owning identity, returns a generation-safe opaque handle, and
+revocation erases the slot. Owner-scoped operations reject cross-identity use;
+stale handles cannot address a subsequently provisioned key. The structural
 probe covers ciphertext mutation, tag mutation, associated-data mutation,
-successful round trips, revocation, and stale-handle rejection.
+successful round trips, cross-owner rejection, revocation, and stale-handle
+rejection.
 
 Evidence retained on 2026-09-16:
 
