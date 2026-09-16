@@ -31,6 +31,8 @@ const METADATA_CAPACITY: usize = (SECTOR_SIZE - METADATA_HEADER_SIZE) / METADATA
 const METADATA_SECTOR_COUNT: usize = 4;
 const METADATA_STATE_PENDING: u8 = 1;
 const METADATA_STATE_COMMITTED: u8 = 2;
+const INODE_METADATA_MAGIC: &[u8; 4] = b"WMD2";
+const INODE_METADATA_SECTOR_COUNT: usize = 4;
 const JOURNAL_MAGIC: &[u8; 4] = b"WJR1";
 const JOURNAL_HEADER_SIZE: usize = 8;
 const JOURNAL_RECORD_SIZE: usize = 32;
@@ -347,6 +349,135 @@ fn journal_sector(volume: Volume, index: usize) -> Result<u64, Error> {
         .first_fat_sector
         .checked_sub((METADATA_SECTOR_COUNT + JOURNAL_SECTOR_COUNT - index) as u64)
         .ok_or(Error::UnsupportedGeometry)
+}
+
+fn inode_metadata_sector(volume: Volume, index: usize) -> Result<u64, Error> {
+    if index >= INODE_METADATA_SECTOR_COUNT {
+        return Err(Error::UnsupportedGeometry);
+    }
+    volume
+        .first_fat_sector
+        .checked_sub(
+            (METADATA_SECTOR_COUNT + JOURNAL_SECTOR_COUNT + INODE_METADATA_SECTOR_COUNT - index)
+                as u64,
+        )
+        .ok_or(Error::UnsupportedGeometry)
+}
+
+fn read_inode_metadata_sector(
+    device: &mut impl BlockDevice,
+    volume: Volume,
+    index: usize,
+    sector: &mut [u8; SECTOR_SIZE],
+) -> Result<(), Error> {
+    device
+        .read_sector(inode_metadata_sector(volume, index)?, sector)
+        .map_err(Error::Block)
+}
+
+/// Read metadata by the stable first-data-cluster inode identity.
+pub fn read_inode_metadata(
+    device: &mut impl BlockDevice,
+    volume: Volume,
+    inode: u32,
+) -> Result<Option<FileMetadata>, Error> {
+    if inode < 2 {
+        return Ok(None);
+    }
+    for sector_index in 0..INODE_METADATA_SECTOR_COUNT {
+        let mut sector = [0u8; SECTOR_SIZE];
+        read_inode_metadata_sector(device, volume, sector_index, &mut sector)?;
+        if &sector[..4] != INODE_METADATA_MAGIC {
+            continue;
+        }
+        for index in 0..METADATA_CAPACITY {
+            let offset = METADATA_HEADER_SIZE + index * METADATA_RECORD_SIZE;
+            if sector[offset + 18] != 0 && read_u32(&sector, offset) == inode {
+                return Ok(Some(FileMetadata {
+                    uid: read_u32(&sector, offset + 8),
+                    gid: read_u32(&sector, offset + 12),
+                    mode: read_u16(&sector, offset + 16),
+                }));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Insert or replace metadata in the WMD2 inode table.
+pub fn write_inode_metadata(
+    device: &mut impl BlockDevice,
+    volume: Volume,
+    inode: u32,
+    metadata: FileMetadata,
+) -> Result<(), Error> {
+    if inode < 2 {
+        return Err(Error::UnsupportedGeometry);
+    }
+    let mut selected = None;
+    let mut sector = [0u8; SECTOR_SIZE];
+    for sector_index in 0..INODE_METADATA_SECTOR_COUNT {
+        read_inode_metadata_sector(device, volume, sector_index, &mut sector)?;
+        if &sector[..4] != INODE_METADATA_MAGIC {
+            sector.fill(0);
+            sector[..4].copy_from_slice(INODE_METADATA_MAGIC);
+            sector[4..6].copy_from_slice(&(2u16).to_le_bytes());
+        }
+        let mut free = None;
+        let mut target = None;
+        for index in 0..METADATA_CAPACITY {
+            let offset = METADATA_HEADER_SIZE + index * METADATA_RECORD_SIZE;
+            if sector[offset + 18] == 0 {
+                free.get_or_insert(offset);
+            } else if read_u32(&sector, offset) == inode {
+                target = Some(offset);
+                break;
+            }
+        }
+        if let Some(offset) = target.or(free) {
+            selected = Some((sector_index, offset));
+            break;
+        }
+    }
+    let (sector_index, offset) = selected.ok_or(Error::DirectoryFull)?;
+    sector[offset..offset + METADATA_RECORD_SIZE].fill(0);
+    sector[offset..offset + 4].copy_from_slice(&inode.to_le_bytes());
+    sector[offset + 8..offset + 12].copy_from_slice(&metadata.uid.to_le_bytes());
+    sector[offset + 12..offset + 16].copy_from_slice(&metadata.gid.to_le_bytes());
+    sector[offset + 16..offset + 18].copy_from_slice(&metadata.mode.to_le_bytes());
+    sector[offset + 18] = 1;
+    sector[offset + 19] = METADATA_STATE_COMMITTED;
+    device
+        .write_sector(inode_metadata_sector(volume, sector_index)?, &sector)
+        .map_err(Error::Block)
+}
+
+/// Remove metadata for a stable inode identity.
+pub fn remove_inode_metadata(
+    device: &mut impl BlockDevice,
+    volume: Volume,
+    inode: u32,
+) -> Result<(), Error> {
+    if inode < 2 {
+        return Ok(());
+    }
+    for sector_index in 0..INODE_METADATA_SECTOR_COUNT {
+        let mut sector = [0u8; SECTOR_SIZE];
+        read_inode_metadata_sector(device, volume, sector_index, &mut sector)?;
+        if &sector[..4] != INODE_METADATA_MAGIC {
+            continue;
+        }
+        for index in 0..METADATA_CAPACITY {
+            let offset = METADATA_HEADER_SIZE + index * METADATA_RECORD_SIZE;
+            if sector[offset + 18] != 0 && read_u32(&sector, offset) == inode {
+                sector[offset + 18] = 0;
+                return device
+                    .write_sector(inode_metadata_sector(volume, sector_index)?, &sector)
+                    .map_err(Error::Block);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn read_journal_sector(
@@ -3270,6 +3401,7 @@ fn streaming_read_self_test() -> bool {
 
 struct MutableFatDisk {
     boot: [u8; SECTOR_SIZE],
+    inode_metadata: [[u8; SECTOR_SIZE]; INODE_METADATA_SECTOR_COUNT],
     journal: [[u8; SECTOR_SIZE]; JOURNAL_SECTOR_COUNT],
     metadata: [[u8; SECTOR_SIZE]; METADATA_SECTOR_COUNT],
     fs_info: [u8; SECTOR_SIZE],
@@ -3284,6 +3416,7 @@ impl MutableFatDisk {
     fn new() -> Self {
         let mut disk = Self {
             boot: [0; SECTOR_SIZE],
+            inode_metadata: [[0; SECTOR_SIZE]; INODE_METADATA_SECTOR_COUNT],
             journal: [[0; SECTOR_SIZE]; JOURNAL_SECTOR_COUNT],
             metadata: [[0; SECTOR_SIZE]; METADATA_SECTOR_COUNT],
             fs_info: [0; SECTOR_SIZE],
@@ -3341,6 +3474,18 @@ impl BlockDevice for MutableFatDisk {
         sector.fill(0);
         if lba == 0 {
             sector.copy_from_slice(&self.boot);
+        } else if (TestDisk::FAT_LBA
+            - (METADATA_SECTOR_COUNT + JOURNAL_SECTOR_COUNT + INODE_METADATA_SECTOR_COUNT)
+                as u64
+            ..TestDisk::FAT_LBA - (METADATA_SECTOR_COUNT + JOURNAL_SECTOR_COUNT) as u64)
+            .contains(&lba)
+        {
+            sector.copy_from_slice(
+                &self.inode_metadata[(lba
+                    - (TestDisk::FAT_LBA
+                        - (METADATA_SECTOR_COUNT + JOURNAL_SECTOR_COUNT + INODE_METADATA_SECTOR_COUNT)
+                            as u64)) as usize],
+            );
         } else if (TestDisk::FAT_LBA - (METADATA_SECTOR_COUNT + JOURNAL_SECTOR_COUNT) as u64
             ..TestDisk::FAT_LBA - METADATA_SECTOR_COUNT as u64)
             .contains(&lba)
@@ -3376,6 +3521,17 @@ impl BlockDevice for MutableFatDisk {
         }
         if lba == 0 {
             self.boot.copy_from_slice(sector);
+        } else if (TestDisk::FAT_LBA
+            - (METADATA_SECTOR_COUNT + JOURNAL_SECTOR_COUNT + INODE_METADATA_SECTOR_COUNT)
+                as u64
+            ..TestDisk::FAT_LBA - (METADATA_SECTOR_COUNT + JOURNAL_SECTOR_COUNT) as u64)
+            .contains(&lba)
+        {
+            self.inode_metadata[(lba
+                - (TestDisk::FAT_LBA
+                    - (METADATA_SECTOR_COUNT + JOURNAL_SECTOR_COUNT + INODE_METADATA_SECTOR_COUNT)
+                        as u64)) as usize]
+                .copy_from_slice(sector);
         } else if (TestDisk::FAT_LBA - (METADATA_SECTOR_COUNT + JOURNAL_SECTOR_COUNT) as u64
             ..TestDisk::FAT_LBA - METADATA_SECTOR_COUNT as u64)
             .contains(&lba)
@@ -3549,6 +3705,13 @@ fn long_filename_self_test() -> bool {
     if create_path_file(&mut disk, volume, name, b"lfn").is_err() {
         return false;
     }
+    let inode_ok = resolve_path(&mut disk, volume, name).is_ok_and(|entry| {
+        entry.first_cluster >= 2
+            && write_inode_metadata(&mut disk, volume, entry.first_cluster, metadata).is_ok()
+            && read_inode_metadata(&mut disk, volume, entry.first_cluster) == Ok(Some(metadata))
+            && remove_inode_metadata(&mut disk, volume, entry.first_cluster).is_ok()
+            && read_inode_metadata(&mut disk, volume, entry.first_cluster) == Ok(None)
+    });
     let mut bytes = [0u8; 4];
     let read_ok = read_path_bytes(&mut disk, volume, name, &mut bytes) == Ok(3)
         && &bytes[..3] == b"lfn";
@@ -3601,7 +3764,15 @@ fn long_filename_self_test() -> bool {
                 .is_ok_and(|link| matches!(link, ClusterLink::Next(_)))
             && resolve_path(&mut growth_disk, growth_volume, long).is_ok()
     });
-    metadata_ok && read_ok && listing_ok && named_listing_ok && unicode_ok && rename_ok && delete_ok && growth_ok
+    metadata_ok
+        && inode_ok
+        && read_ok
+        && listing_ok
+        && named_listing_ok
+        && unicode_ok
+        && rename_ok
+        && delete_ok
+        && growth_ok
 }
 
 fn directory_growth_self_test() -> bool {

@@ -320,7 +320,10 @@ fn import_directory(
         match vfs::create_disk_file_with_writable(path, entry.size as usize, writable) {
             Ok(()) => {
                 if metadata_paths.len() < crate::config::MAX_VFS_NODES {
-                    metadata_paths.push(alloc::string::String::from(path));
+                    metadata_paths.push((
+                        alloc::string::String::from(path),
+                        entry.first_cluster,
+                    ));
                 }
                 mounted = mounted.saturating_add(1)
             }
@@ -331,7 +334,7 @@ fn import_directory(
     })?;
 
     let mut recovered_metadata = false;
-    for path in metadata_paths {
+    for (path, inode) in metadata_paths {
         let path_hash = fat32::metadata_path_hash(&path);
         let path_tag = fat32::metadata_path_tag(&path);
         let mut skip_metadata = false;
@@ -364,16 +367,27 @@ fn import_directory(
             }
         }
         if !skip_metadata {
-            if let Some(metadata) = fat32::read_file_metadata(
-                device,
-                volume,
-                path_hash,
-                path_tag,
-            )
-            .ok()
-            .flatten()
+            let inode_metadata = fat32::read_inode_metadata(device, volume, inode)
+                .ok()
+                .flatten();
+            let had_inode_metadata = inode_metadata.is_some();
+            let metadata = if inode_metadata.is_some() {
+                inode_metadata
+            } else {
+                fat32::read_file_metadata(device, volume, path_hash, path_tag)
+                    .ok()
+                    .flatten()
+            };
+            if let Some(metadata) = metadata
             {
                 let _ = vfs::set_metadata(&path, metadata.uid, metadata.gid, metadata.mode);
+                if inode >= 2
+                    && !had_inode_metadata
+                    && fat32::write_inode_metadata(device, volume, inode, metadata).is_ok()
+                {
+                    let _ = fat32::remove_file_metadata(device, volume, path_hash, path_tag);
+                    recovered_metadata = true;
+                }
                 if fat32::finalize_file_metadata(device, volume, path_hash, path_tag)
                     .ok()
                     .unwrap_or(false)
@@ -1012,6 +1026,12 @@ pub fn persist_path(path: &str) -> Result<(), PersistError> {
         if let Some(metadata) = metadata {
             result = persist_metadata_on_device(&mut disk, path, metadata, false);
             if result.is_ok() {
+                result = persist_inode_metadata_on_device(&mut disk, path, metadata);
+            }
+            if result.is_ok() {
+                result = clear_path_metadata_on_device(&mut disk, path);
+            }
+            if result.is_ok() {
                 result = persist_journal_on_device(
                     &mut disk,
                     fat32::JournalIntent {
@@ -1052,6 +1072,78 @@ fn persist_metadata_on_device(
                     .map_err(|_| PersistError::Failed)?;
                 let volume = fat32::mount(&mut view).map_err(map_persist_err)?;
                 write_metadata_state(&mut view, volume, hash, tag, metadata, pending)
+                    .map_err(map_persist_err)?;
+            } else {
+                return Err(PersistError::Failed);
+            }
+        }
+        Err(_) => return Err(PersistError::Failed),
+    }
+    device.flush().map_err(|_| PersistError::Failed)
+}
+
+fn persist_inode_metadata_on_device(
+    device: &mut impl crate::block::BlockDevice,
+    path: &str,
+    metadata: fat32::FileMetadata,
+) -> Result<(), PersistError> {
+    let relative = path.strip_prefix("/mnt/").ok_or(PersistError::NotSupported)?;
+    match fat32::mount(device) {
+        Ok(volume) => write_inode_for_volume(device, volume, relative, metadata)
+            .map_err(map_persist_err)?,
+        Err(fat32::Error::InvalidBootSector | fat32::Error::UnsupportedGeometry) => {
+            if let Ok(Some(part)) = partition::find_fat32(device) {
+                let mut view = partition::PartitionDevice::new(device, part)
+                    .map_err(|_| PersistError::Failed)?;
+                let volume = fat32::mount(&mut view).map_err(map_persist_err)?;
+                write_inode_for_volume(&mut view, volume, relative, metadata)
+                    .map_err(map_persist_err)?;
+            } else if let Ok(Some(part)) = gpt::find_fat_partition(device) {
+                let mut view = partition::PartitionDevice::new(device, part)
+                    .map_err(|_| PersistError::Failed)?;
+                let volume = fat32::mount(&mut view).map_err(map_persist_err)?;
+                write_inode_for_volume(&mut view, volume, relative, metadata)
+                    .map_err(map_persist_err)?;
+            } else {
+                return Err(PersistError::Failed);
+            }
+        }
+        Err(_) => return Err(PersistError::Failed),
+    }
+    device.flush().map_err(|_| PersistError::Failed)
+}
+
+fn write_inode_for_volume(
+    device: &mut impl crate::block::BlockDevice,
+    volume: fat32::Volume,
+    relative: &str,
+    metadata: fat32::FileMetadata,
+) -> Result<(), fat32::Error> {
+    let entry = fat32::resolve_path(device, volume, relative)?;
+    fat32::write_inode_metadata(device, volume, entry.first_cluster, metadata)
+}
+
+fn clear_path_metadata_on_device(
+    device: &mut impl crate::block::BlockDevice,
+    path: &str,
+) -> Result<(), PersistError> {
+    let hash = fat32::metadata_path_hash(path);
+    let tag = fat32::metadata_path_tag(path);
+    match fat32::mount(device) {
+        Ok(volume) => fat32::remove_file_metadata(device, volume, hash, tag)
+            .map_err(map_persist_err)?,
+        Err(fat32::Error::InvalidBootSector | fat32::Error::UnsupportedGeometry) => {
+            if let Ok(Some(part)) = partition::find_fat32(device) {
+                let mut view = partition::PartitionDevice::new(device, part)
+                    .map_err(|_| PersistError::Failed)?;
+                let volume = fat32::mount(&mut view).map_err(map_persist_err)?;
+                fat32::remove_file_metadata(&mut view, volume, hash, tag)
+                    .map_err(map_persist_err)?;
+            } else if let Ok(Some(part)) = gpt::find_fat_partition(device) {
+                let mut view = partition::PartitionDevice::new(device, part)
+                    .map_err(|_| PersistError::Failed)?;
+                let volume = fat32::mount(&mut view).map_err(map_persist_err)?;
+                fat32::remove_file_metadata(&mut view, volume, hash, tag)
                     .map_err(map_persist_err)?;
             } else {
                 return Err(PersistError::Failed);
