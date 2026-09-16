@@ -831,6 +831,8 @@ fn cmd_memory(console: &mut Console<'_>) {
     print_u64(console, stats.allocated_frames);
     console.print("  free: ");
     print_u64(console, stats.remaining_frames);
+    console.print("  numa domains: ");
+    print_u64(console, stats.numa_domains as u64);
     console.newline();
 }
 

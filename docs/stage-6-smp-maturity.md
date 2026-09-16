@@ -26,6 +26,8 @@ Stage 6 turns the Stage-5 CPU-owned scheduler into a bounded multicore scheduler
 12. x2APIC MSR register and 64-bit ICR support with automatic xAPIC fallback.
 13. Audited asynchronous block/file/network workers use a migratable service
     path while Ready; global queue and subsystem locks preserve ownership.
+14. SRAT memory-affinity records tag usable frame ranges; allocations prefer
+    the current CPU domain and preserve the domain on reclaimed frames.
 
 ## Ownership/safety contract
 
@@ -69,8 +71,7 @@ The full `scripts/test-release.py` matrix must remain green before Stage 6 is fo
 - multicore syscall/service execution;
 - unrestricted concurrent filesystem/network/device-I/O throughput and
   DMA-backed service paths;
-- NUMA-aware page allocation and memory locality policy (CPU-domain-aware
-  scheduler placement is implemented; page placement remains deferred);
+- multi-node NUMA page-placement qualification and memory locality tuning;
 - x2APIC hardware qualification on APIC IDs above 255;
 - CPU hotplug;
 - scheduler classes beyond the current bounded priority model;

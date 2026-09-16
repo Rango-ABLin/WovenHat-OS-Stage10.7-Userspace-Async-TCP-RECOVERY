@@ -9,6 +9,7 @@ const MADT_HEADER_LENGTH: usize = SDT_HEADER_LENGTH + 8;
 const SRAT_HEADER_LENGTH: usize = SDT_HEADER_LENGTH + 12;
 const MAX_MADT_ENTRIES: usize = 256;
 const MAX_MADT_ENTRY_LENGTH: usize = u8::MAX as usize;
+const MAX_SRAT_MEMORY_AFFINITIES: usize = 16;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -18,6 +19,13 @@ pub enum Error {
     InvalidChecksum,
     InvalidLength,
     AddressOverflow,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct MemoryAffinity {
+    pub domain: u32,
+    pub base: u64,
+    pub length: u64,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -32,6 +40,8 @@ pub struct Summary {
     /// firmware/default domain when SRAT has no CPU affinity record.
     pub processor_domains: [u32; 16],
     pub numa_domains: u16,
+    pub memory_affinities: [MemoryAffinity; MAX_SRAT_MEMORY_AFFINITIES],
+    pub memory_affinity_count: usize,
     pub processor_count: usize,
     pub io_apic_address: u32,
     pub io_apic_gsi_base: u32,
@@ -193,6 +203,28 @@ fn parse_srat(
 fn update_srat_summary(entry: &[u8], summary: &mut Summary) -> Result<(), Error> {
     if entry.len() < 2 || entry[1] as usize != entry.len() {
         return Err(Error::InvalidLength);
+    }
+    if entry[0] == 1 {
+        if entry.len() < 40 {
+            return Err(Error::InvalidLength);
+        }
+        let domain = read_u32(entry, 2);
+        let base = read_u64(entry, 8);
+        let length = read_u64(entry, 16);
+        if entry[28] & 1 == 0 || length == 0 || base.checked_add(length).is_none() {
+            return Ok(());
+        }
+        if summary.memory_affinity_count < summary.memory_affinities.len() {
+            summary.memory_affinities[summary.memory_affinity_count] = MemoryAffinity {
+                domain,
+                base,
+                length,
+            };
+            summary.memory_affinity_count += 1;
+        } else {
+            summary.truncated = true;
+        }
+        return Ok(());
     }
     let (id, domain, enabled) = match entry[0] {
         // Processor Local APIC affinity: proximity-domain low byte at 2,
@@ -530,6 +562,23 @@ pub fn self_test() -> bool {
     let srat_valid = update_srat_summary(&srat, &mut topology).is_ok()
         && topology.processor_domains[0] == 3
         && topology.numa_domains == 1;
+    let mut memory_affinity = [0_u8; 40];
+    memory_affinity[0] = 1;
+    memory_affinity[1] = 40;
+    memory_affinity[2..6].copy_from_slice(&3_u32.to_le_bytes());
+    memory_affinity[8..16].copy_from_slice(&0x20_0000_u64.to_le_bytes());
+    memory_affinity[16..24].copy_from_slice(&0x10_0000_u64.to_le_bytes());
+    memory_affinity[28] = 1;
+    let memory_affinity_valid = update_srat_summary(&memory_affinity, &mut topology).is_ok()
+        && topology.memory_affinity_count == 1
+        && topology.memory_affinities[0].domain == 3
+        && topology.memory_affinities[0].base == 0x20_0000
+        && topology.memory_affinities[0].length == 0x10_0000;
 
-    valid && checksum_rejected && topology_valid && malformed_rejected && srat_valid
+    valid
+        && checksum_rejected
+        && topology_valid
+        && malformed_rejected
+        && srat_valid
+        && memory_affinity_valid
 }

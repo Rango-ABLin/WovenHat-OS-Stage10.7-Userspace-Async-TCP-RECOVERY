@@ -7,6 +7,13 @@ each online logical CPU. Initial placement and the conservative one-task
 rebalancer prefer a same-domain CPU before comparing runnable load; systems
 without SRAT retain the deterministic single-domain fallback.
 
+SRAT memory-affinity records are retained as bounded ranges and applied to the
+physical-frame allocator. Allocation prefers a range in the current CPU's
+proximity domain, falls back to another usable range when that domain is
+exhausted, and preserves each frame's domain when it is reclaimed.
+The allocator self-test covers affinity-range mapping, and the runtime marker
+`[MEMORY] frame allocator NUMA domains=1 regions=80` records the QEMU fallback.
+
 The parser validates entry lengths, bounds, enabled flags, duplicate-safe CPU
 matching, and the bounded entry count. ACPI's structural self-test covers a
 synthetic local-APIC affinity record. The QEMU evidence below exercises the
@@ -16,13 +23,13 @@ runtime publication and scheduler path:
 | ---: | --- | --- |
 | 1 | PASS | `target/memory-regression-1-debug/serial.log`, domains=1, mask=0x1 |
 | 2 | PASS | `target/memory-regression-2-debug/serial.log`, domains=1, mask=0x3 |
-| 4 | PASS | `target/memory-regression-4-debug/serial.log`, domains=1, mask=0xf |
+| 4 | PASS | `target/memory-regression-4-debug/serial.log`, domains=1, mask=0xf, SRAT_MEM=0 |
 
 Static validation passed with `cargo build -p wovenhat-kernel
 --target x86_64-unknown-none` and warning-denying freestanding Clippy. The
 QEMU matrix remains a single-domain topology, so multi-node latency and page
 placement still require hardware or a NUMA-capable VM. Those are tracked as a
-separate Stage 6 gap rather than inferred from this fallback result.
+separate Stage 6 qualification rather than inferred from this fallback result.
 
 The same SMP layer now supports x2APIC register access through MSR 0x800+
 register windows, 64-bit destination ICR writes, and APIC-ID discovery from

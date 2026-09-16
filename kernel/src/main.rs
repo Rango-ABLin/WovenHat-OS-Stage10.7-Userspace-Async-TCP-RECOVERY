@@ -108,7 +108,6 @@ static FAIR_TASKS_COMPLETED: AtomicU64 = AtomicU64::new(0);
 #[allow(unreachable_code)]
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     smp::prepare(&boot_info.memory_regions);
-    let memory_init = memory::init(&boot_info.memory_regions);
     let physical_memory_offset = match &boot_info.physical_memory_offset {
         Optional::Some(offset) => Some(*offset),
         Optional::None => None,
@@ -124,6 +123,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     let acpi = physical_memory_offset
         .ok_or(hal::acpi::Error::OutOfRange)
         .and_then(|offset| hal::acpi::discover(offset, rsdp_address, &boot_info.memory_regions));
+    let memory_init = match acpi.as_ref() {
+        Ok(summary) => memory::init_with_topology(
+            &boot_info.memory_regions,
+            &summary.memory_affinities[..summary.memory_affinity_count],
+        ),
+        Err(_) => memory::init(&boot_info.memory_regions),
+    };
     let boot_info_address = boot_info as *const BootInfo as u64;
 
     let framebuffer = match &mut boot_info.framebuffer {
@@ -157,6 +163,12 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
     if memory::self_test() {
         console.println("FRAME ALLOCATOR: OK");
+        let memory_stats = memory::stats();
+        serial::write_line(format_args!(
+            "[MEMORY] frame allocator NUMA domains={} regions={}",
+            memory_stats.numa_domains,
+            memory_stats.usable_regions
+        ));
     } else {
         console.println("FRAME ALLOCATOR: SELF TEST FAILED");
         halt();
@@ -198,7 +210,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         Ok(summary) => {
             console.println("ACPI TABLES: VALIDATED");
             serial::write_line(format_args!(
-                "[ACPI] revision={} tables={} APIC={} CPUs={} IOAPICs={} ISOs={} LAPIC={:#x} FADT={} HPET={} MCFG={} truncated={}",
+                "[ACPI] revision={} tables={} APIC={} CPUs={} IOAPICs={} ISOs={} LAPIC={:#x} FADT={} HPET={} MCFG={} SRAT_MEM={} NUMA_DOMAINS={} truncated={}",
                 summary.revision,
                 summary.tables,
                 summary.apic as u8,
@@ -209,6 +221,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 summary.fadt as u8,
                 summary.hpet as u8,
                 summary.mcfg as u8,
+                summary.memory_affinity_count,
+                summary.numa_domains,
                 summary.truncated as u8,
             ));
         }
