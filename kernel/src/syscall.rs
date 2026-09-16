@@ -263,6 +263,8 @@ pub enum Number {
     SleepUntil = 94,
     /// user notification buffer -> 0 empty, 1 record copied
     NotificationPoll = 95,
+    /// kind, payload -> posts a user notification to the current process
+    NotificationPost = 96,
 }
 
 pub fn entry_address() -> u64 {
@@ -1536,6 +1538,11 @@ fn sys_notification_poll(user_buffer: u64) -> u64 {
     if crate::paging::copy_to_current_user(user_buffer, &bytes).is_err() { return SYSCALL_ERROR; }
     1
 }
+fn sys_notification_post(kind: u64, payload: u64) -> u64 {
+    if !crate::task::current_has(crate::capability::Capability::Ipc) || !(1..=6).contains(&kind) { return SYSCALL_ERROR; }
+    let kind = match kind { 1 => crate::notifications::Kind::Terminate, 2 => crate::notifications::Kind::Suspend, 3 => crate::notifications::Kind::Resume, 4 => crate::notifications::Kind::ChildExit, 5 => crate::notifications::Kind::Exception, _ => crate::notifications::Kind::User };
+    if crate::notifications::publish(crate::notifications::Notification { recipient: crate::task::current_process_id(), kind, source: crate::task::current_process_id(), payload }) { 0 } else { SYSCALL_ERROR }
+}
 
 fn sys_async_cancel(raw_handle: u64) -> u64 {
     let Ok(handle) = async_handle(raw_handle) else {
@@ -1932,6 +1939,7 @@ pub extern "C" fn wovenhat_syscall_dispatch(
         value if value == Number::AsyncPoll as u64 => sys_async_poll(arg0, arg1),
         value if value == Number::AsyncWait as u64 => sys_async_wait(arg0, arg1),
         value if value == Number::NotificationPoll as u64 => sys_notification_poll(arg0),
+        value if value == Number::NotificationPost as u64 => sys_notification_post(arg0, arg1),
         value if value == Number::AsyncCancel as u64 => sys_async_cancel(arg0),
         value if value == Number::AsyncComplete as u64 => sys_async_complete(arg0, arg1, arg2),
         value if value == Number::AsyncBlockRead as u64 => sys_async_block_read(arg0),
