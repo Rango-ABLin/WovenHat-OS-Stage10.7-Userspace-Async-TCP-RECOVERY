@@ -18,5 +18,8 @@ The release report is retained at
 preemption, stale-translation, and acknowledged-shootdown markers.
 
 The bounded contract remains explicit: general userspace migration, concurrent
-filesystem/network/device-I/O service execution, NUMA-aware scheduling, CPU
-hotplug, x2APIC, and production lock dependency tracking are deferred work.
+filesystem/network/device-I/O service execution, NUMA-aware page allocation,
+CPU hotplug, APIC-ID-above-255 hardware qualification, and production lock
+dependency tracking are deferred work. CPU-domain placement and x2APIC MSR
+transport are covered by the follow-up
+[NUMA/x2APIC audit](audit-stage6-numa-2026-09-16.md).
