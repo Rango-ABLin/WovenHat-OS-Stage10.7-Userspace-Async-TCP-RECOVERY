@@ -84,6 +84,9 @@ Structured notifications, the `libwoven` userspace API boundary, and hardened
 ELF/W^X loader validation passed their individual 1/2/4-CPU QEMU gates,
 freestanding Clippy, and host tests. See [audit](audit-stage11-3-5-2026-09-16.md).
 
+The follow-up ASLR pass now randomizes production ELF, stack and mmap bases
+with a deterministic `qemu-test` switch; see [audit](audit-aslr-2026-09-16.md).
+
 ## Stage 12.1 — accepted on 2026-09-16
 
 The VFS 2.0 typed interface and SystemVfs adapter passed build, freestanding
