@@ -6,17 +6,91 @@
 use core::{marker::PhantomData, ops::{Deref, DerefMut}};
 use x86_64::instructions::interrupts;
 
-pub struct IrqMutex<T>(spin::Mutex<T>);
+#[cfg(not(test))]
+mod lock_order {
+    use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+
+    const MAX_DEPTH: usize = 8;
+    static DEPTH: [AtomicU8; crate::smp::MAX_CPUS] =
+        [const { AtomicU8::new(0) }; crate::smp::MAX_CPUS];
+    static HIGHEST_RANK: [AtomicU8; crate::smp::MAX_CPUS] =
+        [const { AtomicU8::new(0) }; crate::smp::MAX_CPUS];
+    static HELD: [[AtomicUsize; MAX_DEPTH]; crate::smp::MAX_CPUS] =
+        [const { [const { AtomicUsize::new(0) }; MAX_DEPTH] }; crate::smp::MAX_CPUS];
+
+    pub struct Token {
+        cpu: usize,
+        address: usize,
+        previous_rank: u8,
+    }
+
+    pub fn enter(address: usize, rank: u8) -> Token {
+        let cpu = crate::smp::lock_cpu_index();
+        let previous_rank = HIGHEST_RANK[cpu].load(Ordering::Relaxed);
+        if rank != 0 && previous_rank != 0 && rank < previous_rank {
+            panic!("IrqMutex lock-order inversion");
+        }
+        let depth = DEPTH[cpu].load(Ordering::Relaxed) as usize;
+        if depth >= MAX_DEPTH {
+            panic!("IrqMutex nesting depth exceeded");
+        }
+        for held in &HELD[cpu][..depth] {
+            if held.load(Ordering::Relaxed) == address {
+                panic!("recursive IrqMutex acquisition");
+            }
+        }
+        HELD[cpu][depth].store(address, Ordering::Relaxed);
+        DEPTH[cpu].store((depth + 1) as u8, Ordering::Relaxed);
+        if rank > previous_rank {
+            HIGHEST_RANK[cpu].store(rank, Ordering::Relaxed);
+        }
+        Token { cpu, address, previous_rank }
+    }
+
+    pub fn exit(token: Token) {
+        let depth = DEPTH[token.cpu].load(Ordering::Relaxed) as usize;
+        assert!(depth != 0, "IrqMutex lock-order underflow");
+        assert_eq!(
+            HELD[token.cpu][depth - 1].load(Ordering::Relaxed),
+            token.address,
+            "IrqMutex guards must be released in nesting order"
+        );
+        HELD[token.cpu][depth - 1].store(0, Ordering::Relaxed);
+        DEPTH[token.cpu].store((depth - 1) as u8, Ordering::Relaxed);
+        HIGHEST_RANK[token.cpu].store(token.previous_rank, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod lock_order {
+    pub struct Token;
+    pub fn enter(_: usize, _: u8) -> Token { Token }
+    pub fn exit(_: Token) {}
+}
+
+pub struct IrqMutex<T> {
+    inner: spin::Mutex<T>,
+    rank: u8,
+}
 
 impl<T> IrqMutex<T> {
-    pub const fn new(value: T) -> Self { Self(spin::Mutex::new(value)) }
+    pub const fn new(value: T) -> Self { Self::with_rank(value, 0) }
+
+    /// Construct a lock with a monotonic nesting rank. A nonzero rank is
+    /// checked against locks already held by this CPU; lower-ranked nesting is
+    /// rejected before spinning, making lock-order bugs fail deterministically.
+    pub const fn with_rank(value: T, rank: u8) -> Self {
+        Self { inner: spin::Mutex::new(value), rank }
+    }
 
     pub fn lock(&self) -> IrqMutexGuard<'_, T> {
         let restore_interrupts = interrupts::are_enabled();
         interrupts::disable();
+        let token = lock_order::enter(self as *const Self as usize, self.rank);
         IrqMutexGuard {
-            guard: Some(self.0.lock()),
+            guard: Some(self.inner.lock()),
             restore_interrupts,
+            token: Some(token),
             // Interrupt state belongs to the acquiring CPU, not another thread.
             _not_send: PhantomData,
         }
@@ -26,6 +100,7 @@ impl<T> IrqMutex<T> {
 pub struct IrqMutexGuard<'a, T> {
     guard: Option<spin::MutexGuard<'a, T>>,
     restore_interrupts: bool,
+    token: Option<lock_order::Token>,
     _not_send: PhantomData<*mut ()>,
 }
 
@@ -44,6 +119,7 @@ impl<T> Drop for IrqMutexGuard<'_, T> {
         // the exact preemption deadlock this guard prevents. Nested guards see
         // IF=0 and leave restoration to the outermost guard.
         drop(self.guard.take());
+        lock_order::exit(self.token.take().unwrap());
         if self.restore_interrupts { interrupts::enable(); }
     }
 }

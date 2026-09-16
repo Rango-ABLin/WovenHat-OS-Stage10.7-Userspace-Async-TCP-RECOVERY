@@ -27,8 +27,9 @@ impl Port {
         self.consumer = None;
     }
 }
-static ALLOCATION: IrqMutex<()> = IrqMutex::new(());
-static TABLE: [IrqMutex<Port>; PORTS] = [const { IrqMutex::new(Port::new()) }; PORTS];
+static ALLOCATION: IrqMutex<()> = IrqMutex::with_rank((), 10);
+static TABLE: [IrqMutex<Port>; PORTS] =
+    [const { IrqMutex::with_rank(Port::new(), 20) }; PORTS];
 
 fn index(handle: u64) -> Result<usize, ()> {
     let index = (handle & 0xffff) as usize;

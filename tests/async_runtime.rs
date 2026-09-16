@@ -5,6 +5,7 @@ mod irq_lock {
     pub struct IrqMutex<T>(std::sync::Mutex<T>);
     impl<T> IrqMutex<T> {
         pub const fn new(value: T) -> Self { Self(std::sync::Mutex::new(value)) }
+        pub const fn with_rank(value: T, _rank: u8) -> Self { Self::new(value) }
         pub fn lock(&self) -> std::sync::MutexGuard<'_, T> { self.0.lock().unwrap() }
     }
 }

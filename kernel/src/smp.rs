@@ -53,6 +53,16 @@ pub fn cpu_index() -> usize {
         .position(|entry| entry.load(Ordering::Relaxed) == id)
         .expect("unregistered CPU identity")
 }
+
+/// Return a stable per-CPU slot for early lock instrumentation. During the
+/// pre-SMP bootstrap the APIC identity is not registered yet, so CPU 0 is the
+/// conservative fallback instead of panicking while global locks initialize.
+pub fn lock_cpu_index() -> usize {
+    let id = local_apic_id();
+    IDS.iter()
+        .position(|entry| entry.load(Ordering::Relaxed) == id)
+        .unwrap_or(0)
+}
 fn local_apic_id() -> u32 {
     if X2APIC_ACTIVE.load(Ordering::Acquire) {
         unsafe { Msr::new(0x802).read() as u32 }

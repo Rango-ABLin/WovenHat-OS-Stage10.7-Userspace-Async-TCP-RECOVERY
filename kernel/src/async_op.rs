@@ -193,7 +193,7 @@ impl Table {
     }
 }
 
-static TABLE: Mutex<Table> = Mutex::new(Table::new());
+static TABLE: Mutex<Table> = Mutex::with_rank(Table::new(), 10);
 static ALLOCATED: AtomicU64 = AtomicU64::new(0);
 static COMPLETED: AtomicU64 = AtomicU64::new(0);
 static WAITS: AtomicU64 = AtomicU64::new(0);
