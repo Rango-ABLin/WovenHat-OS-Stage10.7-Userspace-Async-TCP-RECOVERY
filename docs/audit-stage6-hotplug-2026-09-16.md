@@ -17,17 +17,20 @@ Validation command:
 
 ```powershell
 python scripts/test-stage6-hotplug.py
+python scripts/test-stage6-hotplug.py --cpus 4
 ```
 
-Result: PASS on the development QEMU profile (`-smp 2`, exit status 33). The
-serial evidence contains:
+Result: PASS on the development QEMU profiles (`-smp 2` and `-smp 4`, exit
+status 33). The serial evidence contains the corresponding online-prefix
+markers:
 
 - `[SMP] online=2 expected=2`
 - `[SMP] topology/NUMA affinity: PASSED`
 - `[S6.HOTPLUG] offline AP: PASSED online=1 mask=0x1`
 
-The durable log is retained under
-`audit-artifacts/stage6-hotplug-2cpu-1789575200697286900/`.
+The durable logs are retained under
+`audit-artifacts/stage6-hotplug-2cpu-1789575380267502400/` and
+`audit-artifacts/stage6-hotplug-4cpu-1789575365467479300/`.
 
 Warning-denying freestanding Clippy also passed with the hotplug feature:
 
