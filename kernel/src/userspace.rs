@@ -12,6 +12,36 @@ pub use crate::config::MAX_ANONYMOUS_MAPPINGS;
 
 const USER_REGION_START: u64 = 0x0000_4000_0000_0000;
 const USER_STACK_OFFSET: u64 = 0x1f_0000;
+const ASLR_PAGE: u64 = 4096;
+const ASLR_IMAGE_SPAN: u64 = 0x80_000;
+const ASLR_STACK_SPAN: u64 = 0x40_000;
+const ASLR_MMAP_SPAN: u64 = 0x50_000;
+
+fn aslr_pages(span: u64) -> u64 {
+    #[cfg(feature = "qemu-test")]
+    {
+        let _ = span;
+        0
+    }
+    #[cfg(not(feature = "qemu-test"))]
+    {
+        crate::entropy::random_range(0, span / ASLR_PAGE)
+    }
+}
+
+fn aslr_image_delta() -> u64 {
+    aslr_pages(ASLR_IMAGE_SPAN) * ASLR_PAGE
+}
+
+fn aslr_stack_base() -> Option<u64> {
+    USER_REGION_START
+        .checked_add(USER_STACK_OFFSET)?
+        .checked_sub(aslr_pages(ASLR_STACK_SPAN) * ASLR_PAGE)
+}
+
+fn aslr_mmap_base() -> Option<u64> {
+    USER_MMAP_START.checked_add(aslr_pages(ASLR_MMAP_SPAN) * ASLR_PAGE)
+}
 const USER_CODE_SIZE: usize = 4096;
 
 global_asm!(
@@ -4102,6 +4132,7 @@ impl UserMapping {
 pub struct AddressSpace {
     paging: paging::AddressSpace,
     stack_base: u64,
+    mmap_base: u64,
     mappings: [UserMapping; MAX_ELF_SEGMENTS],
     mapping_count: usize,
 }
@@ -4466,18 +4497,24 @@ pub fn install_shell_executable() -> bool {
     build_stub_elf(stub).is_some_and(|elf| crate::vfs::create_read_only("/bin/sh", &elf).is_ok())
 }
 pub fn load_elf(bytes: &[u8]) -> Option<UserProgram> {
-    let image = crate::elf::parse(bytes).ok()?;
+    let image = crate::elf::parse(bytes).ok()?.relocated(aslr_image_delta())?;
+    let mmap_base = aslr_mmap_base()?;
     let page_table = paging::create_user_address_space(image.entry)?;
     let mut mappings = [UserMapping::EMPTY; MAX_ELF_SEGMENTS];
     let mut mapping_count = 0;
 
-    let stack_base = USER_REGION_START.checked_add(USER_STACK_OFFSET)?;
+    let stack_base = aslr_stack_base()?;
     let stack = UserStack::new(stack_base);
+    let mmap_end = mmap_base
+        .checked_add(MAX_ANONYMOUS_MAPPINGS as u64 * USER_MMAP_STRIDE)?;
     for segment in image.segments() {
         let mapping_end = segment
             .mapping_start
             .checked_add(segment.mapping_size as u64)?;
-        if segment.mapping_start < USER_REGION_START || mapping_end > stack.guard_base {
+        if segment.mapping_start < USER_REGION_START
+            || mapping_end > stack.guard_base
+            || (segment.mapping_start < mmap_end && mmap_base < mapping_end)
+        {
             release_partial(page_table, &mappings[..mapping_count]);
             return None;
         }
@@ -4564,6 +4601,7 @@ pub fn load_elf(bytes: &[u8]) -> Option<UserProgram> {
         address_space: AddressSpace {
             paging: page_table,
             stack_base,
+            mmap_base,
             mappings,
             mapping_count,
         },
@@ -4612,7 +4650,9 @@ pub fn map_anonymous(
     {
         return None;
     }
-    let address = USER_MMAP_START.checked_add((slot as u64).checked_mul(USER_MMAP_STRIDE)?)?;
+    let address = address_space
+        .mmap_base
+        .checked_add((slot as u64).checked_mul(USER_MMAP_STRIDE)?)?;
     if paging::map_user_range_in(address_space.paging, address, size, writable, false).is_err() {
         return None;
     }
@@ -4676,7 +4716,9 @@ pub fn map_file_lazy(
         return None;
     }
     let size = crate::file_mapping::mapped_size(crate::vfs::file_size(file).ok()?, offset, length)?;
-    let address = USER_MMAP_START.checked_add((slot as u64).checked_mul(USER_MMAP_STRIDE)?)?;
+    let address = address_space
+        .mmap_base
+        .checked_add((slot as u64).checked_mul(USER_MMAP_STRIDE)?)?;
     if !paging::user_range_is_unmapped_in(address_space.paging, address, size) {
         return None;
     }
@@ -4948,6 +4990,7 @@ pub fn clone_address_space(
     let destination = AddressSpace {
         paging: destination_paging,
         stack_base: source.stack_base,
+        mmap_base: source.mmap_base,
         mappings: source.mappings,
         mapping_count: source.mapping_count,
     };
@@ -5253,6 +5296,7 @@ pub fn shared_disk_mmap_self_test() -> bool {
         let space = AddressSpace {
             paging: root,
             stack_base: 0,
+            mmap_base: USER_MMAP_START,
             mappings: [UserMapping::EMPTY; MAX_ELF_SEGMENTS],
             mapping_count: 0,
         };
@@ -5305,6 +5349,7 @@ pub fn disk_unlink_mmap_self_test() -> bool {
         let space = AddressSpace {
             paging: root,
             stack_base: 0,
+            mmap_base: USER_MMAP_START,
             mappings: [UserMapping::EMPTY; MAX_ELF_SEGMENTS],
             mapping_count: 0,
         };
@@ -5348,6 +5393,7 @@ pub fn shared_file_mmap_self_test() -> bool {
     let space = AddressSpace {
         paging: root,
         stack_base: 0,
+        mmap_base: USER_MMAP_START,
         mappings: [UserMapping::EMPTY; MAX_ELF_SEGMENTS],
         mapping_count: 0,
     };
@@ -5431,6 +5477,7 @@ pub fn lazy_file_mmap_self_test() -> bool {
     let space = AddressSpace {
         paging: root,
         stack_base: 0,
+        mmap_base: USER_MMAP_START,
         mappings: [UserMapping::EMPTY; MAX_ELF_SEGMENTS],
         mapping_count: 0,
     };
@@ -5515,6 +5562,7 @@ pub fn private_lazy_swap_self_test() -> bool {
     let space = AddressSpace {
         paging: root,
         stack_base: 0,
+        mmap_base: USER_MMAP_START,
         mappings: [UserMapping::EMPTY; MAX_ELF_SEGMENTS],
         mapping_count: 0,
     };
@@ -5583,6 +5631,7 @@ pub fn file_mmap_self_test() -> bool {
     let space = AddressSpace {
         paging: root,
         stack_base: 0,
+        mmap_base: USER_MMAP_START,
         mappings: [UserMapping::EMPTY; MAX_ELF_SEGMENTS],
         mapping_count: 0,
     };

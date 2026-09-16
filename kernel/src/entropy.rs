@@ -43,6 +43,24 @@ pub fn random_u64() -> u64 {
     fallback_u64()
 }
 
+/// Returns a value in `[min, max)`, or `min` when the range is empty.
+///
+/// Rejection sampling avoids the modulo bias that would otherwise make small
+/// ASLR ranges slightly more likely at their lower addresses.
+pub fn random_range(min: u64, max: u64) -> u64 {
+    if min >= max {
+        return min;
+    }
+    let span = max - min;
+    let threshold = span.wrapping_neg() % span;
+    loop {
+        let value = random_u64();
+        if value >= threshold {
+            return min + value % span;
+        }
+    }
+}
+
 /// SplitMix64-style fallback mix. Not cryptographically secure — see the
 /// module-level documentation.
 fn fallback_u64() -> u64 {

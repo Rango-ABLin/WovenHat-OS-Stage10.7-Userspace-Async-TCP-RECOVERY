@@ -48,6 +48,44 @@ impl Image {
     pub const fn segment_count(&self) -> usize {
         self.segment_count
     }
+
+    /// Relocate every load segment and the entry by one page-aligned delta.
+    /// The parser's W^X, overlap and file-range checks remain in force, while
+    /// this second pass rechecks user bounds after the randomized placement.
+    pub fn relocated(mut self, delta: u64) -> Option<Self> {
+        self.entry = self.entry.checked_add(delta)?;
+        for segment in self.segments[..self.segment_count].iter_mut().flatten() {
+            segment.virtual_address = segment.virtual_address.checked_add(delta)?;
+            segment.mapping_start = segment.mapping_start.checked_add(delta)?;
+            let memory_end = segment
+                .virtual_address
+                .checked_add(segment.memory_size as u64)?;
+            let mapping_end = segment
+                .mapping_start
+                .checked_add(segment.mapping_size as u64)?;
+            if segment.mapping_start < USER_ADDRESS_LIMIT
+                && memory_end < USER_ADDRESS_LIMIT
+                && mapping_end <= USER_ADDRESS_LIMIT
+            {
+                continue;
+            }
+            return None;
+        }
+        for (index, segment) in self.segments[..self.segment_count]
+            .iter()
+            .flatten()
+            .enumerate()
+        {
+            let end = segment.mapping_start.checked_add(segment.mapping_size as u64)?;
+            for other in self.segments[..index].iter().flatten() {
+                let other_end = other.mapping_start.checked_add(other.mapping_size as u64)?;
+                if segment.mapping_start < other_end && other.mapping_start < end {
+                    return None;
+                }
+            }
+        }
+        Some(self)
+    }
 }
 
 pub fn parse(bytes: &[u8]) -> Result<Image, Error> {

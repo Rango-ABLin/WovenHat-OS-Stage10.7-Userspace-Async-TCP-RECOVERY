@@ -58,9 +58,15 @@ generation (`network.rs`), replacing a fixed compile-time constant that made eve
 TCP sequence numbers predictable to a network attacker. It is not yet used for ASLR —
 see `docs/wovenhat-os-master-roadmap.md` and `docs/CHATGPT-MILESTONE-PROMPT.md` for that
 follow-on work — or for any cryptographic purpose (the fallback path is not suitable
-for key material).
+for key material). The historical note above predates the ASLR implementation;
+production loads now use the entropy source for randomized user layout.
 
-## Known gaps (unchanged by the above)
+Production ELF loads now apply page-aligned randomization to the ELF load
+base, user stack base and anonymous-mmap arena. The `qemu-test` feature keeps
+these offsets at zero so acceptance boots remain reproducible; kernel addresses
+are unaffected.
+
+## Known gaps
 
 - File write authorization is still process-scoped (`FileWrite` capability), not
   per-file: a process holding `FileWrite` can write any file it can open, not only
@@ -68,4 +74,3 @@ for key material).
 - Kernel stacks (as opposed to user stacks, which already have guard pages via
   `UserStack::guard_base`) do not yet have guard pages. See
   `docs/CHATGPT-MILESTONE-PROMPT-2.md` Part 1.
-- No ASLR yet for ELF load base, mmap base, or user stack base.
