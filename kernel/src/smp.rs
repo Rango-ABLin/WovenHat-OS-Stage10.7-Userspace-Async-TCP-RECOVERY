@@ -102,6 +102,10 @@ pub fn request_cpu_offline(cpu: usize) -> bool {
     if cpu == 0 || cpu + 1 != online || !cpu_is_online(cpu) {
         return false;
     }
+    let state = OFFLINE_STATE[cpu].load(Ordering::Acquire);
+    if state != 0 && state != 7 {
+        return false;
+    }
     if !task::prepare_cpu_offline(cpu) {
         return false;
     }
