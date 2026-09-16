@@ -14,8 +14,9 @@ gates, legacy PIC fallback, 4-CPU release gates, and shell/SMP smoke. See
 [the Stage 6 audit](audit-stage6-2026-09-16.md).
 
 General multicore userspace, unrestricted concurrent device/filesystem service
-throughput, NUMA-aware page allocation, CPU re-online/AP restart, APIC-ID-above-255
-hardware qualification, and production lock dependency tracking remain explicit
+throughput, multi-node NUMA page-placement qualification, CPU re-online/AP
+restart, APIC-ID-above-255 hardware qualification, and production lock dependency
+tracking remain explicit
 deferred requirements in the Stage 6 contract. CPU-domain placement, audited
 Ready-state I/O service migration, and the x2APIC MSR transport are
 implemented; bounded highest-numbered AP offline control is also implemented;
