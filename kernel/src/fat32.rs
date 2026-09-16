@@ -1635,6 +1635,9 @@ fn create_long_file_in_directory(
             reservation.slots[index].1,
             record,
         ) {
+            for slot in reservation.slots.iter().take(index + 1) {
+                let _ = mark_directory_entry_deleted(device, slot.0, slot.1);
+            }
             if first_cluster >= 2 {
                 let _ = free_cluster_chain(device, volume, first_cluster);
             }
@@ -1650,6 +1653,9 @@ fn create_long_file_in_directory(
         first_cluster,
         data.len() as u32,
     ) {
+        for slot in reservation.slots.iter().take(record_count + 1) {
+            let _ = mark_directory_entry_deleted(device, slot.0, slot.1);
+        }
         if first_cluster >= 2 {
             let _ = free_cluster_chain(device, volume, first_cluster);
         }
@@ -1870,6 +1876,16 @@ fn find_existing_directory_slot(
     }
 }
 
+fn find_existing_directory_slot_name(
+    device: &mut impl BlockDevice,
+    volume: Volume,
+    dir_cluster: u32,
+    name: &str,
+) -> Result<DirectorySlot, Error> {
+    let entry = find_in_directory_name(device, volume, dir_cluster, name)?;
+    find_existing_directory_slot(device, volume, dir_cluster, &entry.short_name)
+}
+
 fn mark_directory_entry_deleted(
     device: &mut impl BlockDevice,
     lba: u64,
@@ -1879,6 +1895,32 @@ fn mark_directory_entry_deleted(
     device.read_sector(lba, &mut sector).map_err(Error::Block)?;
     sector[offset] = 0xe5;
     device.write_sector(lba, &sector).map_err(Error::Block)
+}
+
+fn mark_lfn_prefix_deleted(
+    device: &mut impl BlockDevice,
+    lba: u64,
+    offset: usize,
+) -> Result<(), Error> {
+    if offset == 0 {
+        return Ok(());
+    }
+    let mut sector = [0u8; SECTOR_SIZE];
+    device.read_sector(lba, &mut sector).map_err(Error::Block)?;
+    let mut cursor = offset;
+    let mut changed = false;
+    while cursor >= DIRECTORY_ENTRY_SIZE {
+        cursor -= DIRECTORY_ENTRY_SIZE;
+        if sector[cursor] == 0xe5 || sector[cursor + 11] != LONG_NAME_ATTRIBUTE {
+            break;
+        }
+        sector[cursor] = 0xe5;
+        changed = true;
+    }
+    if changed {
+        device.write_sector(lba, &sector).map_err(Error::Block)?;
+    }
+    Ok(())
 }
 
 fn write_short_name(
@@ -2139,8 +2181,7 @@ pub fn delete_path(device: &mut impl BlockDevice, volume: Volume, path: &str) ->
     }
     let (parent, leaf, leaf_len) = resolve_parent_cluster(device, volume, path, false)?;
     let leaf = core::str::from_utf8(&leaf[..leaf_len]).map_err(|_| Error::NameTooLong)?;
-    let short = encode_short_name(leaf).ok_or(Error::NameTooLong)?;
-    let slot = find_existing_directory_slot(device, volume, parent, &short)?;
+    let slot = find_existing_directory_slot_name(device, volume, parent, leaf)?;
     if slot.entry.attributes & READ_ONLY_ATTRIBUTE != 0 {
         return Err(Error::ReadOnly);
     }
@@ -2155,6 +2196,7 @@ pub fn delete_path(device: &mut impl BlockDevice, volume: Volume, path: &str) ->
     }
 
     mark_directory_entry_deleted(device, slot.lba, slot.offset)?;
+    mark_lfn_prefix_deleted(device, slot.lba, slot.offset)?;
     if slot.entry.first_cluster >= 2 {
         free_cluster_chain(device, volume, slot.entry.first_cluster)?;
     }
@@ -2748,7 +2790,12 @@ fn long_filename_self_test() -> bool {
         return false;
     }
     let mut bytes = [0u8; 4];
-    read_path_bytes(&mut disk, volume, name, &mut bytes) == Ok(3) && &bytes[..3] == b"lfn"
+    let read_ok = read_path_bytes(&mut disk, volume, name, &mut bytes) == Ok(3)
+        && &bytes[..3] == b"lfn";
+    let delete_ok = delete_path(&mut disk, volume, name).is_ok()
+        && resolve_path(&mut disk, volume, name).is_err_and(|error| error == Error::NotFound)
+        && create_path_file(&mut disk, volume, name, b"lfn2").is_ok();
+    read_ok && delete_ok
 }
 
 fn directory_growth_self_test() -> bool {
