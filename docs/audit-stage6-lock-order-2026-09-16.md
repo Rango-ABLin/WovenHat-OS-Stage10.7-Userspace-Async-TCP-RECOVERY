@@ -30,6 +30,13 @@ memory/storage/network 1/2/4-CPU gates, legacy PIC, release gates, and shell/
 SMP smoke. The Stage 6 hotplug lifecycle also passed twice on both 2- and
 4-CPU QEMU profiles after the tracker was enabled.
 
+During release qualification the tracker caught a termination-path inversion
+where completion-port ownership was released while `PROCESS_TABLE` was held.
+The termination path now marks the process and takes its file table under the
+rank-20 guard, then performs completion, event, notification, VFS, and pipe
+teardown after the guard is dropped. The complete release matrix was rerun
+after this fix and passed.
+
 This closes the bounded interrupt-safe worker-lock tracking gap. Complete
 cross-domain lock-graph coverage for scheduler/paging/frame-allocator mutexes
 and priority inheritance remain separate Stage 6 work.
