@@ -28,6 +28,8 @@ const METADATA_HEADER_SIZE: usize = 8;
 const METADATA_RECORD_SIZE: usize = 24;
 const METADATA_CAPACITY: usize = (SECTOR_SIZE - METADATA_HEADER_SIZE) / METADATA_RECORD_SIZE;
 const METADATA_SECTOR_COUNT: usize = 4;
+const METADATA_STATE_PENDING: u8 = 1;
+const METADATA_STATE_COMMITTED: u8 = 2;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -358,6 +360,26 @@ pub fn write_file_metadata(
     path_hash: u64,
     metadata: FileMetadata,
 ) -> Result<(), Error> {
+    write_file_metadata_state(device, volume, path_hash, metadata, METADATA_STATE_COMMITTED)
+}
+
+/// Write an intent before the corresponding file-data transaction starts.
+pub fn write_file_metadata_pending(
+    device: &mut impl BlockDevice,
+    volume: Volume,
+    path_hash: u64,
+    metadata: FileMetadata,
+) -> Result<(), Error> {
+    write_file_metadata_state(device, volume, path_hash, metadata, METADATA_STATE_PENDING)
+}
+
+fn write_file_metadata_state(
+    device: &mut impl BlockDevice,
+    volume: Volume,
+    path_hash: u64,
+    metadata: FileMetadata,
+    state: u8,
+) -> Result<(), Error> {
     let mut selected = None;
     let mut sector = [0u8; SECTOR_SIZE];
     for sector_index in 0..METADATA_SECTOR_COUNT {
@@ -390,9 +412,38 @@ pub fn write_file_metadata(
     sector[offset + 12..offset + 16].copy_from_slice(&metadata.gid.to_le_bytes());
     sector[offset + 16..offset + 18].copy_from_slice(&metadata.mode.to_le_bytes());
     sector[offset + 18] = 1;
+    sector[offset + 19] = state;
     device
         .write_sector(metadata_sector(volume, sector_index)?, &sector)
         .map_err(Error::Block)
+}
+
+/// Promote a pending metadata intent after file data is durable.
+pub fn finalize_file_metadata(
+    device: &mut impl BlockDevice,
+    volume: Volume,
+    path_hash: u64,
+) -> Result<bool, Error> {
+    for sector_index in 0..METADATA_SECTOR_COUNT {
+        let mut sector = [0u8; SECTOR_SIZE];
+        read_metadata_sector(device, volume, sector_index, &mut sector)?;
+        if &sector[..4] != METADATA_MAGIC {
+            continue;
+        }
+        for index in 0..METADATA_CAPACITY {
+            let offset = METADATA_HEADER_SIZE + index * METADATA_RECORD_SIZE;
+            if sector[offset + 18] != 0 && read_u64(&sector, offset) == path_hash {
+                if sector[offset + 19] == METADATA_STATE_PENDING {
+                    sector[offset + 19] = METADATA_STATE_COMMITTED;
+                    device
+                        .write_sector(metadata_sector(volume, sector_index)?, &sector)
+                        .map_err(Error::Block)?;
+                }
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Remove one ownership record. Missing records are already clean.
@@ -3234,14 +3285,12 @@ fn long_filename_self_test() -> bool {
         gid: 1000,
         mode: 0o640,
     };
-    let metadata_ok = write_file_metadata(
-        &mut disk,
-        volume,
-        metadata_path_hash(name),
-        metadata,
-    )
-    .is_ok()
-        && read_file_metadata(&mut disk, volume, metadata_path_hash(name)) == Ok(Some(metadata))
+    let metadata_hash = metadata_path_hash(name);
+    let metadata_ok = write_file_metadata_pending(&mut disk, volume, metadata_hash, metadata)
+        .is_ok()
+        && read_file_metadata(&mut disk, volume, metadata_hash) == Ok(Some(metadata))
+        && finalize_file_metadata(&mut disk, volume, metadata_hash) == Ok(true)
+        && write_file_metadata(&mut disk, volume, metadata_hash, metadata).is_ok()
         && remove_file_metadata(&mut disk, volume, metadata_path_hash(name)).is_ok()
         && read_file_metadata(&mut disk, volume, metadata_path_hash(name)) == Ok(None);
     if create_path_file(&mut disk, volume, name, b"lfn").is_err() {
