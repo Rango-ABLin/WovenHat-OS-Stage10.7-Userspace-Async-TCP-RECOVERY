@@ -248,6 +248,11 @@ pub enum Number {
     AsyncNetWait = 80,
     /// TCP socket, packed IPv4 endpoint -> generation-tagged Network connect handle
     AsyncTcpConnect = 81,
+    CompletionPortCreate = 82,
+    CompletionPortClose = 83,
+    CompletionPortAssociate = 84,
+    CompletionPortPoll = 85,
+    CompletionPortWait = 86,
 }
 
 pub fn entry_address() -> u64 {
@@ -1661,6 +1666,39 @@ fn sys_async_file_wait(raw_handle: u64, user_completion: u64, user_data: u64) ->
 }
 
 
+fn sys_port_read(port: u64, destination: u64, argument: u64, wait: bool) -> u64 {
+    let (capacity, deadline) = if wait {
+        let mut options = [0u8; 16];
+        if crate::paging::copy_from_current_user(argument, &mut options).is_err() { return SYSCALL_ERROR; }
+        let timeout = u64::from_le_bytes(options[8..].try_into().unwrap());
+        let deadline = if timeout == u64::MAX { u64::MAX } else {
+            let Some(deadline) = crate::timer::ticks().checked_add(timeout).filter(|&d| d != u64::MAX) else { return SYSCALL_ERROR; };
+            deadline
+        };
+        (u64::from_le_bytes(options[..8].try_into().unwrap()), deadline)
+    } else { (argument, 0) };
+    if capacity == 0 || capacity > crate::completion_queue::BATCH as u64 { return SYSCALL_ERROR; }
+    let owner = crate::task::current_process_id();
+    let Some(task) = crate::task::current_task_id_if_running() else { return SYSCALL_ERROR; };
+    loop {
+        let result = crate::completion_port::begin(owner, port, task, capacity as usize, wait);
+        let Ok((events, count)) = result else { return SYSCALL_ERROR; };
+        if count != 0 {
+            let mut bytes = [0u8; crate::completion_queue::BATCH * 40];
+            for (event, out) in events[..count].iter().zip(bytes.as_chunks_mut::<40>().0.iter_mut()) { event.encode(out); }
+            let copied = crate::paging::copy_to_current_user(destination, &bytes[..count * 40]).is_ok();
+            let acknowledged = crate::completion_port::finish(owner, port, task, &events[..count], copied).is_ok();
+            return if copied && acknowledged { count as u64 } else { SYSCALL_ERROR };
+        }
+        if !wait || (deadline != u64::MAX && crate::timer::ticks() >= deadline) {
+            crate::completion_port::unwatch(port, task);
+            return 0;
+        }
+        crate::task::wait_for_event_until(deadline);
+        crate::completion_port::unwatch(port, task);
+    }
+}
+
 fn sys_async_tcp_connect(socket: u64, packed: u64) -> u64 {
     if !crate::task::authorize_current_device(crate::wovenguard::DeviceClass::Network) { return SYSCALL_ERROR; }
     let Ok(endpoint) = crate::network::endpoint_from_packed(packed) else { return SYSCALL_ERROR; };
@@ -1836,6 +1874,12 @@ pub extern "C" fn wovenhat_syscall_dispatch(
         value if value == Number::AsyncNetPoll as u64 => sys_async_net_poll(arg0, arg1, arg2),
         value if value == Number::AsyncNetWait as u64 => sys_async_net_wait(arg0, arg1, arg2),
         value if value == Number::AsyncTcpConnect as u64 => sys_async_tcp_connect(arg0, arg1),
+        value if value == Number::CompletionPortCreate as u64 => crate::completion_port::create(crate::task::current_process_id()).unwrap_or(SYSCALL_ERROR),
+        value if value == Number::CompletionPortClose as u64 => crate::completion_port::close(crate::task::current_process_id(), arg0).map_or(SYSCALL_ERROR, |()| 0),
+        value if value == Number::CompletionPortAssociate as u64 => async_handle(arg0).ok()
+            .and_then(|handle| crate::async_op::associate_current(handle, arg1, arg2).ok()).map_or(SYSCALL_ERROR, |()| 0),
+        value if value == Number::CompletionPortPoll as u64 => sys_port_read(arg0, arg1, arg2, false),
+        value if value == Number::CompletionPortWait as u64 => sys_port_read(arg0, arg1, arg2, true),
         _ => u64::MAX,
     };
 

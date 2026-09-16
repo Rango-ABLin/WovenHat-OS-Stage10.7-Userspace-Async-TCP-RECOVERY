@@ -133,5 +133,28 @@ interrupt-driven NIC architecture. Send completion means local socket acceptance
 not remote acknowledgement; closing does not promise graceful draining. Public
 socket descriptors remain process-local integer slots, while in-flight tokens
 carry generations. Generation counters remain finite. Generic completions have
-single-task ownership and no wait-many or completion-port facility. These are
+single-task ownership. These are
 explicit architectural boundaries, not claims of a finished production network stack.
+
+## Stage 10.8 completion ports
+
+`completion_queue.rs` is the allocation-free reservation/FIFO core shared with
+host tests. `completion_port.rs` adds process ownership, quotas, generation-tagged
+handles, waiter registration and retry-safe batch claims. `async_op.rs` publishes
+completion or cancellation into an associated port. Association and completion
+serialize on the operation table before locking a port; scheduler notification
+occurs after both are unlocked.
+
+Syscalls 82 through 86 create, close, associate, poll and wait. See the
+[ABI contract](completion-port-abi.md) for record layout, timeout and capacity
+semantics. Port dequeue does not consume the original operation's data result.
+`task::wait_for_event_until` extends the existing scheduler event latch with an
+absolute deadline and timer-driven wakeup. Normal and forced process exit reclaim
+ports after detaching owned operations.
+
+`tests/async_runtime.rs` exercises production operation and port state with host
+scheduler/lock doubles. `stage10_8.S` tests the real Ring-3 ABI;
+`async_acceptance.rs` exercises multicore producers and a waiting consumer.
+`RUN-STAGE10.8.ps1` preserves Stage 10.7 and adds 1/2/4-CPU completion-port boots.
+Timers, event objects, IPC completion integration and per-thread cleanup remain
+later roadmap work.

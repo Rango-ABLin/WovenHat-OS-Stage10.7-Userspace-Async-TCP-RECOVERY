@@ -30,12 +30,20 @@ Final build/lint/host checks also passed and are recorded under
 `audit-artifacts/final-static/`. The accepted-stage commit follows the imported
 baseline as a separate Git commit; use `git log --oneline` to identify it.
 
-## Next: Stage 10.8 — unified completion ports / wait-many
+## Stage 10.8 — accepted on 2026-09-16
 
-Implementation has not started. Preserve the accepted Stage 10.7 ABI and add the
-per-process port/association/dequeue/wait contract, explicit overflow and timeout
-behavior, cancellation events, generation-safe ownership and teardown. Do not
-skip ahead to timers, userspace expansion or later roadmap stages.
+Completion ports, operation association, batch poll/wait, bounded reservations,
+cancellation events, generation retirement and timeout-aware scheduler blocking
+are implemented. The full gate passed with exit code 0: all 75 Stage 10.7 boots
+plus completion-port boots on 1/2/4 CPUs (78 total). The latter include Ring-3
+copyout retry, measured timeout, teardown, SMP producers and consumer wakeup.
+Build, warning-denying host/kernel/probe Clippy, 18 Rust tests and four Python
+harness tests passed. Final host tests include waiter notification and port quota.
 
-See [architecture guide](architecture-and-codebase-guide.md) for implementation
-boundaries and [audit report](audit-stage10-7-2026-09-16.md) for findings/evidence.
+Full transcript: `audit-artifacts/acceptance-20260916-085314-575/acceptance-output.txt`.
+Focused serial evidence is retained in timestamped `audit-artifacts/stage10.8-*`
+directories. See [ABI contract](completion-port-abi.md) and
+[audit](audit-stage10-8-2026-09-16.md).
+
+Next: Stage 10.9 timers/events, followed by Stage 10.10 runtime integration.
+Stage 10 is not closed; Stage 11 follows its closure.

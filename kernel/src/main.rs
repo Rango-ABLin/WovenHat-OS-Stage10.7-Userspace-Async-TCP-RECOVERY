@@ -10,6 +10,8 @@ mod ata;
 mod async_op;
 mod async_file;
 mod async_network;
+#[cfg(feature = "stage10-8-test")]
+mod async_acceptance;
 mod audit;
 mod benchmark;
 mod block;
@@ -18,6 +20,8 @@ mod block_io;
 mod capability;
 mod config;
 mod console;
+mod completion_queue;
+mod completion_port;
 mod device;
 mod elf;
 mod entropy;
@@ -1673,6 +1677,31 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     serial::write_line(format_args!(
         "[S10.3] userspace async completion ABI + cancellation/teardown: PASSED"
     ));
+    #[cfg(feature = "stage10-8-test")]
+    {
+        let before = completion_port::active_count();
+        let program = userspace::create_stage10_8_process().expect("completion-port probe ELF");
+        let Ok((pid, _)) = task::spawn_user_process("s10.8-ports", program) else {
+            serial::write_line(format_args!("[S10.8] probe task creation: FAILED"));
+            qemu_test_exit_failure();
+        };
+        let start = timer::ticks();
+        while !task::process_exited(pid) {
+            if timer::ticks().saturating_sub(start) > 500 {
+                serial::write_line(format_args!("[S10.8] completion ports: TIMEOUT"));
+                qemu_test_exit_failure();
+            }
+            x86_64::instructions::hlt();
+        }
+        if task::wait_process(pid.as_u64()) != Ok(0) || async_op::stats().active != 0
+            || completion_port::active_count() != before || !async_acceptance::ports_smp()
+        {
+            serial::write_line(format_args!("[S10.8] completion ports: FAILED"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!("[S10.8] completion ports + batch/cancel/timeout/teardown/SMP: PASSED"));
+        qemu_test_exit_success();
+    }
     #[cfg(feature = "stage10-4-test")]
     {
         let block_before = block_io::stats();

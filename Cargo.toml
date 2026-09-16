@@ -10,6 +10,7 @@ stage10-4-test = ["qemu-test", "kernel/stage10-4-test"]
 stage10-5-test = ["qemu-test", "kernel/stage10-5-test"]
 stage10-6-test = ["qemu-test", "kernel/stage10-6-test"]
 stage10-7-test = ["qemu-test", "kernel/stage10-7-test"]
+stage10-8-test = ["qemu-test", "kernel/stage10-8-test"]
 
 [profile.dev]
 panic = "abort"

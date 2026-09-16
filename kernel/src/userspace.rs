@@ -1,5 +1,8 @@
 use core::arch::global_asm;
 
+#[cfg(feature = "stage10-8-test")]
+global_asm!(include_str!("stage10_8.S"));
+
 use crate::config::MAX_ELF_SEGMENTS;
 use crate::paging;
 
@@ -4223,6 +4226,21 @@ pub fn create_stub_process() -> Option<UserProgram> {
     };
     let elf = build_stub_elf(stub)?;
     load_elf(&elf)
+}
+
+#[cfg(feature = "stage10-8-test")]
+pub fn create_stage10_8_process() -> Option<UserProgram> {
+    unsafe extern "C" {
+        static wovenhat_stage10_8_start: u8;
+        static wovenhat_stage10_8_end: u8;
+    }
+    // SAFETY: Linker-delimited immutable bytes, copied into a validated ELF.
+    let stub = unsafe {
+        let start = &wovenhat_stage10_8_start as *const u8;
+        let end = &wovenhat_stage10_8_end as *const u8;
+        core::slice::from_raw_parts(start, end.offset_from(start) as usize)
+    };
+    load_elf(&build_stub_elf(stub)?)
 }
 
 pub fn install_stub_executable() -> bool {

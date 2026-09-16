@@ -326,6 +326,7 @@ struct TaskControlBlock {
     /// A signal delivered before the task actually blocks is remembered here
     /// and consumed by `wait_for_event`, closing the classic lost-wakeup window.
     event_pending: bool,
+    event_deadline: Option<u64>,
 }
 
 #[derive(Clone, Copy)]
@@ -359,6 +360,7 @@ impl TaskControlBlock {
             affinity_mask: 1,
             termination_signal: 0,
             event_pending: false,
+            event_deadline: None,
         }
     }
 
@@ -386,6 +388,7 @@ impl TaskControlBlock {
         self.affinity_mask = 1;
         self.termination_signal = 0;
         self.event_pending = false;
+        self.event_deadline = None;
         self.security_domain = wovenguard::SecurityDomain::SystemService;
         self.sandbox_profile = wovenguard::default_sandbox(self.security_domain);
 
@@ -435,6 +438,7 @@ impl TaskControlBlock {
         self.affinity_mask = 1;
         self.termination_signal = 0;
         self.event_pending = false;
+        self.event_deadline = None;
 
         let stack_start = TASK_STACKS[slot].0.get().cast::<u8>() as usize;
         let stack_top = stack_start + TASK_STACK_SIZE;
@@ -480,6 +484,7 @@ impl TaskControlBlock {
         self.affinity_mask = 1;
         self.termination_signal = 0;
         self.event_pending = false;
+        self.event_deadline = None;
 
         let stack_start = TASK_STACKS[slot].0.get().cast::<u8>() as usize;
         let stack_top = (stack_start + TASK_STACK_SIZE) & !0xf;
@@ -1036,6 +1041,10 @@ impl Scheduler {
 
     fn wake_sleeping(&mut self, now: u64) {
         for task in &mut self.tasks {
+            if task.state == TaskState::Blocked && task.event_deadline.is_some_and(|deadline| now >= deadline) {
+                task.state = TaskState::Ready;
+                task.event_deadline = None;
+            }
             if task.state == TaskState::Sleeping && task.wake_tick <= now {
                 task.state = TaskState::Ready;
                 task.wake_tick = 0;
@@ -2189,6 +2198,7 @@ pub fn exit_current_process(exit_code: i32) -> ! {
         crate::async_file::release_owner(task_id);
         crate::block_io::release_owner(task_id);
         crate::async_op::release_owner(task_id);
+        crate::completion_port::release_owner(exiting_pid);
 
         // Interrupts are already disabled here. Use the same process-table
         // guard as every other path so the lock's IRQ-safety contract is not
@@ -3394,6 +3404,7 @@ pub fn signal_event(id: TaskId) -> bool {
         if task.state == TaskState::Blocked {
             task.state = TaskState::Ready;
             task.wake_tick = 0;
+            task.event_deadline = None;
             Some(task.cpu)
         } else {
             task.event_pending = true;
@@ -3415,6 +3426,12 @@ pub fn signal_event(id: TaskId) -> bool {
 /// `signal_event` therefore observes either the pending pre-block window or the
 /// Blocked state; there is no third state in which a wake can disappear.
 pub fn wait_for_event() {
+    wait_for_event_until(u64::MAX);
+}
+
+/// Absolute monotonic tick deadline; u64::MAX means no timeout. Deadline and
+/// event checks share the scheduler lock with wake publication.
+pub fn wait_for_event_until(deadline: u64) {
     let interrupts_were_enabled = x86_64::instructions::interrupts::are_enabled();
     x86_64::instructions::interrupts::disable();
 
@@ -3429,8 +3446,11 @@ pub fn wait_for_event() {
         if scheduler.tasks[slot].event_pending {
             scheduler.tasks[slot].event_pending = false;
             None
+        } else if deadline != u64::MAX && timer::ticks() >= deadline {
+            None
         } else {
             scheduler.tasks[slot].state = TaskState::Blocked;
+            scheduler.tasks[slot].event_deadline = (deadline != u64::MAX).then_some(deadline);
             Some(scheduler.prepare_switch().expect(
                 "event-waiting task has no runnable replacement; scheduler metadata would diverge from physical execution",
             ))
@@ -4397,6 +4417,7 @@ fn complete_process_termination(task_id: TaskId, signal: u8) {
     if process.state == ProcessState::Exited {
         return;
     }
+    crate::completion_port::release_owner(process.id.as_u64());
     process.pending_signal = u64::from(signal);
     process.state = ProcessState::Exited;
     process.exit_code = 128 + i32::from(signal);
