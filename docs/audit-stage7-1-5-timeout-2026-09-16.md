@@ -11,6 +11,8 @@ deadlock cannot be hidden by an unbounded wait.
 
 The termination lifecycle probe is now decoupled from the heavy mmap ELF
 loader: it uses the existing minimal `/bin/true` image, while the mmap image
-continues through its own dedicated pager probe. Focused 2-CPU stress passed
-40/40 and fresh 1/2/4 CPU memory suites passed after that correction. The full
-Stage 7.1.5 matrix remains the final acceptance gate.
+continues through its own dedicated pager probe. A focused 50-run one-CPU
+stress and 40-run two-CPU stress passed after that correction, with fresh 1/2/4
+CPU memory suites also passing. Lifecycle trace points distinguish the
+pre-kill check, kill publication, post-kill observation, and wait/reap
+completion. The full Stage 7.1.5 matrix remains the final acceptance gate.
