@@ -29,8 +29,8 @@ markers:
 - `[S6.HOTPLUG] offline AP: PASSED online=1 mask=0x1`
 
 The durable logs are retained under
-`audit-artifacts/stage6-hotplug-2cpu-1789575380267502400/` and
-`audit-artifacts/stage6-hotplug-4cpu-1789575365467479300/`.
+`audit-artifacts/stage6-hotplug-2cpu-1789575540254189600/` and
+`audit-artifacts/stage6-hotplug-4cpu-1789575572844417400/`.
 
 Warning-denying freestanding Clippy also passed with the hotplug feature:
 
