@@ -7,8 +7,8 @@ mistaken for full production completion.
 | --- | --- | --- |
 | Stages 1–5 | Boot, memory, paging, scheduler, VFS, userspace, storage; 1/2/4-CPU acceptance; bounded Unicode long-filename create/lookup/delete/rename, NFC name normalization, named listing, mounted import listing, directory growth, bounded VFS uid/gid/mode enforcement, WMD1/WMD2 ownership metadata persistence/import and durable file-intent recovery | Non-QEMU hardware qualification/drivers, DMA storage completion, metadata-table capacity beyond the fixed ABI, full data rollback/checksum replay, unclean-shutdown hardware qualification |
 | Stage 6 | Bounded SMP, TLB shootdowns, 1–4 CPU tests, ACPI SRAT CPU-domain discovery, domain-local placement/rebalancing, x2APIC MSR path | General multicore userspace and concurrent I/O, NUMA-aware page allocation, hotplug, APIC-ID-above-255 hardware coverage |
-| Stages 7–9 | Isolation, IPC, capabilities, WovenGuard, ELF W^X | Dynamic libc/linking, complete signals, scheduler-backed threads |
-| Stage 10 | TCP, completion ports, timer/event foundations | Successful Ring-3 timer/event gate and one unified completion path |
+| Stages 7–9 | Isolation, IPC, capability delegation/revocation, WovenGuard, ELF W^X, formal threat model | Dynamic libc/linking, complete signals, scheduler-backed threads |
+| Stage 10 | TCP, completion ports, timer/event foundations, Ring-3 timer/event gate, unified completion path | Broader production driver and hardware qualification |
 | Stage 11 | Process/thread state, notifications, `libwoven`, loader checks, production ASLR | Real scheduler-backed user threads, dynamic relocations, shared libraries, loader TLS, RELRO |
 | Stage 12 | Typed VFS, metadata, checksums, snapshot/mount boundaries, xattrs and restore records | Native WovenFS, journaling/COW disk replay, full data rollback, production AEAD/key vault, mount integration |
 

@@ -119,7 +119,8 @@ The capability model is a strong foundation; it needs to grow from "static per-b
 - [x] User stack guard pages — implemented (`UserStack::guard_base` in `userspace.rs`, verified by a boot self-test). **Correction from an earlier version of this doc**, which claimed these weren't found in the code.
 - [ ] Kernel stack guard pages — user stacks have them (above); the kernel's own double-fault/privilege stacks (`gdt.rs`) do not yet. See `docs/CHATGPT-MILESTONE-PROMPT-2.md` Part 1.
 - [x] W^X enforcement — **already correct, and now regression-tested** for both paths: ELF loading rejects writable+executable segments at parse time (`elf::parse`, covered by `elf_loader_self_test`), and `sys_mmap`/`map_anonymous` hard-code every anonymous mapping to non-executable regardless of the writable flag (covered by the new `mmap_w_xor_x_self_test`, added 2026-09-04). **Correction from an earlier version of this doc**, which incorrectly claimed nothing stopped a writable+executable mmap.
-- [ ] Formal threat model document: what does WovenHat protect against (malicious userspace app, compromised driver, physical access, network attacker)? Write this down before Phase A4/A2 driver isolation decisions are finalized, not after.
+- [x] Formal threat model document; see `docs/threat-model.md` for assets,
+      adversaries, boundaries, assumptions, and residual acceptance gates.
 - [ ] Secure boot chain: measured boot via TPM if targeting real hardware, or at minimum a signed-kernel + signed-initrd verification step.
 - **Definition of done**: a compromised, capability-limited userspace process cannot escalate privilege, exfiltrate another process's file/IPC data, or execute injected code in a writable page — verified by an actual internal red-team pass, not just code review.
 
