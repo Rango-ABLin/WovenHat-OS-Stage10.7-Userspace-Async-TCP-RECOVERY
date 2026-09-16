@@ -133,16 +133,19 @@ pub fn offline_checkpoint(cpu: usize) -> bool {
         return false;
     }
     x86_64::instructions::interrupts::disable();
-    if !task::offline_cpu_checkpoint(cpu) {
-        serial::write_line(format_args!("[S6.HOTPLUG] checkpoint rejected cpu={}", cpu));
-        let _ = OFFLINE_STATE[cpu].compare_exchange(1, 3, Ordering::AcqRel, Ordering::Acquire);
-        x86_64::instructions::interrupts::enable();
-        return false;
-    }
     if OFFLINE_STATE[cpu]
         .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
+        x86_64::instructions::interrupts::enable();
+        return false;
+    }
+    // Claim the transition before changing scheduler ownership. A requester
+    // that times out can cancel only state 1; once state 2 is published, the
+    // AP owns completion and cannot leave a dead current task online.
+    if !task::offline_cpu_checkpoint(cpu) {
+        serial::write_line(format_args!("[S6.HOTPLUG] checkpoint rejected cpu={}", cpu));
+        OFFLINE_STATE[cpu].store(3, Ordering::Release);
         x86_64::instructions::interrupts::enable();
         return false;
     }
