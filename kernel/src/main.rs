@@ -2192,7 +2192,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     // but ProcessState::Exited must not be published until that retirement is
     // complete. wait_process then owns deferred address-space destruction.
     serial::write_line(format_args!("[TERM] create termination target: BEGIN"));
-    let Some(kill_program) = userspace::create_true_process() else {
+    let Some(kill_program) = userspace::create_shell_process() else {
         console.println("TERMINATION TEST IMAGE: LOAD FAILED");
         halt();
     };
@@ -2214,11 +2214,24 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         task::kill_process(kill_pid.as_u64(), 15).map_err(|_| ())
     };
     serial::write_line(format_args!("[TERM] kill result={}", kill_result.is_ok()));
+    let termination_deadline = timer::ticks().wrapping_add(200);
+    while !task::process_exited(kill_pid) && timer::ticks() < termination_deadline {
+        task::yield_now();
+    }
     let exited_after_kill = task::process_exited(kill_pid);
     serial::write_line(format_args!("[TERM] process_exited after kill={}", exited_after_kill));
     let wait_status = task::wait_process(kill_pid.as_u64());
-    serial::write_line(format_args!("[TERM] wait status ok={}", wait_status == Ok(143)));
-    if exited_before_kill || kill_result.is_err() || !exited_after_kill || wait_status != Ok(143) {
+    let wait_ok = wait_status == Ok(143);
+    match wait_status {
+        Ok(code) => serial::write_line(format_args!("[TERM] wait status code={}", code)),
+        Err(task::WaitError::NoSuchChild) => {
+            serial::write_line(format_args!("[TERM] wait status=NO_SUCH_CHILD"))
+        }
+        Err(task::WaitError::StillRunning) => {
+            serial::write_line(format_args!("[TERM] wait status=STILL_RUNNING"))
+        }
+    }
+    if exited_before_kill || kill_result.is_err() || !exited_after_kill || !wait_ok {
         console.println("SCHEDULER-OWNED TERMINATION: FAILED");
         halt();
     }

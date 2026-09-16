@@ -10,7 +10,7 @@ acceptance run and reports queued/completed pager work, so a real scheduler
 deadlock cannot be hidden by an unbounded wait.
 
 The termination lifecycle probe is now decoupled from the heavy mmap ELF
-loader: it uses the existing minimal `/bin/true` image, while the mmap image
+loader: it uses the existing blocking shell image, while the mmap image
 continues through its own dedicated pager probe. A focused 50-run one-CPU
 stress and 40-run two-CPU stress passed after that correction, with fresh 1/2/4
 CPU memory suites also passing. Lifecycle trace points distinguish the
