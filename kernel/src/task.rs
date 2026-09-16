@@ -9,15 +9,15 @@ use spin::Mutex;
 use crate::{
     capability::{Capability, CapabilitySet},
     config::{MAX_FILE_DESCRIPTORS, MAX_PAGER_REQUESTS, MAX_PROCESSES, MAX_TASKS, TASK_STACK_SIZE},
-    gdt, ipc, paging, timer, userspace, vfs, wovenguard,
+    gdt, ipc, irq_lock::{IrqMutex, IrqMutexGuard}, paging, timer, userspace, vfs, wovenguard,
 };
 
 const KERNEL_TASK_ID: TaskId = TaskId(0);
 const IDLE_TASK_ID: TaskId = TaskId(1);
 
-static SCHEDULER: Mutex<Scheduler> = Mutex::new(Scheduler::empty());
-static PROCESS_TABLE: Mutex<[Option<Process>; MAX_PROCESSES]> =
-    Mutex::new([const { None }; MAX_PROCESSES]);
+static SCHEDULER: IrqMutex<Scheduler> = IrqMutex::with_rank(Scheduler::empty(), 10);
+static PROCESS_TABLE: IrqMutex<[Option<Process>; MAX_PROCESSES]> =
+    IrqMutex::with_rank([const { None }; MAX_PROCESSES], 20);
 
 /// Interrupt-safe guard for the global process table.
 ///
@@ -28,8 +28,7 @@ static PROCESS_TABLE: Mutex<[Option<Process>; MAX_PROCESSES]> =
 /// every process-table guard so a holder cannot be involuntarily switched out
 /// on its own CPU. Other CPUs can still run and release the same SMP lock.
 struct ProcessTableGuard {
-    guard: core::mem::ManuallyDrop<spin::MutexGuard<'static, [Option<Process>; MAX_PROCESSES]>>,
-    interrupts_were_enabled: bool,
+    guard: IrqMutexGuard<'static, [Option<Process>; MAX_PROCESSES]>,
 }
 
 impl core::ops::Deref for ProcessTableGuard {
@@ -46,24 +45,8 @@ impl core::ops::DerefMut for ProcessTableGuard {
     }
 }
 
-impl Drop for ProcessTableGuard {
-    fn drop(&mut self) {
-        // Unlock before restoring IF. Otherwise an interrupt could run while
-        // this CPU still owned PROCESS_TABLE and deadlock on the same lock.
-        unsafe { core::mem::ManuallyDrop::drop(&mut self.guard) };
-        if self.interrupts_were_enabled {
-            x86_64::instructions::interrupts::enable();
-        }
-    }
-}
-
 fn process_table_lock() -> ProcessTableGuard {
-    let interrupts_were_enabled = x86_64::instructions::interrupts::are_enabled();
-    x86_64::instructions::interrupts::disable();
-    ProcessTableGuard {
-        guard: core::mem::ManuallyDrop::new(PROCESS_TABLE.lock()),
-        interrupts_were_enabled,
-    }
+    ProcessTableGuard { guard: PROCESS_TABLE.lock() }
 }
 static IDLE_HEARTBEATS: AtomicU64 = AtomicU64::new(0);
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(2);
@@ -4445,29 +4428,44 @@ fn complete_process_termination(task_id: TaskId, signal: u8) {
     crate::async_file::release_owner(task_id);
     crate::block_io::release_owner(task_id);
     crate::async_op::release_owner(task_id);
-    let mut processes = process_table_lock();
-    let Some(process) = processes
-        .iter_mut()
-        .flatten()
-        .find(|process| process.task_id == task_id)
-    else {
-        return;
+    // Mutate process-visible state and take ownership of the file table while
+    // PROCESS_TABLE is held.  Every operation below can acquire another
+    // subsystem lock, so it must run after this guard is dropped; otherwise a
+    // lower-ranked completion or VFS lock would invert PROCESS_TABLE's rank.
+    let (process_id, parent_id, exit_code, mut files) = {
+        let mut processes = process_table_lock();
+        let Some(process) = processes
+            .iter_mut()
+            .flatten()
+            .find(|process| process.task_id == task_id)
+        else {
+            return;
+        };
+        if process.state == ProcessState::Exited {
+            return;
+        }
+        process.pending_signal = u64::from(signal);
+        process.state = ProcessState::Exited;
+        process.exit_code = 128 + i32::from(signal);
+        (
+            process.id,
+            process.parent,
+            process.exit_code,
+            core::mem::take(&mut process.files),
+        )
     };
-    if process.state == ProcessState::Exited {
-        return;
-    }
-    crate::completion_port::release_owner(process.id.as_u64());
-    crate::async_events::release_owner(process.id.as_u64());
-    process.pending_signal = u64::from(signal);
-    process.state = ProcessState::Exited;
-    process.exit_code = 128 + i32::from(signal);
+
+    // These releases may take completion-port, event, VFS, or pipe locks;
+    // keeping them outside PROCESS_TABLE makes the global lock order explicit.
+    crate::completion_port::release_owner(process_id.as_u64());
+    crate::async_events::release_owner(process_id.as_u64());
     let _ = crate::notifications::publish(crate::notifications::Notification {
-        recipient: process.parent.as_u64(),
+        recipient: parent_id.as_u64(),
         kind: crate::notifications::Kind::ChildExit,
-        source: process.id.as_u64(),
-        payload: process.exit_code as u64,
+        source: process_id.as_u64(),
+        payload: exit_code as u64,
     });
-    release_file_table(&mut process.files);
+    release_file_table(&mut files);
 }
 
 /// If this process requested its own termination (for example `kill(getpid(),

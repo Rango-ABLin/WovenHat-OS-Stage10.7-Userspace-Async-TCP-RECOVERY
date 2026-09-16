@@ -11,6 +11,10 @@ impl<T> Mutex<T> {
         assert!(!instructions::interrupts::are_enabled());
         self.0.lock().unwrap()
     }
+    pub fn try_lock(&self) -> Option<MutexGuard<'_, T>> {
+        assert!(!instructions::interrupts::are_enabled());
+        self.0.try_lock().ok()
+    }
 }
 pub mod instructions {
     pub mod interrupts {

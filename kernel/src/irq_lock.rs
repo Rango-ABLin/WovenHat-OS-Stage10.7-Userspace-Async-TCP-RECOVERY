@@ -28,7 +28,12 @@ mod lock_order {
         let cpu = crate::smp::lock_cpu_index();
         let previous_rank = HIGHEST_RANK[cpu].load(Ordering::Relaxed);
         if rank != 0 && previous_rank != 0 && rank < previous_rank {
-            panic!("IrqMutex lock-order inversion");
+            panic!(
+                "IrqMutex lock-order inversion cpu={} requested={} held={}",
+                cpu,
+                rank,
+                previous_rank
+            );
         }
         let depth = DEPTH[cpu].load(Ordering::Relaxed) as usize;
         if depth >= MAX_DEPTH {
@@ -94,6 +99,26 @@ impl<T> IrqMutex<T> {
             // Interrupt state belongs to the acquiring CPU, not another thread.
             _not_send: PhantomData,
         }
+    }
+
+    /// Attempt an interrupt-safe acquisition without spinning. The order
+    /// tracker is entered before probing the mutex so an inversion fails at
+    /// the call site; a failed probe rolls the tracker state back atomically.
+    pub fn try_lock(&self) -> Option<IrqMutexGuard<'_, T>> {
+        let restore_interrupts = interrupts::are_enabled();
+        interrupts::disable();
+        let token = lock_order::enter(self as *const Self as usize, self.rank);
+        let Some(guard) = self.inner.try_lock() else {
+            lock_order::exit(token);
+            if restore_interrupts { interrupts::enable(); }
+            return None;
+        };
+        Some(IrqMutexGuard {
+            guard: Some(guard),
+            restore_interrupts,
+            token: Some(token),
+            _not_send: PhantomData,
+        })
     }
 }
 
