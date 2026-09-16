@@ -334,43 +334,52 @@ fn import_directory(
     for path in metadata_paths {
         let path_hash = fat32::metadata_path_hash(&path);
         let path_tag = fat32::metadata_path_tag(&path);
+        let mut skip_metadata = false;
         if let Some(intent) = fat32::read_journal_intent(device, volume, path_hash, path_tag)
             .ok()
             .flatten()
         {
-            if fat32::write_file_metadata(
-                device,
-                volume,
-                intent.path_hash,
-                intent.path_tag,
-                intent.metadata,
-            )
-            .is_ok()
-                && fat32::remove_journal_intent(device, volume, path_hash, path_tag).is_ok()
-            {
-                recovered_metadata = true;
+            let mut bytes = [0u8; vfs::NODE_CAPACITY];
+            let checksum_ok = fat32::resolve_path(device, volume, &path[5..])
+                .ok()
+                .and_then(|entry| fat32::read_file(device, volume, entry, &mut bytes).ok())
+                .is_some_and(|length| checksum_bytes(&bytes[..length]) == intent.checksum);
+            if checksum_ok {
+                if fat32::write_file_metadata(
+                    device,
+                    volume,
+                    intent.path_hash,
+                    intent.path_tag,
+                    intent.metadata,
+                )
+                .is_ok()
+                    && fat32::remove_journal_intent(device, volume, path_hash, path_tag).is_ok()
+                {
+                    recovered_metadata = true;
+                }
+            } else {
+                // Keep the intent for a later repair pass; never apply metadata
+                // over data that does not match the recorded transaction.
+                skip_metadata = true;
             }
         }
-        if let Some(metadata) = fat32::read_file_metadata(
-            device,
-            volume,
-            path_hash,
-            path_tag,
-        )
-        .ok()
-        .flatten()
-        {
-            let _ = vfs::set_metadata(&path, metadata.uid, metadata.gid, metadata.mode);
-            if fat32::finalize_file_metadata(
+        if !skip_metadata {
+            if let Some(metadata) = fat32::read_file_metadata(
                 device,
                 volume,
-                fat32::metadata_path_hash(&path),
-                fat32::metadata_path_tag(&path),
+                path_hash,
+                path_tag,
             )
-                .ok()
-                .unwrap_or(false)
+            .ok()
+            .flatten()
             {
-                recovered_metadata = true;
+                let _ = vfs::set_metadata(&path, metadata.uid, metadata.gid, metadata.mode);
+                if fat32::finalize_file_metadata(device, volume, path_hash, path_tag)
+                    .ok()
+                    .unwrap_or(false)
+                {
+                    recovered_metadata = true;
+                }
             }
         }
     }
@@ -385,6 +394,12 @@ fn import_directory(
         )?);
     }
     Ok(mounted)
+}
+
+fn checksum_bytes(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x1000_0000_01b3)
+    })
 }
 fn join_path(prefix: &str, name: &str, out: &mut [u8]) -> Option<usize> {
     let slash = !prefix.ends_with('/');
