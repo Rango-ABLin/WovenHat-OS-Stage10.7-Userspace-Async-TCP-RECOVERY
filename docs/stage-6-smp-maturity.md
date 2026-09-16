@@ -46,8 +46,9 @@ The Stage-6 policy is intentionally simple and deterministic:
 - wake the destination with a reschedule IPI.
 
 This is a foundation policy, not a final production scheduler. It has bounded
-SRAT CPU-domain preference, but no NUMA page-allocation policy, cache-affinity
-scoring, heterogeneous-core model, deadline classes, or work stealing.
+SRAT CPU-domain preference and the frame allocator applies the same preference
+with safe fallback, but there is no cache-affinity scoring, heterogeneous-core
+model, deadline classes, or work stealing.
 
 ## Acceptance markers
 
