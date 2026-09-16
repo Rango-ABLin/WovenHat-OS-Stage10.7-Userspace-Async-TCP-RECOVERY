@@ -105,7 +105,7 @@ Virtio-net and the IPv4/socket stack already exist. Broader drivers, interrupt-d
 
 - [ ] NIC driver (virtio-net for VM/CI parity, e1000 or similar for broader hardware)
 - [ ] Either integrate `smoltcp` (no_std-friendly Rust TCP/IP stack) or write a minimal one: ARP, IPv4, ICMP, UDP, TCP
-- [ ] Socket syscalls (`socket`, `bind`, `connect`, `send`, `recv`, `listen`, `accept`) layered onto your existing capability model (a new `Capability::NetworkIo` bit — you already reserved this exact idea in earlier docs)
+- [x] Socket syscalls layered onto the capability model with `Capability::NetworkIo`.
 - [ ] DNS resolution (userspace, not kernel)
 - [ ] Basic firewall/packet-filter hooks tied into `audit.rs` so network capability grants are auditable like file/IPC access already is
 - **Definition of done**: two WovenHat instances can exchange TCP traffic; a userspace program can fetch a resource over HTTP.
@@ -113,9 +113,9 @@ Virtio-net and the IPv4/socket stack already exist. Broader drivers, interrupt-d
 ### Phase A5: Security & Isolation Maturity
 The capability model is a strong foundation; it needs to grow from "static per-boot bitset" to a real security architecture.
 
-- [ ] **Capability delegation & revocation** — right now capabilities are fixed at process creation (`kernel_bootstrap()` / `userspace()`). A mature model needs capabilities to be passed via IPC (classic seL4-style endpoint capabilities), narrowed, and revoked.
-- [ ] Per-file/per-resource capabilities instead of the current coarse `FileRead`/`FileWrite` bits — otherwise any process with `FileWrite` can write *any* file it can open.
-- [ ] Address Space Layout Randomization (ASLR) for user segments — your ELF loader already validates addresses carefully; randomizing `mapping_start` within the user address range is a natural next step. As of 2026-09-04, `kernel/src/entropy.rs` provides a real RDRAND-backed random source (previously RDRAND was detected but never used anywhere) — this was the missing prerequisite, not the ELF/mmap validation logic itself. See `docs/CHATGPT-MILESTONE-PROMPT.md` for a scoped implementation plan.
+- [x] Capability delegation and revocation over IPC with narrowed rights and WovenGuard lineage checks.
+- [x] UID/GID/mode file permission checks are enforced at VFS mutation and I/O boundaries; per-inode capability tokens remain a future hardening item.
+- [x] Address Space Layout Randomization (ASLR) for production ELF, stack, and mmap bases; see `docs/audit-aslr-2026-09-16.md`.
 - [x] User stack guard pages — implemented (`UserStack::guard_base` in `userspace.rs`, verified by a boot self-test). **Correction from an earlier version of this doc**, which claimed these weren't found in the code.
 - [ ] Kernel stack guard pages — user stacks have them (above); the kernel's own double-fault/privilege stacks (`gdt.rs`) do not yet. See `docs/CHATGPT-MILESTONE-PROMPT-2.md` Part 1.
 - [x] W^X enforcement — **already correct, and now regression-tested** for both paths: ELF loading rejects writable+executable segments at parse time (`elf::parse`, covered by `elf_loader_self_test`), and `sys_mmap`/`map_anonymous` hard-code every anonymous mapping to non-executable regardless of the writable flag (covered by the new `mmap_w_xor_x_self_test`, added 2026-09-04). **Correction from an earlier version of this doc**, which incorrectly claimed nothing stopped a writable+executable mmap.
