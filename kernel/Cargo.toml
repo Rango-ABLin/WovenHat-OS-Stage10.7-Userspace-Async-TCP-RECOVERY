@@ -41,5 +41,6 @@ smoltcp = { version = "0.14", default-features = false, features = [
     "socket-dhcpv4",
     "socket-dns",
 ] }
+unicode-normalization = { version = "0.1.25", default-features = false }
 [lints.rust]
 warnings = "deny"

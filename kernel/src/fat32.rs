@@ -1,4 +1,5 @@
 use crate::block::{BlockDevice, Error as BlockError, SECTOR_SIZE};
+use unicode_normalization::UnicodeNormalization;
 
 const FAT32_MIN_CLUSTERS: u32 = 65_525;
 const DIRECTORY_ENTRY_SIZE: usize = 32;
@@ -898,6 +899,9 @@ pub fn find_in_directory_name(
     dir_cluster: u32,
     name: &str,
 ) -> Result<DirectoryEntry, Error> {
+    let mut normalized = [0u8; MAX_LONG_NAME];
+    let normalized_len = normalize_name(name, &mut normalized).ok_or(Error::NameTooLong)?;
+    let name = core::str::from_utf8(&normalized[..normalized_len]).map_err(|_| Error::InvalidPath)?;
     let short = encode_short_name(name);
     let mut cluster = dir_cluster;
     let mut visited = [0_u32; MAX_DIRECTORY_CLUSTERS];
@@ -961,7 +965,10 @@ pub fn find_in_directory_name(
                         expected_checksum,
                         &mut decoded,
                     )
-                    .is_some_and(|length| decoded[..length].eq_ignore_ascii_case(name.as_bytes()));
+                    .is_some_and(|length| {
+                        decoded[..length].eq_ignore_ascii_case(name.as_bytes())
+                            || decoded[..length].eq(name.as_bytes())
+                    });
                 record_count = 0;
                 if alias_matches || lfn_matches {
                     return Ok(entry);
@@ -994,6 +1001,9 @@ pub fn encode_long_name(
     short: &[u8; 11],
     out: &mut [[u8; DIRECTORY_ENTRY_SIZE]; MAX_LFN_ENTRIES],
 ) -> Option<usize> {
+    let mut normalized = [0u8; MAX_LONG_NAME];
+    let normalized_len = normalize_name(name, &mut normalized)?;
+    let name = core::str::from_utf8(&normalized[..normalized_len]).ok()?;
     let bytes = name.as_bytes();
     if bytes.is_empty()
         || bytes.len() > MAX_LONG_NAME
@@ -1065,6 +1075,21 @@ pub fn encode_long_name(
         }
     }
     Some(count)
+}
+
+fn normalize_name(input: &str, out: &mut [u8]) -> Option<usize> {
+    let mut written = 0usize;
+    for character in input.nfc() {
+        let mut encoded = [0u8; 4];
+        let bytes = character.encode_utf8(&mut encoded).as_bytes();
+        let end = written.checked_add(bytes.len())?;
+        if end > out.len() {
+            return None;
+        }
+        out[written..end].copy_from_slice(bytes);
+        written = end;
+    }
+    (written != 0).then_some(written)
 }
 
 /// Decode logical-ordinal LFN records into the bounded ASCII name buffer.
@@ -3547,8 +3572,10 @@ fn long_filename_self_test() -> bool {
             entry.entry.short_name[0] == b'W' && entry.long_name_str() == Some(name)
         });
     let unicode_name = "caf\u{e9} \u{1f600}.txt";
+    let unicode_decomposed = "cafe\u{301} \u{1f600}.txt";
     let unicode_ok = create_path_file(&mut disk, volume, unicode_name, b"u").is_ok()
-        && resolve_path(&mut disk, volume, unicode_name).is_ok();
+        && resolve_path(&mut disk, volume, unicode_name).is_ok()
+        && resolve_path(&mut disk, volume, unicode_decomposed).is_ok();
     let renamed_name = "Renamed long filename.txt";
     let rename_ok = rename_path(&mut disk, volume, name, renamed_name).is_ok()
         && resolve_path(&mut disk, volume, name).is_err_and(|error| error == Error::NotFound)
