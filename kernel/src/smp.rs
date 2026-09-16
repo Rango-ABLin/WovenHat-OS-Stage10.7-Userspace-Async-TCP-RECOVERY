@@ -283,6 +283,10 @@ pub fn start(topology: Option<crate::hal::acpi::Summary>, offset: u64) {
     );
     enable_local();
     IDS[0].store(local_apic_id(), Ordering::Release);
+    // Legacy IOAPIC keyboard delivery carries an 8-bit destination. x2APIC
+    // remains usable for peer IPIs, but a BSP ID above that width cannot be
+    // routed by this bounded IOAPIC path.
+    assert!(IDS[0].load(Ordering::Relaxed) <= u8::MAX as u32, "IOAPIC BSP APIC ID");
     write(0x3e0, 3);
     write(0x380, u32::MAX);
     delay_10ms();
