@@ -15,6 +15,9 @@ stage10-8-test = ["qemu-test"]
 stage10-9-test = ["qemu-test"]
 stage11-1-test = ["qemu-test"]
 stage11-2-test = ["qemu-test"]
+stage11-3-test = ["qemu-test"]
+stage11-4-test = ["qemu-test"]
+stage11-5-test = ["qemu-test"]
 
 [dependencies]
 bootloader_api = "0.11.17"

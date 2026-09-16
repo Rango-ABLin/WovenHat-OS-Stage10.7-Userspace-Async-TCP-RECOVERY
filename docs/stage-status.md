@@ -73,3 +73,9 @@ thread-local errno state passed build, Clippy, host tests, and 1/2/4-CPU QEMU
 validation. See [audit](audit-stage11-2-2026-09-16.md).
 
 Next: Stage 11.3 structured notifications and lifecycle events.
+
+## Stages 11.3–11.5 — accepted on 2026-09-16
+
+Structured notifications, the `libwoven` userspace API boundary, and hardened
+ELF/W^X loader validation passed their individual 1/2/4-CPU QEMU gates,
+freestanding Clippy, and host tests. See [audit](audit-stage11-3-5-2026-09-16.md).

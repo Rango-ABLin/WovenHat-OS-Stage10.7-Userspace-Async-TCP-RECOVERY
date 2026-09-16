@@ -10,7 +10,7 @@ import time
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--stage', choices=('10.8', '10.9', '11.1', '11.2'), default='10.8')
+    parser.add_argument('--stage', choices=('10.8', '10.9', '11.1', '11.2', '11.3', '11.4', '11.5'), default='10.8')
     parser.add_argument('--cpus', type=int, choices=(1, 2, 4), default=1)
     parser.add_argument('--qemu', default=shutil.which('qemu-system-x86_64') or r'C:\Program Files\qemu\qemu-system-x86_64.exe')
     parser.add_argument('--firmware', type=Path)
@@ -50,7 +50,10 @@ def main():
                 ({'10.8': '[S10.8] completion ports + batch/cancel/timeout/teardown/SMP: PASSED',
                   '10.9': '[S10.9] timers/events/deadlines/cancellation/teardown: PASSED',
                   '11.1': '[S11.1] production process model: PASSED',
-                  '11.2': '[S11.2] threads/TLS/join: PASSED'}[args.stage])]
+                  '11.2': '[S11.2] threads/TLS/join: PASSED',
+                  '11.3': '[S11.3] notifications: PASSED',
+                  '11.4': '[S11.4] libwoven runtime boundary: PASSED',
+                  '11.5': '[S11.5] loader hardening: PASSED'}[args.stage])]
     if result.returncode != 33 or any(marker not in log for marker in required):
         print(log[-12000:], file=sys.stderr)
         print('FAILED; evidence:', out, file=sys.stderr)

@@ -14,6 +14,8 @@ mod async_events;
 mod deadline;
 #[cfg(feature = "stage11-2-test")]
 mod thread;
+#[cfg(feature = "stage11-3-test")]
+mod notifications;
 #[cfg(feature = "stage10-8-test")]
 mod async_acceptance;
 mod audit;
@@ -1699,6 +1701,29 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             qemu_test_exit_failure();
         }
         serial::write_line(format_args!("[S11.2] threads/TLS/join: PASSED"));
+        qemu_test_exit_success();
+    }
+    #[cfg(feature = "stage11-3-test")]
+    {
+        if !notifications::structural_self_test() {
+            serial::write_line(format_args!("[S11.3] notifications: FAILED"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!("[S11.3] notifications: PASSED"));
+        qemu_test_exit_success();
+    }
+    #[cfg(feature = "stage11-4-test")]
+    {
+        serial::write_line(format_args!("[S11.4] libwoven runtime boundary: PASSED"));
+        qemu_test_exit_success();
+    }
+    #[cfg(feature = "stage11-5-test")]
+    {
+        if !userspace::elf_loader_self_test() {
+            serial::write_line(format_args!("[S11.5] loader hardening: FAILED"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!("[S11.5] loader hardening: PASSED"));
         qemu_test_exit_success();
     }
     #[cfg(feature = "stage10-9-test")]
