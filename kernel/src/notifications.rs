@@ -44,9 +44,38 @@ pub fn receive_for(recipient: u64) -> Option<Notification> {
     }
     None
 }
+
+/// Remove queued notifications that can no longer be delivered because their
+/// recipient process has exited. FIFO order for all remaining recipients is
+/// preserved and the reclaimed slots become available immediately.
+pub fn discard_recipient(recipient: u64) -> usize {
+    let mut q = QUEUE.lock();
+    let mut kept = [EMPTY; CAPACITY];
+    let mut kept_len = 0;
+    let mut discarded = 0;
+    for offset in 0..q.len {
+        let index = (q.head + offset) % CAPACITY;
+        if let Some(note) = q.entries[index].take() {
+            if note.recipient == recipient {
+                discarded += 1;
+            } else {
+                kept[kept_len] = Some(note);
+                kept_len += 1;
+            }
+        }
+    }
+    q.entries = kept;
+    q.head = 0;
+    q.tail = kept_len % CAPACITY;
+    q.len = kept_len;
+    discarded
+}
+
 #[cfg(feature = "stage11-3-test")]
 pub fn structural_self_test() -> bool {
     while receive().is_some() {}
     let note = Notification { recipient: 9, kind: Kind::ChildExit, source: 7, payload: 23 };
     publish(note) && receive_for(8).is_none() && receive_for(9) == Some(note) && receive().is_none()
+        && publish(note) && publish(Notification { recipient: 10, ..note })
+        && discard_recipient(9) == 1 && receive_for(10).is_some() && receive().is_none()
 }

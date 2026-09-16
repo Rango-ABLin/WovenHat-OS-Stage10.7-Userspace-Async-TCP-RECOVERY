@@ -2203,6 +2203,7 @@ pub fn exit_current_process(exit_code: i32) -> ! {
         // Reclaim all registry records before the process becomes a zombie;
         // generation advancement invalidates handles held by the exiting task.
         crate::thread::reap_owner(exiting_pid);
+        crate::notifications::discard_recipient(exiting_pid);
 
         // Interrupts are already disabled here. Use the same process-table
         // guard as every other path so the lock's IRQ-safety contract is not
