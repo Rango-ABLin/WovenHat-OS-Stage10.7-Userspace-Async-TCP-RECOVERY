@@ -368,8 +368,7 @@ pub fn resolve_path(
     let mut cluster = volume.root_cluster;
     let mut current = None;
     for (i, component) in parts[..part_count].iter().enumerate() {
-        let short = encode_short_name(component).ok_or(Error::NotFound)?;
-        let entry = find_in_directory(device, volume, cluster, &short)?;
+        let entry = find_in_directory_name(device, volume, cluster, component)?;
         let is_last = i + 1 == part_count;
         if !is_last {
             if entry.attributes & DIRECTORY_ATTRIBUTE == 0 || entry.first_cluster < 2 {
@@ -405,6 +404,90 @@ pub fn encode_short_name(name: &str) -> Option<[u8; 11]> {
         out[8 + i] = to_fat_char(byte)?;
     }
     Some(out)
+}
+
+/// Look up either an 8.3 alias or an ASCII long filename in a directory.
+pub fn find_in_directory_name(
+    device: &mut impl BlockDevice,
+    volume: Volume,
+    dir_cluster: u32,
+    name: &str,
+) -> Result<DirectoryEntry, Error> {
+    let short = encode_short_name(name);
+    let mut cluster = dir_cluster;
+    let mut visited = [0_u32; MAX_DIRECTORY_CLUSTERS];
+    let mut visited_count = 0;
+    let mut records = [[0_u8; DIRECTORY_ENTRY_SIZE]; MAX_LFN_ENTRIES];
+    let mut record_count = 0;
+    let mut expected_checksum = 0;
+    let mut sector = [0_u8; SECTOR_SIZE];
+    loop {
+        if visited_count == visited.len() || visited[..visited_count].contains(&cluster) {
+            return Err(if visited_count == visited.len() {
+                Error::ChainTooLong
+            } else {
+                Error::ChainLoop
+            });
+        }
+        visited[visited_count] = cluster;
+        visited_count += 1;
+        let cluster_lba = volume.cluster_lba(cluster)?;
+        for sector_index in 0..volume.sectors_per_cluster as u64 {
+            device
+                .read_sector(cluster_lba + sector_index, &mut sector)
+                .map_err(Error::Block)?;
+            for index in 0..DIRECTORY_ENTRIES_PER_SECTOR {
+                let offset = index * DIRECTORY_ENTRY_SIZE;
+                let first = sector[offset];
+                if first == 0 {
+                    return Err(Error::NotFound);
+                }
+                if first == 0xe5 {
+                    record_count = 0;
+                    continue;
+                }
+                let attributes = sector[offset + 11];
+                if attributes == LONG_NAME_ATTRIBUTE {
+                    let ordinal = first & 0x1f;
+                    if ordinal == 0 || ordinal as usize > MAX_LFN_ENTRIES {
+                        record_count = 0;
+                        continue;
+                    }
+                    let mut record = [0_u8; DIRECTORY_ENTRY_SIZE];
+                    record.copy_from_slice(&sector[offset..offset + DIRECTORY_ENTRY_SIZE]);
+                    records[ordinal as usize - 1] = record;
+                    record_count = record_count.max(ordinal as usize);
+                    if first & 0x40 != 0 {
+                        expected_checksum = record[13];
+                    }
+                    continue;
+                }
+                if attributes & VOLUME_ID_ATTRIBUTE != 0 {
+                    record_count = 0;
+                    continue;
+                }
+                let entry = directory_entry_from_sector(&sector, offset)?;
+                let alias_matches = short.is_some_and(|candidate| candidate == entry.short_name);
+                let mut decoded = [0u8; MAX_LONG_NAME];
+                let lfn_matches = record_count != 0
+                    && decode_long_name(
+                        &records,
+                        record_count,
+                        expected_checksum,
+                        &mut decoded,
+                    )
+                    .is_some_and(|length| decoded[..length].eq_ignore_ascii_case(name.as_bytes()));
+                record_count = 0;
+                if alias_matches || lfn_matches {
+                    return Ok(entry);
+                }
+            }
+        }
+        cluster = match next_cluster(device, volume, cluster)? {
+            ClusterLink::Next(next) => next,
+            ClusterLink::End => return Err(Error::NotFound),
+        };
+    }
 }
 
 /// Compute the FAT long-filename checksum for an 8.3 alias.
@@ -471,6 +554,45 @@ pub fn encode_long_name(
         }
     }
     Some(count)
+}
+
+/// Decode logical-ordinal LFN records into the bounded ASCII name buffer.
+pub fn decode_long_name(
+    records: &[[u8; DIRECTORY_ENTRY_SIZE]; MAX_LFN_ENTRIES],
+    count: usize,
+    checksum: u8,
+    out: &mut [u8],
+) -> Option<usize> {
+    if count == 0 || count > records.len() || out.is_empty() {
+        return None;
+    }
+    let mut written = 0;
+    for ordinal in 1..=count {
+        let record = &records[ordinal - 1];
+        if record[0] & 0x1f != ordinal as u8
+            || record[11] != LONG_NAME_ATTRIBUTE
+            || record[13] != checksum
+        {
+            return None;
+        }
+        for index in 0..LFN_CHARS_PER_ENTRY {
+            let offset = match index {
+                0..=4 => 1 + index * 2,
+                5..=10 => 14 + (index - 5) * 2,
+                _ => 28 + (index - 11) * 2,
+            };
+            let word = u16::from_le_bytes([record[offset], record[offset + 1]]);
+            if word == 0 {
+                return Some(written);
+            }
+            if word == 0xffff || !(0x20..=0x7e).contains(&word) || written == out.len() {
+                return None;
+            }
+            out[written] = word as u8;
+            written += 1;
+        }
+    }
+    Some(written)
 }
 
 fn to_fat_char(byte: u8) -> Option<u8> {
@@ -2101,6 +2223,21 @@ pub fn self_test() -> bool {
         && lfn_records[1][0] == 0x01
         && lfn_records[0][11] == LONG_NAME_ATTRIBUTE
         && lfn_records[0][13] == long_name_checksum(b"ALONGN~1TXT");
+    let mut decoded_lfn = [0u8; MAX_LONG_NAME];
+    let lfn_round_trip = lfn_count.is_some_and(|count| {
+        let mut logical_records = [[0u8; DIRECTORY_ENTRY_SIZE]; MAX_LFN_ENTRIES];
+        for record in lfn_records.iter().take(count) {
+            let ordinal = (record[0] & 0x1f) as usize;
+            logical_records[ordinal - 1] = *record;
+        }
+        decode_long_name(
+            &logical_records,
+            count,
+            long_name_checksum(b"ALONGN~1TXT"),
+            &mut decoded_lfn,
+        ) == Some("A long filename.txt".len())
+            && decoded_lfn[.."A long filename.txt".len()] == *b"A long filename.txt"
+    });
 
     let mut invalid = TestDisk {
         valid_signature: false,
@@ -2132,6 +2269,7 @@ pub fn self_test() -> bool {
 
     valid
         && lfn_valid
+        && lfn_round_trip
         && invalid_rejected
         && cycle_rejected
         && root_cycle_rejected
