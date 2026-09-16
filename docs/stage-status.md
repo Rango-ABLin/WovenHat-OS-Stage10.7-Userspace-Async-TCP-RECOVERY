@@ -52,5 +52,8 @@ are implemented under bounded process ownership. The 1/2/4-CPU QEMU gate,
 build, warning-denying Clippy and Rust regressions passed. See
 [audit](audit-stage10-9-2026-09-16.md).
 
-Stage 10.10 runtime integration remains before Stage 10 can close; Stage 11
-follows that closure.
+## Stage 10.10 — accepted on 2026-09-16
+
+The aggregate gate validates the Stage 10.8 completion architecture together
+with Stage 10.9 timers/events on 1, 2, and 4 CPUs. All six boots passed with
+exit 33 and retained serial evidence. Stage 10 is closed; Stage 11 follows.
