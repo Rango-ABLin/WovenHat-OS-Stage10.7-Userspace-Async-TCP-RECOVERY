@@ -6,6 +6,17 @@ fully complete while a roadmap requirement remains open.
 
 Authoritative development sequence: [supplied Stage 10.7–36 roadmap](master-development-roadmap.md).
 
+## Stage 6 — accepted on 2026-09-16
+
+The bounded SMP foundation passed the complete release matrix: warning-denying
+kernel/host Clippy, all Rust host tests, 1/2/4-CPU memory/storage/network
+gates, legacy PIC fallback, 4-CPU release gates, and shell/SMP smoke. See
+[the Stage 6 audit](audit-stage6-2026-09-16.md).
+
+General multicore userspace, concurrent device/filesystem service execution,
+NUMA, CPU hotplug, x2APIC, and production lock dependency tracking remain
+explicit deferred requirements in the Stage 6 contract.
+
 ## Stage 10.7 — accepted on 2026-09-16
 
 The imported recovery source is preserved in Git commit `49e789d`. That commit
