@@ -10,7 +10,7 @@ mistaken for full production completion.
 | Stages 7–9 | Isolation, IPC, capability delegation/revocation, WovenGuard, ELF W^X, formal threat model | Dynamic libc/linking, complete signals, scheduler-backed threads |
 | Stage 10 | TCP, completion ports, timer/event foundations, Ring-3 timer/event gate, unified completion path | Broader production driver and hardware qualification |
 | Stage 11 | Process/thread state, notifications, `libwoven`, loader checks, production ASLR | Real scheduler-backed user threads, dynamic relocations, shared libraries, loader TLS, RELRO |
-| Stage 12 | Typed VFS, metadata, checksums, snapshot/mount boundaries, xattrs and restore records | Native WovenFS, journaling/COW disk replay, full data rollback, production AEAD/key vault, mount integration |
+| Stage 12 | Typed VFS, metadata, checksums, snapshot/mount boundaries, xattrs and restore records, ChaCha20-Poly1305 envelope and bounded revocable key vault | Native WovenFS, journaling/COW disk replay, full data rollback, measured/persistent key provisioning and encrypted-volume mount integration |
 
 For every open item we will add implementation, focused host tests, 1/2/4 CPU
 QEMU tests, and an audit entry. A stage is production-complete only when every

@@ -122,8 +122,11 @@ Next: Stage 13.2 production PCIe support.
 
 WovenFS metadata/integrity, volume-integrity envelope boundaries, snapshots,
 and storage-management inventory each passed their 1/2/4-CPU gates. See
-[audit](audit-stage12-2-5-2026-09-16.md). Production AEAD and key-vault work
-remains open before encrypted volumes are security-complete.
+[audit](audit-stage12-2-5-2026-09-16.md). Production AEAD now passes the
+isolated 1/2/4-CPU gate with a bounded revocable key vault; see
+[audit](audit-volume-crypto-2026-09-16.md). Measured key provisioning,
+persistent key storage, rotation policy, and encrypted-volume mount integration
+remain open before encrypted volumes are security-complete.
 
 ## Stage 7.1.5 - accepted on 2026-09-16
 

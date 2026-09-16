@@ -208,6 +208,10 @@ encrypted volumes
 per-user keys
 secure key handling
 authenticated encryption
+
+The kernel now provides the authenticated-encryption envelope and a bounded,
+generation-safe revocable key vault. Measured key provisioning, persistent key
+storage, rotation policy, and encrypted-volume mount integration remain open.
 12.4 — Snapshots
 
 Implement filesystem snapshots.
