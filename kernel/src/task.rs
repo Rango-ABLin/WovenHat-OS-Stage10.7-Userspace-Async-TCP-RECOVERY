@@ -1960,6 +1960,16 @@ pub fn current_credentials() -> Credentials {
         .map_or(Credentials::ROOT, |process| process.credentials)
 }
 
+/// Return the active process credentials without panicking during early boot.
+pub fn current_credentials_if_running() -> Option<Credentials> {
+    let task_id = current_task_id_if_running()?;
+    process_table_lock()
+        .iter()
+        .flatten()
+        .find(|process| process.task_id == task_id)
+        .map(|process| process.credentials)
+}
+
 pub fn process_credentials(id: ProcessId) -> Option<Credentials> {
     process_table_lock()
         .iter()

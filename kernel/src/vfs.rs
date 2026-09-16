@@ -34,6 +34,9 @@ struct Node {
     backing: Option<DiskPath>,
     length: usize,
     writable: bool,
+    uid: u32,
+    gid: u32,
+    mode: u16,
     kind: NodeKind,
     occupied: bool,
 }
@@ -47,6 +50,9 @@ impl Node {
             backing: None,
             length: 0,
             writable: false,
+            uid: 0,
+            gid: 0,
+            mode: 0,
             kind: NodeKind::File,
             occupied: false,
         }
@@ -67,6 +73,7 @@ impl Node {
         node.path_length = path.len();
         node.length = data.len();
         node.writable = writable;
+        node.mode = if writable { 0o666 } else { 0o444 };
         node.kind = NodeKind::File;
         node.occupied = true;
         node
@@ -82,6 +89,7 @@ impl Node {
         node.path_length = path.len();
         node.kind = NodeKind::Directory;
         node.writable = true;
+        node.mode = 0o755;
         node.occupied = true;
         node
     }
@@ -97,10 +105,14 @@ impl Node {
 
 /// Metadata returned by `stat`.
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 pub struct Stat {
     pub kind: NodeKind,
     pub size: usize,
     pub writable: bool,
+    pub uid: u32,
+    pub gid: u32,
+    pub mode: u16,
 }
 
 /// One directory entry returned by `readdir`.
@@ -130,6 +142,7 @@ impl Registry {
         nodes[0] = Node::directory(b"/");
         nodes[1] = Node::directory(b"/etc");
         nodes[2] = Node::directory(b"/tmp");
+        nodes[2].mode = 0o1777;
         nodes[3] = Node::directory(b"/mnt");
         nodes[4] = Node::directory(b"/bin");
         nodes[5] = Node::with_data(b"/etc/motd", b"Welcome to WovenHat OS.\n", false);
@@ -161,12 +174,15 @@ impl Registry {
         // Parent directory must exist (except for root itself).
         if path != "/" {
             let parent = parent_path(path).ok_or(Error::InvalidPath)?;
-            if !self
+            let Some(parent_node) = self
                 .nodes
                 .iter()
-                .any(|n| n.matches(parent) && n.kind == NodeKind::Directory)
-            {
+                .find(|n| n.matches(parent) && n.kind == NodeKind::Directory)
+            else {
                 return Err(Error::NotFound);
+            };
+            if !access_allowed(parent_node, true) {
+                return Err(Error::ReadOnly);
             }
         }
         let index = self
@@ -180,6 +196,11 @@ impl Registry {
         node.data[..data.len()].copy_from_slice(data);
         node.length = data.len();
         node.writable = writable;
+        let credentials = crate::task::current_credentials_if_running()
+            .unwrap_or(crate::task::Credentials::ROOT);
+        node.uid = credentials.uid;
+        node.gid = credentials.gid;
+        node.mode = if writable { 0o666 } else { 0o444 };
         node.kind = NodeKind::File;
         node.occupied = true;
         Ok(index)
@@ -194,12 +215,15 @@ impl Registry {
             return Err(Error::AlreadyExists);
         }
         let parent = parent_path(path).ok_or(Error::InvalidPath)?;
-        if !self
+        let Some(parent_node) = self
             .nodes
             .iter()
-            .any(|n| n.matches(parent) && n.kind == NodeKind::Directory)
-        {
+            .find(|n| n.matches(parent) && n.kind == NodeKind::Directory)
+        else {
             return Err(Error::NotFound);
+        };
+        if !access_allowed(parent_node, true) {
+            return Err(Error::ReadOnly);
         }
         let index = self
             .nodes
@@ -211,6 +235,10 @@ impl Registry {
         // directory() copies from a slice; path may be longer than what const fn saw.
         node.path[..path.len()].copy_from_slice(path.as_bytes());
         node.path_length = path.len();
+        let credentials = crate::task::current_credentials_if_running()
+            .unwrap_or(crate::task::Credentials::ROOT);
+        node.uid = credentials.uid;
+        node.gid = credentials.gid;
         Ok(index)
     }
 
@@ -231,6 +259,15 @@ impl Registry {
             .iter()
             .position(|node| node.matches(path))
             .ok_or(Error::NotFound)?;
+        let parent = parent_path(path).ok_or(Error::InvalidPath)?;
+        let parent_node = self
+            .nodes
+            .iter()
+            .find(|node| node.matches(parent) && node.kind == NodeKind::Directory)
+            .ok_or(Error::NotFound)?;
+        if !access_allowed(parent_node, true) {
+            return Err(Error::ReadOnly);
+        }
         let node = &self.nodes[index];
         // Refuse to remove non-empty directories.
         if node.kind == NodeKind::Directory {
@@ -289,6 +326,14 @@ impl Registry {
             .any(|n| n.matches(parent) && n.kind == NodeKind::Directory)
         {
             return Err(Error::NotFound);
+        }
+        let parent_node = self
+            .nodes
+            .iter()
+            .find(|node| node.matches(parent) && node.kind == NodeKind::Directory)
+            .ok_or(Error::NotFound)?;
+        if !access_allowed(parent_node, true) {
+            return Err(Error::ReadOnly);
         }
         let directory = self.nodes[index].kind == NodeKind::Directory;
         // Preflight every resulting path before changing any node. Keep node indices
@@ -374,7 +419,7 @@ impl Registry {
             if node.kind != NodeKind::File {
                 return Err(Error::AlreadyExists);
             }
-            if !node.writable {
+            if !node.writable || !access_allowed(node, true) {
                 return Err(Error::ReadOnly);
             }
             node.backing = None;
@@ -396,10 +441,16 @@ impl Registry {
             .iter()
             .find(|node| node.matches(path))
             .ok_or(Error::NotFound)?;
+        if !access_allowed(node, false) {
+            return Err(Error::ReadOnly);
+        }
         Ok(Stat {
             kind: node.kind,
             size: node.length,
             writable: node.writable,
+            uid: node.uid,
+            gid: node.gid,
+            mode: node.mode,
         })
     }
 
@@ -411,6 +462,9 @@ impl Registry {
             .iter()
             .find(|node| node.matches(dir_path) && node.kind == NodeKind::Directory)
             .ok_or(Error::NotFound)?;
+        if !access_allowed(dir, false) {
+            return Err(Error::ReadOnly);
+        }
         let dir_path = dir.path_str();
 
         let mut seen = 0usize;
@@ -434,6 +488,23 @@ impl Registry {
         }
         Err(Error::NotFound)
     }
+}
+
+fn access_allowed(node: &Node, write: bool) -> bool {
+    let credentials = crate::task::current_credentials_if_running()
+        .unwrap_or(crate::task::Credentials::ROOT);
+    if credentials.is_root() {
+        return true;
+    }
+    let shift = if credentials.uid == node.uid {
+        6
+    } else if credentials.gid == node.gid {
+        3
+    } else {
+        0
+    };
+    let mask = if write { 0o2 } else { 0o4 };
+    ((node.mode >> shift) & mask) != 0
 }
 
 fn validate_absolute_path(path: &str) -> Result<(), Error> {
@@ -817,7 +888,7 @@ pub fn prepare_shared_file(id: OpenFileId) -> Result<(), Error> {
     if !node.occupied {
         return Err(Error::InvalidDescriptor);
     }
-    if !node.writable {
+    if !node.writable || !access_allowed(node, true) {
         if node.backing.is_none() {
             return Err(Error::ReadOnly);
         }
@@ -831,7 +902,7 @@ pub fn write_mapping_at(id: OpenFileId, offset: usize, bytes: &[u8]) -> Result<(
     let entry = table.get_mut(id)?;
     let mut registry = REGISTRY.lock();
     let node = &mut registry.nodes[entry.node];
-    if !node.occupied || !node.writable {
+    if !node.occupied || !node.writable || !access_allowed(node, true) {
         return Err(Error::ReadOnly);
     }
     if offset
@@ -933,6 +1004,9 @@ fn read_from(
         .get(node_index)
         .filter(|node| node.occupied)
         .ok_or(Error::InvalidDescriptor)?;
+    if !access_allowed(node, false) {
+        return Err(Error::ReadOnly);
+    }
     if offset > node.length {
         return Err(Error::InvalidDescriptor);
     }
@@ -1005,7 +1079,7 @@ pub fn write_at(id: OpenFileId, offset: usize, buffer: &[u8]) -> Result<usize, E
         .get_mut(node_index)
         .filter(|node| node.occupied)
         .ok_or(Error::InvalidDescriptor)?;
-    if !node.writable {
+    if !node.writable || !access_allowed(node, true) {
         return Err(Error::ReadOnly);
     }
     materialize_disk_node(node)?;
@@ -1037,7 +1111,7 @@ pub fn write(id: OpenFileId, buffer: &[u8]) -> Result<usize, Error> {
         .get_mut(node_index)
         .filter(|node| node.occupied)
         .ok_or(Error::InvalidDescriptor)?;
-    if !node.writable {
+    if !node.writable || !access_allowed(node, true) {
         return Err(Error::ReadOnly);
     }
     materialize_disk_node(node)?;
@@ -1129,6 +1203,10 @@ pub fn self_test() -> bool {
             kind: NodeKind::File,
             size: 24,
             writable: false,
+            uid: 0,
+            gid: 0,
+            mode: 0o444,
+            ..
         })
     );
 
