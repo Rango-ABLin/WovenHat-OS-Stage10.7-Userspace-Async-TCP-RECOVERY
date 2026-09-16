@@ -43,7 +43,9 @@ The Stage-6 policy is intentionally simple and deterministic:
 - otherwise move one eligible Ready migratable kernel job;
 - wake the destination with a reschedule IPI.
 
-This is a foundation policy, not a final production scheduler. It has no NUMA model, cache-affinity scoring, heterogeneous-core model, deadline classes, or work stealing.
+This is a foundation policy, not a final production scheduler. It has bounded
+SRAT CPU-domain preference, but no NUMA page-allocation policy, cache-affinity
+scoring, heterogeneous-core model, deadline classes, or work stealing.
 
 ## Acceptance markers
 
