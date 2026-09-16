@@ -4,7 +4,7 @@ use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
 use core::{
     arch::{asm, global_asm, x86_64::__cpuid},
     cell::UnsafeCell,
-    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
 use x86_64::{registers::model_specific::Msr, structures::paging::PageTable};
 
@@ -15,6 +15,8 @@ pub const SPURIOUS_VECTOR: u8 = 0xff;
 static IDS: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(u32::MAX) }; MAX_CPUS];
 static DOMAINS: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(0) }; MAX_CPUS];
 static ONLINE: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
+// 0=idle, 1=requested, 2=transitioning, 3=rejected, 4=cancelled, 5=offline.
+static OFFLINE_STATE: [AtomicU8; MAX_CPUS] = [const { AtomicU8::new(0) }; MAX_CPUS];
 static ACK: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 static SHOOT_LOCK: AtomicBool = AtomicBool::new(false);
@@ -81,6 +83,76 @@ pub fn online_mask() -> usize {
                 mask
             }
         })
+}
+
+/// Return whether an online CPU has an outstanding offline request. This is
+/// consumed by the CPU-owned idle task at a scheduler-safe checkpoint.
+pub fn offline_requested(cpu: usize) -> bool {
+    cpu < MAX_CPUS && OFFLINE_STATE[cpu].load(Ordering::Acquire) == 1
+}
+
+/// Ask the highest-numbered AP to enter its permanent offline state after all
+/// eligible tasks have been evacuated. Only the highest online CPU is accepted
+/// so `COUNT` remains a contiguous online prefix and existing CPU indexing stays
+/// valid. Re-online requires a fresh AP trampoline and is intentionally separate.
+#[allow(dead_code)] // Management syscall wiring is a later lifecycle stage.
+pub fn request_cpu_offline(cpu: usize) -> bool {
+    let online = online_count();
+    if cpu == 0 || cpu + 1 != online || !cpu_is_online(cpu) {
+        return false;
+    }
+    if !task::prepare_cpu_offline(cpu) {
+        return false;
+    }
+    OFFLINE_STATE[cpu].store(1, Ordering::Release);
+    if !reschedule_cpu(cpu) {
+        serial::write_line(format_args!("[S6.HOTPLUG] reschedule request rejected cpu={}", cpu));
+        let _ = OFFLINE_STATE[cpu].compare_exchange(1, 4, Ordering::AcqRel, Ordering::Acquire);
+        return false;
+    }
+    let start = unsafe { core::arch::x86_64::_rdtsc() };
+    loop {
+        match OFFLINE_STATE[cpu].load(Ordering::Acquire) {
+            5 => return true,
+            3 | 4 => return false,
+            _ => {}
+        }
+        if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 5_000_000_000 {
+            serial::write_line(format_args!("[S6.HOTPLUG] offline request timeout cpu={} state={}", cpu, OFFLINE_STATE[cpu].load(Ordering::Acquire)));
+            let _ = OFFLINE_STATE[cpu].compare_exchange(1, 4, Ordering::AcqRel, Ordering::Acquire);
+            return false;
+        }
+        core::hint::spin_loop();
+    }
+}
+
+/// CPU-local checkpoint called by `idle_task`. On success this function never
+/// returns a second time on that CPU: the caller parks with interrupts masked.
+pub fn offline_checkpoint(cpu: usize) -> bool {
+    if !offline_requested(cpu) {
+        return false;
+    }
+    x86_64::instructions::interrupts::disable();
+    if !task::offline_cpu_checkpoint(cpu) {
+        serial::write_line(format_args!("[S6.HOTPLUG] checkpoint rejected cpu={}", cpu));
+        let _ = OFFLINE_STATE[cpu].compare_exchange(1, 3, Ordering::AcqRel, Ordering::Acquire);
+        x86_64::instructions::interrupts::enable();
+        return false;
+    }
+    if OFFLINE_STATE[cpu]
+        .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        x86_64::instructions::interrupts::enable();
+        return false;
+    }
+    // Mask the local timer before withdrawing the CPU from the global online
+    // set. Peer schedulers then stop sending timer/shootdown work to it.
+    write(0x320, 1 << 16);
+    ONLINE[cpu].store(false, Ordering::Release);
+    COUNT.store(cpu, Ordering::Release);
+    OFFLINE_STATE[cpu].store(5, Ordering::Release);
+    true
 }
 pub fn cpu_domain(cpu: usize) -> u32 {
     if cpu < MAX_CPUS {
@@ -446,6 +518,12 @@ extern "C" fn ap_main() -> ! {
     start_timer();
     loop {
         task::yield_now();
+        if offline_checkpoint(cpu) {
+            loop {
+                x86_64::instructions::interrupts::disable();
+                x86_64::instructions::hlt();
+            }
+        }
         x86_64::instructions::interrupts::enable_and_hlt();
     }
 }

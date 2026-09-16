@@ -4,6 +4,7 @@ members = ["kernel", "libwoven"]
 
 [features]
 qemu-test = ["kernel/qemu-test"]
+stage6-hotplug-test = ["qemu-test", "kernel/stage6-hotplug-test"]
 network-test = ["qemu-test", "kernel/network-test"]
 legacy-pic-test = ["qemu-test", "kernel/legacy-pic-test"]
 stage10-4-test = ["qemu-test", "kernel/stage10-4-test"]

@@ -4397,6 +4397,13 @@ fn idle_task() -> ! {
     loop {
         IDLE_HEARTBEATS.fetch_add(1, Ordering::Relaxed);
 
+        if crate::smp::offline_checkpoint(crate::smp::cpu_index()) {
+            loop {
+                x86_64::instructions::interrupts::disable();
+                x86_64::instructions::hlt();
+            }
+        }
+
         // Consume any already-published scheduling request first. If none is
         // pending, park with STI+HLT as one architectural idle sequence. This
         // avoids the check-then-HLT window where an interrupt could arrive
@@ -4800,6 +4807,95 @@ pub fn init_ap(cpu: usize) {
     scheduler.current_slot[cpu] = slot;
     scheduler.task_count += 1;
 }
+
+fn evacuate_cpu(scheduler: &mut Scheduler, target: usize) -> bool {
+    let current_slot = scheduler.current_slot[target];
+    for (slot, task) in scheduler.tasks.iter_mut().enumerate() {
+        if task.cpu != target || matches!(task.state, TaskState::Empty) {
+            continue;
+        }
+        // The CPU-owned idle task is handled by the checkpoint after all
+        // runnable work has been transferred. A currently running task is
+        // allowed to finish its hand-off; the checkpoint sees it as Ready.
+        if slot == current_slot && matches!(task.name, "idle" | "cpu-idle") {
+            continue;
+        }
+        if matches!(task.name, "idle" | "cpu-idle") {
+            continue;
+        }
+        if task.state == TaskState::Dead {
+            // A dead task owns no runnable context. Move it to the BSP so its
+            // scheduler-owned reclamation can run after the AP is parked.
+            task.cpu = 0;
+            task.affinity_mask = cpu_bit(0);
+            continue;
+        }
+        if matches!(task.state, TaskState::Running | TaskState::Switching) {
+            if slot == current_slot {
+                continue;
+            }
+            return false;
+        }
+        if !task.migratable {
+            return false;
+        }
+        let Some(destination) = (0..target)
+            .find(|cpu| task.affinity_mask & cpu_bit(*cpu) != 0)
+        else {
+            return false;
+        };
+        task.cpu = destination;
+    }
+    true
+}
+
+/// Prepare an AP for offline transition by evacuating every non-running task
+/// that has a legal online destination. The current task is left in place
+/// until its CPU reaches the idle checkpoint, preserving the running-task
+/// ownership rule of the scheduler.
+#[allow(dead_code)] // Called by the Stage 6 lifecycle control plane.
+pub fn prepare_cpu_offline(target: usize) -> bool {
+    if target == 0 || target + 1 != crate::smp::online_count() {
+        return false;
+    }
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut scheduler = SCHEDULER.lock();
+        let passed = evacuate_cpu(&mut scheduler, target);
+        if passed {
+            scheduler.validate_affinity_invariants();
+        }
+        passed
+    })
+}
+
+/// Complete the transition from the AP-owned idle task. This is called only
+/// on the target CPU after the reschedule request has selected its idle task.
+pub fn offline_cpu_checkpoint(target: usize) -> bool {
+    if target == 0 || target + 1 != crate::smp::online_count() {
+        return false;
+    }
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut scheduler = SCHEDULER.lock();
+        let current_slot = scheduler.current_slot[target];
+        if !matches!(scheduler.tasks[current_slot].name, "idle" | "cpu-idle")
+            || scheduler.tasks[current_slot].state != TaskState::Running
+        {
+            return false;
+        }
+        if !evacuate_cpu(&mut scheduler, target) {
+            return false;
+        }
+        let idle = &mut scheduler.tasks[current_slot];
+        idle.state = TaskState::Dead;
+        idle.name = "offline-idle";
+        idle.cpu = 0;
+        idle.affinity_mask = cpu_bit(0);
+        scheduler.task_count = scheduler.task_count.saturating_sub(1);
+        scheduler.validate_affinity_invariants();
+        true
+    })
+}
+
 fn spawn_kernel_on(
     cpu: usize,
     name: &'static str,

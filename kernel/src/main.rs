@@ -1720,6 +1720,18 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         serial::write_line(format_args!("[S11.1] production process model: PASSED"));
         qemu_test_exit_success();
     }
+    #[cfg(feature = "stage6-hotplug-test")]
+    {
+        if smp::online_count() < 2 || !smp::request_cpu_offline(smp::online_count() - 1) {
+            serial::write_line(format_args!("[S6.HOTPLUG] offline AP: FAILED"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!(
+            "[S6.HOTPLUG] offline AP: PASSED online={} mask={:#x}",
+            smp::online_count(), smp::online_mask()
+        ));
+        qemu_test_exit_success();
+    }
     #[cfg(feature = "stage11-2-test")]
     {
         if !thread::structural_self_test() {
