@@ -1,5 +1,9 @@
 # Stage status
 
+Production completion is tracked separately from bounded foundation acceptance
+in [the Stage 1–12 gap audit](stage1-12-production-gap-audit.md). No stage is
+fully complete while a roadmap requirement remains open.
+
 Authoritative development sequence: [supplied Stage 10.7–36 roadmap](master-development-roadmap.md).
 
 ## Stage 10.7 — accepted on 2026-09-16
