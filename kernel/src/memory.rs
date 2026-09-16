@@ -1,15 +1,18 @@
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
-use spin::{Mutex, MutexGuard};
 use x86_64::{
     structures::paging::{FrameAllocator, PageSize, PhysFrame, Size4KiB},
     PhysAddr,
 };
 
+use crate::irq_lock::{IrqMutex, IrqMutexGuard};
+
 const FRAME_SIZE: u64 = Size4KiB::SIZE;
 const MAX_USABLE_REGIONS: usize = 128;
 const MAX_RECLAIMED_FRAMES: usize = 1024;
 
-static ALLOCATOR: Mutex<PhysicalFrameAllocator> = Mutex::new(PhysicalFrameAllocator::empty());
+// Lock order: PAGING (10) -> COW_TABLE (30) -> ALLOCATOR (40).
+static ALLOCATOR: IrqMutex<PhysicalFrameAllocator> =
+    IrqMutex::with_rank(PhysicalFrameAllocator::empty(), 40);
 
 #[derive(Clone, Copy)]
 struct FrameRange {
@@ -251,7 +254,7 @@ pub fn deallocate_frame(frame: PhysFrame<Size4KiB>) -> bool {
     ALLOCATOR.lock().deallocate_frame(frame)
 }
 
-pub(crate) fn allocator() -> MutexGuard<'static, PhysicalFrameAllocator> {
+pub(crate) fn allocator() -> IrqMutexGuard<'static, PhysicalFrameAllocator> {
     ALLOCATOR.lock()
 }
 

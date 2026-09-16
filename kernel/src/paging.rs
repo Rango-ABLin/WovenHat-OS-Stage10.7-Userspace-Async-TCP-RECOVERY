@@ -1,4 +1,3 @@
-use spin::Mutex;
 use x86_64::{
     registers::control::{Cr3, Cr3Flags},
     registers::model_specific::{Efer, EferFlags},
@@ -9,7 +8,7 @@ use x86_64::{
     VirtAddr,
 };
 
-use crate::memory;
+use crate::{irq_lock::IrqMutex, memory};
 
 const TEST_PAGE_ADDRESS: u64 = 0x4444_4444_0000;
 const TEST_VALUE: u64 = 0x574F_5645_4E48_4154;
@@ -17,8 +16,9 @@ const TEST_VALUE: u64 = 0x574F_5645_4E48_4154;
 /// Maximum number of physical frames currently participating in COW sharing.
 const MAX_COW_FRAMES: usize = 1024;
 
-static PAGING: Mutex<PagingState> = Mutex::new(PagingState::empty());
-static COW_TABLE: Mutex<CowTable> = Mutex::new(CowTable::empty());
+// Lock order: PAGING (10) -> COW_TABLE (30) -> ALLOCATOR (40).
+static PAGING: IrqMutex<PagingState> = IrqMutex::with_rank(PagingState::empty(), 10);
+static COW_TABLE: IrqMutex<CowTable> = IrqMutex::with_rank(CowTable::empty(), 30);
 
 /// Tracks reference counts for frames shared across address spaces after fork.
 struct CowEntry {
@@ -538,8 +538,8 @@ pub fn share_user_range_in(
     let paging = PAGING.lock();
     let mut source_mapper = mapper_for(&paging, source)?;
     let mut destination_mapper = mapper_for(&paging, destination)?;
-    let mut allocator = memory::allocator();
     let mut cow = COW_TABLE.lock();
+    let mut allocator = memory::allocator();
 
     for (mapped_pages, page) in Page::range_inclusive(start_page, end_page).enumerate() {
         let TranslateResult::Mapped {
@@ -1329,8 +1329,8 @@ pub fn map_file_frame(space: AddressSpace, address: u64, physical: u64, writable
     let Ok(frame) = PhysFrame::from_start_address(x86_64::PhysAddr::new(physical)) else {
         return false;
     };
-    let mut allocator = memory::allocator();
     let mut refs = COW_TABLE.lock();
+    let mut allocator = memory::allocator();
     if refs.share(physical).is_err() {
         return false;
     }

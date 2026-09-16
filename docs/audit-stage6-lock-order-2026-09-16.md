@@ -12,6 +12,14 @@ The audited asynchronous operation path declares the production order:
 async operation table (10) -> completion-port allocation (10) -> port slot (20)
 ```
 
+The scheduler and memory-management domains now declare the complementary
+order:
+
+```text
+scheduler (10) -> process table (20)
+paging (10) -> COW table (30) -> physical-frame allocator (40)
+```
+
 The tracker is active in the freestanding kernel. Host test doubles implement
 the same `with_rank` constructor so host behavior cannot silently diverge from
 the production API.
@@ -37,6 +45,7 @@ rank-20 guard, then performs completion, event, notification, VFS, and pipe
 teardown after the guard is dropped. The complete release matrix was rerun
 after this fix and passed.
 
-This closes the bounded interrupt-safe worker-lock tracking gap. Complete
-cross-domain lock-graph coverage for scheduler/paging/frame-allocator mutexes
-and priority inheritance remain separate Stage 6 work.
+This closes the bounded lock-order coverage gap for the audited scheduler,
+process, paging, COW, frame-allocation, async-operation, and completion-port
+domains. Locks in other subsystems still use their existing compatibility
+mutexes, and priority inheritance remains separate Stage 6 work.
