@@ -715,6 +715,22 @@ pub fn create_disk_file_with_writable(
     Ok(())
 }
 
+/// Apply persisted ownership metadata to a disk-backed VFS node.
+pub fn set_metadata(path: &str, uid: u32, gid: u32, mode: u16) -> Result<(), Error> {
+    validate_absolute_path(path)?;
+    let mut registry = REGISTRY.lock();
+    let node = registry
+        .nodes
+        .iter_mut()
+        .find(|node| node.matches(path))
+        .ok_or(Error::NotFound)?;
+    node.uid = uid;
+    node.gid = gid;
+    node.mode = mode;
+    node.writable = mode & 0o222 != 0;
+    Ok(())
+}
+
 /// Create or overwrite a writable file.
 pub fn write_file(path: &str, data: &[u8]) -> Result<(), Error> {
     let result = REGISTRY.lock().write_file(path, data);

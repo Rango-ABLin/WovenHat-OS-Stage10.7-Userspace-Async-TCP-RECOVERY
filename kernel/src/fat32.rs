@@ -23,6 +23,11 @@ const MAX_LFN_ENTRIES: usize = MAX_LONG_NAME.div_ceil(LFN_CHARS_PER_ENTRY);
 const MAX_LFN_EXTENSIONS: usize = 2;
 const MAX_DIRECTORY_CLUSTERS: usize = 128;
 const MAX_FS_CHECK_DEPTH: usize = 4;
+const METADATA_MAGIC: &[u8; 4] = b"WMD1";
+const METADATA_HEADER_SIZE: usize = 8;
+const METADATA_RECORD_SIZE: usize = 24;
+const METADATA_CAPACITY: usize = (SECTOR_SIZE - METADATA_HEADER_SIZE) / METADATA_RECORD_SIZE;
+const METADATA_SECTOR_COUNT: usize = 4;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -281,6 +286,138 @@ pub fn list_root(
     output: &mut [Option<DirectoryEntry>],
 ) -> Result<usize, Error> {
     list_directory(device, volume, volume.root_cluster, output)
+}
+
+/// Bounded ownership metadata persisted in the FAT32 reserved area.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct FileMetadata {
+    pub uid: u32,
+    pub gid: u32,
+    pub mode: u16,
+}
+
+/// Stable path key used by the reserved-area metadata table.
+pub fn metadata_path_hash(path: &str) -> u64 {
+    path.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x1000_0000_01b3)
+    })
+}
+
+fn metadata_sector(volume: Volume, index: usize) -> Result<u64, Error> {
+    if index >= METADATA_SECTOR_COUNT {
+        return Err(Error::UnsupportedGeometry);
+    }
+    volume
+        .first_fat_sector
+        .checked_sub((METADATA_SECTOR_COUNT - index) as u64)
+        .ok_or(Error::UnsupportedGeometry)
+}
+
+fn read_metadata_sector(
+    device: &mut impl BlockDevice,
+    volume: Volume,
+    index: usize,
+    sector: &mut [u8; SECTOR_SIZE],
+) -> Result<(), Error> {
+    device
+        .read_sector(metadata_sector(volume, index)?, sector)
+        .map_err(Error::Block)
+}
+
+/// Look up persisted ownership metadata by its canonical path key.
+pub fn read_file_metadata(
+    device: &mut impl BlockDevice,
+    volume: Volume,
+    path_hash: u64,
+) -> Result<Option<FileMetadata>, Error> {
+    for sector_index in 0..METADATA_SECTOR_COUNT {
+        let mut sector = [0u8; SECTOR_SIZE];
+        read_metadata_sector(device, volume, sector_index, &mut sector)?;
+        if &sector[..4] != METADATA_MAGIC {
+            continue;
+        }
+        for index in 0..METADATA_CAPACITY {
+            let offset = METADATA_HEADER_SIZE + index * METADATA_RECORD_SIZE;
+            if sector[offset + 18] == 0 || read_u64(&sector, offset) != path_hash {
+                continue;
+            }
+            return Ok(Some(FileMetadata {
+                uid: read_u32(&sector, offset + 8),
+                gid: read_u32(&sector, offset + 12),
+                mode: read_u16(&sector, offset + 16),
+            }));
+        }
+    }
+    Ok(None)
+}
+
+/// Insert or replace one ownership record in the reserved-area table.
+pub fn write_file_metadata(
+    device: &mut impl BlockDevice,
+    volume: Volume,
+    path_hash: u64,
+    metadata: FileMetadata,
+) -> Result<(), Error> {
+    let mut selected = None;
+    let mut sector = [0u8; SECTOR_SIZE];
+    for sector_index in 0..METADATA_SECTOR_COUNT {
+        read_metadata_sector(device, volume, sector_index, &mut sector)?;
+        if &sector[..4] != METADATA_MAGIC {
+            sector.fill(0);
+            sector[..4].copy_from_slice(METADATA_MAGIC);
+            sector[4..6].copy_from_slice(&(1u16).to_le_bytes());
+        }
+        let mut free = None;
+        let mut target = None;
+        for index in 0..METADATA_CAPACITY {
+            let offset = METADATA_HEADER_SIZE + index * METADATA_RECORD_SIZE;
+            if sector[offset + 18] == 0 {
+                free.get_or_insert(offset);
+            } else if read_u64(&sector, offset) == path_hash {
+                target = Some(offset);
+                break;
+            }
+        }
+        if let Some(offset) = target.or(free) {
+            selected = Some((sector_index, offset));
+            break;
+        }
+    }
+    let (sector_index, offset) = selected.ok_or(Error::DirectoryFull)?;
+    sector[offset..offset + METADATA_RECORD_SIZE].fill(0);
+    sector[offset..offset + 8].copy_from_slice(&path_hash.to_le_bytes());
+    sector[offset + 8..offset + 12].copy_from_slice(&metadata.uid.to_le_bytes());
+    sector[offset + 12..offset + 16].copy_from_slice(&metadata.gid.to_le_bytes());
+    sector[offset + 16..offset + 18].copy_from_slice(&metadata.mode.to_le_bytes());
+    sector[offset + 18] = 1;
+    device
+        .write_sector(metadata_sector(volume, sector_index)?, &sector)
+        .map_err(Error::Block)
+}
+
+/// Remove one ownership record. Missing records are already clean.
+pub fn remove_file_metadata(
+    device: &mut impl BlockDevice,
+    volume: Volume,
+    path_hash: u64,
+) -> Result<(), Error> {
+    for sector_index in 0..METADATA_SECTOR_COUNT {
+        let mut sector = [0u8; SECTOR_SIZE];
+        read_metadata_sector(device, volume, sector_index, &mut sector)?;
+        if &sector[..4] != METADATA_MAGIC {
+            continue;
+        }
+        for index in 0..METADATA_CAPACITY {
+            let offset = METADATA_HEADER_SIZE + index * METADATA_RECORD_SIZE;
+            if sector[offset + 18] != 0 && read_u64(&sector, offset) == path_hash {
+                sector[offset + 18] = 0;
+                return device
+                    .write_sector(metadata_sector(volume, sector_index)?, &sector)
+                    .map_err(Error::Block);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// List entries in the volume root directory with validated long names.
@@ -1696,6 +1833,19 @@ pub fn create_file_in_directory(
     Ok(())
 }
 
+fn read_u64(bytes: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes([
+        bytes[offset],
+        bytes[offset + 1],
+        bytes[offset + 2],
+        bytes[offset + 3],
+        bytes[offset + 4],
+        bytes[offset + 5],
+        bytes[offset + 6],
+        bytes[offset + 7],
+    ])
+}
+
 fn generate_short_alias(
     device: &mut impl BlockDevice,
     volume: Volume,
@@ -2852,6 +3002,7 @@ fn streaming_read_self_test() -> bool {
 
 struct MutableFatDisk {
     boot: [u8; SECTOR_SIZE],
+    metadata: [[u8; SECTOR_SIZE]; METADATA_SECTOR_COUNT],
     fs_info: [u8; SECTOR_SIZE],
     backup_fs_info: [u8; SECTOR_SIZE],
     fat0: [u8; SECTOR_SIZE],
@@ -2864,6 +3015,7 @@ impl MutableFatDisk {
     fn new() -> Self {
         let mut disk = Self {
             boot: [0; SECTOR_SIZE],
+            metadata: [[0; SECTOR_SIZE]; METADATA_SECTOR_COUNT],
             fs_info: [0; SECTOR_SIZE],
             backup_fs_info: [0; SECTOR_SIZE],
             fat0: [0; SECTOR_SIZE],
@@ -2919,6 +3071,10 @@ impl BlockDevice for MutableFatDisk {
         sector.fill(0);
         if lba == 0 {
             sector.copy_from_slice(&self.boot);
+        } else if (TestDisk::FAT_LBA - METADATA_SECTOR_COUNT as u64..TestDisk::FAT_LBA)
+            .contains(&lba)
+        {
+            sector.copy_from_slice(&self.metadata[(lba - (TestDisk::FAT_LBA - METADATA_SECTOR_COUNT as u64)) as usize]);
         } else if lba == 1 {
             sector.copy_from_slice(&self.fs_info);
         } else if lba == 7 {
@@ -2941,6 +3097,11 @@ impl BlockDevice for MutableFatDisk {
         }
         if lba == 0 {
             self.boot.copy_from_slice(sector);
+        } else if (TestDisk::FAT_LBA - METADATA_SECTOR_COUNT as u64..TestDisk::FAT_LBA)
+            .contains(&lba)
+        {
+            self.metadata[(lba - (TestDisk::FAT_LBA - METADATA_SECTOR_COUNT as u64)) as usize]
+                .copy_from_slice(sector);
         } else if lba == 1 {
             self.fs_info.copy_from_slice(sector);
         } else if lba == 7 {
@@ -3068,6 +3229,21 @@ fn long_filename_self_test() -> bool {
         return false;
     };
     let name = "A long filename.txt";
+    let metadata = FileMetadata {
+        uid: 1000,
+        gid: 1000,
+        mode: 0o640,
+    };
+    let metadata_ok = write_file_metadata(
+        &mut disk,
+        volume,
+        metadata_path_hash(name),
+        metadata,
+    )
+    .is_ok()
+        && read_file_metadata(&mut disk, volume, metadata_path_hash(name)) == Ok(Some(metadata))
+        && remove_file_metadata(&mut disk, volume, metadata_path_hash(name)).is_ok()
+        && read_file_metadata(&mut disk, volume, metadata_path_hash(name)) == Ok(None);
     if create_path_file(&mut disk, volume, name, b"lfn").is_err() {
         return false;
     }
@@ -3121,7 +3297,7 @@ fn long_filename_self_test() -> bool {
                 .is_ok_and(|link| matches!(link, ClusterLink::Next(_)))
             && resolve_path(&mut growth_disk, growth_volume, long).is_ok()
     });
-    read_ok && listing_ok && named_listing_ok && unicode_ok && rename_ok && delete_ok && growth_ok
+    metadata_ok && read_ok && listing_ok && named_listing_ok && unicode_ok && rename_ok && delete_ok && growth_ok
 }
 
 fn directory_growth_self_test() -> bool {

@@ -267,6 +267,7 @@ fn import_directory(
 ) -> Result<usize, fat32::Error> {
     let mut mounted = 0usize;
     let mut children = alloc::vec::Vec::new();
+    let mut metadata_paths = alloc::vec::Vec::new();
 
     fat32::for_each_directory_entry_named(device, volume, dir_cluster, |entry, long_name| {
         if entry.attributes & 0x08 != 0 {
@@ -317,12 +318,30 @@ fn import_directory(
         }
         let writable = writable_import && entry.attributes & READ_ONLY_ATTRIBUTE == 0;
         match vfs::create_disk_file_with_writable(path, entry.size as usize, writable) {
-            Ok(()) => mounted = mounted.saturating_add(1),
+            Ok(()) => {
+                if metadata_paths.len() < crate::config::MAX_VFS_NODES {
+                    metadata_paths.push(alloc::string::String::from(path));
+                }
+                mounted = mounted.saturating_add(1)
+            }
             Err(vfs::Error::AlreadyExists) | Err(vfs::Error::Full) => {}
             Err(_) => {}
         }
         Ok(())
     })?;
+
+    for path in metadata_paths {
+        if let Some(metadata) = fat32::read_file_metadata(
+            device,
+            volume,
+            fat32::metadata_path_hash(&path),
+        )
+        .ok()
+        .flatten()
+        {
+            let _ = vfs::set_metadata(&path, metadata.uid, metadata.gid, metadata.mode);
+        }
+    }
 
     // Release the directory iterator's mutable device borrow before recursion.
     for (cluster, path) in children {
@@ -891,7 +910,7 @@ pub fn persist_path(path: &str) -> Result<(), PersistError> {
         if component.is_empty()
             || component == "."
             || component == ".."
-            || fat32::encode_short_name(component).is_none()
+            || component.len() > fat32::MAX_LONG_NAME
         {
             return Err(PersistError::BadName);
         }
@@ -914,10 +933,51 @@ pub fn persist_path(path: &str) -> Result<(), PersistError> {
         data[..length].iter().fold(0xcbf29ce484222325, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x100000001b3))) else {
         return Err(PersistError::Failed);
     };
+    let metadata = vfs::stat(path).ok().map(|stat| fat32::FileMetadata {
+        uid: stat.uid,
+        gid: stat.gid,
+        mode: stat.mode,
+    });
     let mut disk = block_io::primary_ata();
-    let result = persist_on_device(&mut disk, relative, &data[..length]);
+    let mut result = persist_on_device(&mut disk, relative, &data[..length]);
+    if result.is_ok() {
+        if let Some(metadata) = metadata {
+            result = persist_metadata_on_device(&mut disk, path, metadata);
+        }
+    }
     if result.is_ok() { let _ = crate::journal::commit(journal_token); }
     result
+}
+
+fn persist_metadata_on_device(
+    device: &mut impl crate::block::BlockDevice,
+    path: &str,
+    metadata: fat32::FileMetadata,
+) -> Result<(), PersistError> {
+    let hash = fat32::metadata_path_hash(path);
+    match fat32::mount(device) {
+        Ok(volume) => fat32::write_file_metadata(device, volume, hash, metadata)
+            .map_err(map_persist_err)?,
+        Err(fat32::Error::InvalidBootSector | fat32::Error::UnsupportedGeometry) => {
+            if let Ok(Some(part)) = partition::find_fat32(device) {
+                let mut view = partition::PartitionDevice::new(device, part)
+                    .map_err(|_| PersistError::Failed)?;
+                let volume = fat32::mount(&mut view).map_err(map_persist_err)?;
+                fat32::write_file_metadata(&mut view, volume, hash, metadata)
+                    .map_err(map_persist_err)?;
+            } else if let Ok(Some(part)) = gpt::find_fat_partition(device) {
+                let mut view = partition::PartitionDevice::new(device, part)
+                    .map_err(|_| PersistError::Failed)?;
+                let volume = fat32::mount(&mut view).map_err(map_persist_err)?;
+                fat32::write_file_metadata(&mut view, volume, hash, metadata)
+                    .map_err(map_persist_err)?;
+            } else {
+                return Err(PersistError::Failed);
+            }
+        }
+        Err(_) => return Err(PersistError::Failed),
+    }
+    device.flush().map_err(|_| PersistError::Failed)
 }
 
 fn persist_on_device(

@@ -7,7 +7,9 @@ regressions currently available in this repository.
 
 This is acceptance evidence for the implemented QEMU scope. Production gaps
 remain: non-QEMU hardware drivers and qualification, DMA/interrupt-backed
-storage completion, Unicode LFN support, FAT32 ownership/mode persistence,
-crash-safe metadata ordering, and unclean-shutdown recovery. Bounded long-name
-create/lookup/delete/rename, named listing, directory growth, and VFS
-uid/gid/mode enforcement are now covered by the implementation and boot gate.
+storage completion, Unicode normalization/larger path ABI, collision-resistant
+and full-capacity metadata identity, crash-safe metadata ordering, and
+unclean-shutdown recovery. Bounded long-name create/lookup/delete/rename,
+named listing, directory growth, VFS uid/gid/mode enforcement, and the bounded
+FAT32 ownership metadata sidecar are covered by the implementation and boot
+gate.

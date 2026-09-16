@@ -5,7 +5,7 @@ mistaken for full production completion.
 
 | Area | Foundation present | Production gaps still open |
 | --- | --- | --- |
-| Stages 1–5 | Boot, memory, paging, scheduler, VFS, userspace, storage; 1/2/4-CPU acceptance; bounded Unicode long-filename create/lookup/delete/rename, named listing, mounted import listing, directory growth, and bounded VFS uid/gid/mode enforcement | Non-QEMU hardware qualification/drivers, DMA storage completion, Unicode normalization/larger path ABI, FAT32 ownership/mode persistence, crash-safe metadata ordering, unclean-shutdown recovery |
+| Stages 1–5 | Boot, memory, paging, scheduler, VFS, userspace, storage; 1/2/4-CPU acceptance; bounded Unicode long-filename create/lookup/delete/rename, named listing, mounted import listing, directory growth, bounded VFS uid/gid/mode enforcement, and bounded FAT32 ownership metadata persistence/import | Non-QEMU hardware qualification/drivers, DMA storage completion, Unicode normalization/larger path ABI, collision-resistant/full-capacity metadata identity, crash-safe metadata ordering, unclean-shutdown recovery |
 | Stage 6 | Bounded SMP, TLB shootdowns, 1–4 CPU tests | General multicore userspace, NUMA, hotplug, hardware coverage |
 | Stages 7–9 | Isolation, IPC, capabilities, WovenGuard, ELF W^X | Dynamic libc/linking, complete signals, scheduler-backed threads |
 | Stage 10 | TCP, completion ports, timer/event foundations | Successful Ring-3 timer/event gate and one unified completion path |
