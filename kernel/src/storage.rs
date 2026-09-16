@@ -1289,18 +1289,16 @@ fn move_metadata_on_device(
     old: &str,
     new: &str,
 ) -> Result<(), MutationError> {
-    let old_hash = fat32::metadata_path_hash(old);
-    let old_tag = fat32::metadata_path_tag(old);
-    let new_hash = fat32::metadata_path_hash(new);
-    let new_tag = fat32::metadata_path_tag(new);
-    fn move_in_volume(
+    fn move_record(
         device: &mut impl crate::block::BlockDevice,
         volume: fat32::Volume,
-        old_hash: u64,
-        old_tag: u32,
-        new_hash: u64,
-        new_tag: u32,
+        old: &str,
+        new: &str,
     ) -> Result<(), MutationError> {
+        let old_hash = fat32::metadata_path_hash(old);
+        let old_tag = fat32::metadata_path_tag(old);
+        let new_hash = fat32::metadata_path_hash(new);
+        let new_tag = fat32::metadata_path_tag(new);
         let Some(metadata) = fat32::read_file_metadata(device, volume, old_hash, old_tag)
             .map_err(map_mutation_err)?
         else {
@@ -1311,25 +1309,113 @@ fn move_metadata_on_device(
         fat32::remove_file_metadata(device, volume, old_hash, old_tag)
             .map_err(map_mutation_err)
     }
+    fn move_in_volume(
+        device: &mut impl crate::block::BlockDevice,
+        volume: fat32::Volume,
+        old: &str,
+        new: &str,
+    ) -> Result<(), MutationError> {
+        let relative = new.strip_prefix("/mnt/").ok_or(MutationError::NotSupported)?;
+        let entry = fat32::resolve_path(device, volume, relative).map_err(map_mutation_err)?;
+        if entry.attributes & 0x10 == 0 {
+            return move_record(device, volume, old, new);
+        }
+        let mut moves = alloc::vec::Vec::new();
+        collect_metadata_moves(device, volume, entry.first_cluster, old, new, 0, &mut moves)?;
+        for (old_path, new_path) in moves {
+            move_record(device, volume, &old_path, &new_path)?;
+        }
+        Ok(())
+    }
     match fat32::mount(device) {
-        Ok(volume) => move_in_volume(device, volume, old_hash, old_tag, new_hash, new_tag),
+        Ok(volume) => move_in_volume(device, volume, old, new),
         Err(fat32::Error::InvalidBootSector | fat32::Error::UnsupportedGeometry) => {
             if let Ok(Some(part)) = partition::find_fat32(device) {
                 let mut view = partition::PartitionDevice::new(device, part)
                     .map_err(|_| MutationError::Failed)?;
                 let volume = fat32::mount(&mut view).map_err(map_mutation_err)?;
-                move_in_volume(&mut view, volume, old_hash, old_tag, new_hash, new_tag)
+                move_in_volume(&mut view, volume, old, new)
             } else if let Ok(Some(part)) = gpt::find_fat_partition(device) {
                 let mut view = partition::PartitionDevice::new(device, part)
                     .map_err(|_| MutationError::Failed)?;
                 let volume = fat32::mount(&mut view).map_err(map_mutation_err)?;
-                move_in_volume(&mut view, volume, old_hash, old_tag, new_hash, new_tag)
+                move_in_volume(&mut view, volume, old, new)
             } else {
                 Err(MutationError::Failed)
             }
         }
         Err(_) => Err(MutationError::Failed),
     }
+}
+
+fn append_metadata_path(prefix: &str, name: &str) -> Option<alloc::string::String> {
+    let slash = !prefix.ends_with('/');
+    if prefix.len() + usize::from(slash) + name.len() > crate::config::MAX_PATH_SIZE {
+        return None;
+    }
+    let mut path = alloc::string::String::from(prefix);
+    if slash {
+        path.push('/');
+    }
+    path.push_str(name);
+    Some(path)
+}
+
+fn collect_metadata_moves(
+    device: &mut impl crate::block::BlockDevice,
+    volume: fat32::Volume,
+    dir_cluster: u32,
+    old_prefix: &str,
+    new_prefix: &str,
+    depth: usize,
+    moves: &mut alloc::vec::Vec<(alloc::string::String, alloc::string::String)>,
+) -> Result<(), MutationError> {
+    if depth >= MAX_BOOT_IMPORT_DEPTH || moves.len() >= crate::config::MAX_VFS_NODES {
+        return Ok(());
+    }
+    let mut children = alloc::vec::Vec::new();
+    fat32::for_each_directory_entry_named(device, volume, dir_cluster, |entry, long_name| {
+        if entry.attributes & 0x08 != 0 || entry.short_name[0] == b'.' {
+            return Ok(());
+        }
+        let mut short = [0u8; 12];
+        let name = if let Some(long_name) = long_name {
+            alloc::string::String::from(long_name)
+        } else {
+            let Some(length) = short_name_to_str(&entry.short_name, &mut short) else {
+                return Ok(());
+            };
+            let Ok(name) = core::str::from_utf8(&short[..length]) else {
+                return Ok(());
+            };
+            alloc::string::String::from(name)
+        };
+        let Some(old_path) = append_metadata_path(old_prefix, &name) else {
+            return Ok(());
+        };
+        let Some(new_path) = append_metadata_path(new_prefix, &name) else {
+            return Ok(());
+        };
+        if entry.attributes & 0x10 != 0 && entry.first_cluster >= 2 {
+            children.push((entry.first_cluster, old_path, new_path));
+        } else if moves.len() < crate::config::MAX_VFS_NODES {
+            moves.push((old_path, new_path));
+        }
+        Ok(())
+    })
+    .map_err(map_mutation_err)?;
+    for (cluster, old_path, new_path) in children {
+        collect_metadata_moves(
+            device,
+            volume,
+            cluster,
+            &old_path,
+            &new_path,
+            depth + 1,
+            moves,
+        )?;
+    }
+    Ok(())
 }
 
 fn validate_fat_relative(relative: &str) -> Result<(), MutationError> {

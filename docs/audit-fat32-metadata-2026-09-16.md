@@ -15,9 +15,10 @@ structural regression covers write, read, remove, and Unicode-name keys; the
 storage mutation gate passes on 1, 2, and 4 CPU QEMU profiles.
 
 File delete removes its sidecar record, and file rename relocates the record to
-the new canonical path. Directory subtree metadata relocation is still a
-separate bounded transaction because the sidecar stores keys rather than full
-path strings.
+the new canonical path. Directory renames now walk the bounded FAT32 subtree
+(depth and record count are capped) and relocate each child-file record. Paths
+that exceed the VFS path limit are skipped and remain an explicit larger-ABI
+limitation.
 
 This is a bounded compatibility sidecar, not a complete production metadata
 system. The bounded key pair makes accidental collisions substantially less
