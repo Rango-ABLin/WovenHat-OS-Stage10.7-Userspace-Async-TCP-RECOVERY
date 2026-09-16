@@ -7,8 +7,9 @@ next mounted import, pending records are restored to matching VFS nodes and
 promoted to committed, allowing an interrupted update to converge after an
 unclean shutdown.
 
-The intent is bounded to the existing four-sector, 84-record metadata sidecar
+The intent is bounded to a two-sector durable ring with 30 fixed-size records
 and is covered by the FAT32 structural self-test plus the 1/2/4 CPU storage
-QEMU gate. The in-memory journal remains as a transaction guard. Full durable
-multi-operation journaling, collision-resistant identities, and hardware
-power-loss qualification remain open production work.
+QEMU gate. Multiple outstanding file intents survive a reboot and are replayed
+individually during import. The in-memory journal remains as a transaction
+guard. Full data rollback with checksum verification and hardware power-loss
+qualification remain open production work.

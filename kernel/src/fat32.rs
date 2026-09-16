@@ -30,6 +30,11 @@ const METADATA_CAPACITY: usize = (SECTOR_SIZE - METADATA_HEADER_SIZE) / METADATA
 const METADATA_SECTOR_COUNT: usize = 4;
 const METADATA_STATE_PENDING: u8 = 1;
 const METADATA_STATE_COMMITTED: u8 = 2;
+const JOURNAL_MAGIC: &[u8; 4] = b"WJR1";
+const JOURNAL_HEADER_SIZE: usize = 8;
+const JOURNAL_RECORD_SIZE: usize = 32;
+const JOURNAL_CAPACITY: usize = (SECTOR_SIZE - JOURNAL_HEADER_SIZE) / JOURNAL_RECORD_SIZE;
+const JOURNAL_SECTOR_COUNT: usize = 2;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -298,6 +303,15 @@ pub struct FileMetadata {
     pub mode: u16,
 }
 
+/// Durable bounded intent for one file-data and metadata transaction.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct JournalIntent {
+    pub path_hash: u64,
+    pub path_tag: u32,
+    pub checksum: u64,
+    pub metadata: FileMetadata,
+}
+
 /// Stable path key used by the reserved-area metadata table.
 pub fn metadata_path_hash(path: &str) -> u64 {
     path.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
@@ -322,6 +336,139 @@ fn metadata_sector(volume: Volume, index: usize) -> Result<u64, Error> {
         .first_fat_sector
         .checked_sub((METADATA_SECTOR_COUNT - index) as u64)
         .ok_or(Error::UnsupportedGeometry)
+}
+
+fn journal_sector(volume: Volume, index: usize) -> Result<u64, Error> {
+    if index >= JOURNAL_SECTOR_COUNT {
+        return Err(Error::UnsupportedGeometry);
+    }
+    volume
+        .first_fat_sector
+        .checked_sub((METADATA_SECTOR_COUNT + JOURNAL_SECTOR_COUNT - index) as u64)
+        .ok_or(Error::UnsupportedGeometry)
+}
+
+fn read_journal_sector(
+    device: &mut dyn BlockDevice,
+    volume: Volume,
+    index: usize,
+    sector: &mut [u8; SECTOR_SIZE],
+) -> Result<(), Error> {
+    device
+        .read_sector(journal_sector(volume, index)?, sector)
+        .map_err(Error::Block)
+}
+
+/// Append or replace one durable file transaction intent.
+pub fn append_journal_intent(
+    device: &mut dyn BlockDevice,
+    volume: Volume,
+    intent: JournalIntent,
+) -> Result<(), Error> {
+    let mut selected = None;
+    let mut sector = [0u8; SECTOR_SIZE];
+    for sector_index in 0..JOURNAL_SECTOR_COUNT {
+        read_journal_sector(device, volume, sector_index, &mut sector)?;
+        if &sector[..4] != JOURNAL_MAGIC {
+            sector.fill(0);
+            sector[..4].copy_from_slice(JOURNAL_MAGIC);
+            sector[4..6].copy_from_slice(&(1u16).to_le_bytes());
+        }
+        let mut free = None;
+        let mut target = None;
+        for index in 0..JOURNAL_CAPACITY {
+            let offset = JOURNAL_HEADER_SIZE + index * JOURNAL_RECORD_SIZE;
+            if sector[offset + 31] == 0 {
+                free.get_or_insert(offset);
+            } else if read_u64(&sector, offset) == intent.path_hash
+                && read_u32(&sector, offset + 8) == intent.path_tag
+            {
+                target = Some(offset);
+                break;
+            }
+        }
+        if let Some(offset) = target.or(free) {
+            selected = Some((sector_index, offset));
+            break;
+        }
+    }
+    let (sector_index, offset) = selected.ok_or(Error::DirectoryFull)?;
+    sector[offset..offset + JOURNAL_RECORD_SIZE].fill(0);
+    sector[offset..offset + 8].copy_from_slice(&intent.path_hash.to_le_bytes());
+    sector[offset + 8..offset + 12].copy_from_slice(&intent.path_tag.to_le_bytes());
+    sector[offset + 12..offset + 20].copy_from_slice(&intent.checksum.to_le_bytes());
+    sector[offset + 20..offset + 24].copy_from_slice(&intent.metadata.uid.to_le_bytes());
+    sector[offset + 24..offset + 28].copy_from_slice(&intent.metadata.gid.to_le_bytes());
+    sector[offset + 28..offset + 30].copy_from_slice(&intent.metadata.mode.to_le_bytes());
+    sector[offset + 30] = 1;
+    sector[offset + 31] = 1;
+    device
+        .write_sector(journal_sector(volume, sector_index)?, &sector)
+        .map_err(Error::Block)
+}
+
+/// Read one durable intent by its dual path identity.
+pub fn read_journal_intent(
+    device: &mut dyn BlockDevice,
+    volume: Volume,
+    path_hash: u64,
+    path_tag: u32,
+) -> Result<Option<JournalIntent>, Error> {
+    for sector_index in 0..JOURNAL_SECTOR_COUNT {
+        let mut sector = [0u8; SECTOR_SIZE];
+        read_journal_sector(device, volume, sector_index, &mut sector)?;
+        if &sector[..4] != JOURNAL_MAGIC {
+            continue;
+        }
+        for index in 0..JOURNAL_CAPACITY {
+            let offset = JOURNAL_HEADER_SIZE + index * JOURNAL_RECORD_SIZE;
+            if sector[offset + 31] != 0
+                && read_u64(&sector, offset) == path_hash
+                && read_u32(&sector, offset + 8) == path_tag
+            {
+                return Ok(Some(JournalIntent {
+                    path_hash,
+                    path_tag,
+                    checksum: read_u64(&sector, offset + 12),
+                    metadata: FileMetadata {
+                        uid: read_u32(&sector, offset + 20),
+                        gid: read_u32(&sector, offset + 24),
+                        mode: read_u16(&sector, offset + 28),
+                    },
+                }));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Retire one durable intent after its data and metadata are committed.
+pub fn remove_journal_intent(
+    device: &mut dyn BlockDevice,
+    volume: Volume,
+    path_hash: u64,
+    path_tag: u32,
+) -> Result<(), Error> {
+    for sector_index in 0..JOURNAL_SECTOR_COUNT {
+        let mut sector = [0u8; SECTOR_SIZE];
+        read_journal_sector(device, volume, sector_index, &mut sector)?;
+        if &sector[..4] != JOURNAL_MAGIC {
+            continue;
+        }
+        for index in 0..JOURNAL_CAPACITY {
+            let offset = JOURNAL_HEADER_SIZE + index * JOURNAL_RECORD_SIZE;
+            if sector[offset + 31] != 0
+                && read_u64(&sector, offset) == path_hash
+                && read_u32(&sector, offset + 8) == path_tag
+            {
+                sector[offset + 31] = 0;
+                return device
+                    .write_sector(journal_sector(volume, sector_index)?, &sector)
+                    .map_err(Error::Block);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn read_metadata_sector(
@@ -3098,6 +3245,7 @@ fn streaming_read_self_test() -> bool {
 
 struct MutableFatDisk {
     boot: [u8; SECTOR_SIZE],
+    journal: [[u8; SECTOR_SIZE]; JOURNAL_SECTOR_COUNT],
     metadata: [[u8; SECTOR_SIZE]; METADATA_SECTOR_COUNT],
     fs_info: [u8; SECTOR_SIZE],
     backup_fs_info: [u8; SECTOR_SIZE],
@@ -3111,6 +3259,7 @@ impl MutableFatDisk {
     fn new() -> Self {
         let mut disk = Self {
             boot: [0; SECTOR_SIZE],
+            journal: [[0; SECTOR_SIZE]; JOURNAL_SECTOR_COUNT],
             metadata: [[0; SECTOR_SIZE]; METADATA_SECTOR_COUNT],
             fs_info: [0; SECTOR_SIZE],
             backup_fs_info: [0; SECTOR_SIZE],
@@ -3167,6 +3316,15 @@ impl BlockDevice for MutableFatDisk {
         sector.fill(0);
         if lba == 0 {
             sector.copy_from_slice(&self.boot);
+        } else if (TestDisk::FAT_LBA - (METADATA_SECTOR_COUNT + JOURNAL_SECTOR_COUNT) as u64
+            ..TestDisk::FAT_LBA - METADATA_SECTOR_COUNT as u64)
+            .contains(&lba)
+        {
+            sector.copy_from_slice(
+                &self.journal[(lba
+                    - (TestDisk::FAT_LBA - (METADATA_SECTOR_COUNT + JOURNAL_SECTOR_COUNT) as u64))
+                    as usize],
+            );
         } else if (TestDisk::FAT_LBA - METADATA_SECTOR_COUNT as u64..TestDisk::FAT_LBA)
             .contains(&lba)
         {
@@ -3193,6 +3351,14 @@ impl BlockDevice for MutableFatDisk {
         }
         if lba == 0 {
             self.boot.copy_from_slice(sector);
+        } else if (TestDisk::FAT_LBA - (METADATA_SECTOR_COUNT + JOURNAL_SECTOR_COUNT) as u64
+            ..TestDisk::FAT_LBA - METADATA_SECTOR_COUNT as u64)
+            .contains(&lba)
+        {
+            self.journal[(lba
+                - (TestDisk::FAT_LBA - (METADATA_SECTOR_COUNT + JOURNAL_SECTOR_COUNT) as u64))
+                as usize]
+                .copy_from_slice(sector);
         } else if (TestDisk::FAT_LBA - METADATA_SECTOR_COUNT as u64..TestDisk::FAT_LBA)
             .contains(&lba)
         {
@@ -3332,6 +3498,12 @@ fn long_filename_self_test() -> bool {
     };
     let metadata_hash = metadata_path_hash(name);
     let metadata_tag = metadata_path_tag(name);
+    let intent = JournalIntent {
+        path_hash: metadata_hash,
+        path_tag: metadata_tag,
+        checksum: 0x1234,
+        metadata,
+    };
     let metadata_ok = write_file_metadata_pending(
         &mut disk,
         volume,
@@ -3344,7 +3516,11 @@ fn long_filename_self_test() -> bool {
         && finalize_file_metadata(&mut disk, volume, metadata_hash, metadata_tag) == Ok(true)
         && write_file_metadata(&mut disk, volume, metadata_hash, metadata_tag, metadata).is_ok()
         && remove_file_metadata(&mut disk, volume, metadata_hash, metadata_tag).is_ok()
-        && read_file_metadata(&mut disk, volume, metadata_hash, metadata_tag) == Ok(None);
+        && read_file_metadata(&mut disk, volume, metadata_hash, metadata_tag) == Ok(None)
+        && append_journal_intent(&mut disk, volume, intent).is_ok()
+        && read_journal_intent(&mut disk, volume, metadata_hash, metadata_tag) == Ok(Some(intent))
+        && remove_journal_intent(&mut disk, volume, metadata_hash, metadata_tag).is_ok()
+        && read_journal_intent(&mut disk, volume, metadata_hash, metadata_tag) == Ok(None);
     if create_path_file(&mut disk, volume, name, b"lfn").is_err() {
         return false;
     }

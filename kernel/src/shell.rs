@@ -13,7 +13,7 @@ use spin::Once;
 
 const PROMPT_PREFIX: &str = "wovenhat:";
 const COMMAND_CAPACITY: usize = 128;
-const CWD_CAPACITY: usize = 128;
+const CWD_CAPACITY: usize = crate::config::MAX_PATH_SIZE;
 
 /// Kernel shell working directory (independent of userspace process cwd).
 struct ShellState {

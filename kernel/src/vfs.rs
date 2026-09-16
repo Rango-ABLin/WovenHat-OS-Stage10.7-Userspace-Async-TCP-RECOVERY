@@ -7,7 +7,7 @@ use crate::config::{
 pub const NODE_CAPACITY: usize = VFS_NODE_CAPACITY;
 
 /// Maximum bytes returned for a single directory entry name (excluding NUL).
-pub const MAX_DIR_NAME: usize = 64;
+pub const MAX_DIR_NAME: usize = 255;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum NodeKind {
@@ -1467,8 +1467,8 @@ fn path_semantics_self_test(fs: &mut Registry) -> bool {
         return false;
     }
     // Destination itself fits, but its descendants would exceed path capacity.
-    let parent = alloc::format!("/{}", "p".repeat(60));
-    let destination = alloc::format!("{}/{}", parent, "d".repeat(60));
+    let parent = alloc::format!("/{}", "q".repeat(MAX_DIR_NAME));
+    let destination = alloc::format!("{}/{}", parent, "d".repeat(MAX_DIR_NAME));
     if fs.mkdir(&parent).is_err()
         || fs.rename("/home/user", &destination) != Err(Error::InvalidPath)
         || fs.stat(&destination).is_ok()
@@ -1478,10 +1478,11 @@ fn path_semantics_self_test(fs: &mut Registry) -> bool {
         return false;
     }
     // Exactly PATH_CAPACITY bytes is valid for both insertion and rename.
-    let parent = alloc::format!("/{}", "p".repeat(63));
-    let boundary = alloc::format!("{}/{}", parent, "a".repeat(63));
-    let renamed = alloc::format!("{}/{}", parent, "b".repeat(63));
-    let oversized = alloc::format!("{}/{}", parent, "c".repeat(64));
+    let parent = alloc::format!("/{}", "p".repeat(MAX_DIR_NAME));
+    let child_len = PATH_CAPACITY - parent.len() - 1;
+    let boundary = alloc::format!("{}/{}", parent, "a".repeat(child_len));
+    let renamed = alloc::format!("{}/{}", parent, "b".repeat(child_len));
+    let oversized = alloc::format!("{}/{}", parent, "c".repeat(child_len + 1));
     let long_component = alloc::format!("/{}", "x".repeat(MAX_DIR_NAME + 1));
     if fs.mkdir(&parent).is_err()
         || fs.mkdir(&boundary).is_err()

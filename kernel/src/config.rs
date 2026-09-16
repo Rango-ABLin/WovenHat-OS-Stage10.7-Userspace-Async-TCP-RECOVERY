@@ -58,7 +58,7 @@ pub const IPC_QUEUE_DEPTH: usize = 16;
 pub const MAX_MESSAGE_SIZE: usize = 256;
 
 /// Maximum path length accepted by VFS / syscalls (bytes).
-pub const MAX_PATH_SIZE: usize = 128;
+pub const MAX_PATH_SIZE: usize = 512;
 
 /// Maximum size of a single read/write syscall buffer (bytes).
 pub const MAX_IO_SIZE: usize = 1024;
