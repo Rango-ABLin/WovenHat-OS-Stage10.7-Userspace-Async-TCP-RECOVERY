@@ -23,6 +23,7 @@ Stage 6 turns the Stage-5 CPU-owned scheduler into a bounded multicore scheduler
 11. ACPI SRAT CPU-affinity discovery records bounded NUMA proximity domains;
     initial placement and rebalancing prefer a local domain and fall back to
     deterministic load balancing when SRAT is absent.
+12. x2APIC MSR register and 64-bit ICR support with automatic xAPIC fallback.
 
 ## Ownership/safety contract
 
@@ -65,7 +66,7 @@ The full `scripts/test-release.py` matrix must remain green before Stage 6 is fo
 - concurrent filesystem/network/device-I/O paths;
 - NUMA-aware page allocation and memory locality policy (CPU-domain-aware
   scheduler placement is implemented; page placement remains deferred);
-- x2APIC;
+- x2APIC hardware qualification on APIC IDs above 255;
 - CPU hotplug;
 - scheduler classes beyond the current bounded priority model;
 - production lock dependency tracking and priority inheritance.

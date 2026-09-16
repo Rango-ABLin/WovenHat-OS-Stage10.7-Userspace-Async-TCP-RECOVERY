@@ -19,6 +19,8 @@ static ACK: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 static SHOOT_LOCK: AtomicBool = AtomicBool::new(false);
 static LAPIC: AtomicU64 = AtomicU64::new(0);
+static X2APIC_REQUESTED: AtomicBool = AtomicBool::new(false);
+static X2APIC_ACTIVE: AtomicBool = AtomicBool::new(false);
 static BOOT_PAGE: AtomicU64 = AtomicU64::new(0);
 static COUNT: AtomicUsize = AtomicUsize::new(1);
 static IOAPIC: AtomicU64 = AtomicU64::new(0);
@@ -43,10 +45,17 @@ unsafe extern "C" {
 }
 
 pub fn cpu_index() -> usize {
-    let id = __cpuid(1).ebx >> 24;
+    let id = local_apic_id();
     IDS.iter()
         .position(|entry| entry.load(Ordering::Relaxed) == id)
         .expect("unregistered CPU identity")
+}
+fn local_apic_id() -> u32 {
+    if X2APIC_ACTIVE.load(Ordering::Acquire) {
+        unsafe { Msr::new(0x802).read() as u32 }
+    } else {
+        __cpuid(1).ebx >> 24
+    }
 }
 pub fn online_count() -> usize {
     COUNT.load(Ordering::Acquire)
@@ -92,6 +101,9 @@ pub fn topology_domains() -> u16 {
     }
     count.max(1)
 }
+pub fn x2apic_active() -> bool {
+    X2APIC_ACTIVE.load(Ordering::Acquire)
+}
 pub fn prepare(regions: &[MemoryRegion]) {
     IDS[0].store(__cpuid(1).ebx >> 24, Ordering::Relaxed);
     DOMAINS[0].store(0, Ordering::Release);
@@ -113,13 +125,21 @@ pub fn prepare(regions: &[MemoryRegion]) {
     }
 }
 fn read(reg: u64) -> u32 {
-    unsafe { ((LAPIC.load(Ordering::Relaxed) + reg) as *const u32).read_volatile() }
+    if X2APIC_ACTIVE.load(Ordering::Acquire) {
+        unsafe { Msr::new((0x800 + (reg >> 4)) as u32).read() as u32 }
+    } else {
+        unsafe { ((LAPIC.load(Ordering::Relaxed) + reg) as *const u32).read_volatile() }
+    }
 }
 fn write(reg: u64, value: u32) {
-    unsafe {
-        ((LAPIC.load(Ordering::Relaxed) + reg) as *mut u32).write_volatile(value);
+    if X2APIC_ACTIVE.load(Ordering::Acquire) {
+        unsafe { Msr::new((0x800 + (reg >> 4)) as u32).write(u64::from(value)); }
+    } else {
+        unsafe {
+            ((LAPIC.load(Ordering::Relaxed) + reg) as *mut u32).write_volatile(value);
+        }
+        let _ = read(0x20);
     }
-    let _ = read(0x20);
 }
 pub fn eoi() {
     write(0xb0, 0);
@@ -128,8 +148,15 @@ fn enable_local() {
     unsafe {
         let mut msr = Msr::new(0x1b);
         let value = msr.read();
-        assert_eq!(value & (1 << 10), 0, "x2APIC is unsupported");
-        msr.write(value | (1 << 11));
+        let x2_supported = (__cpuid(1).ecx & (1 << 21)) != 0;
+        let x2_active = value & (1 << 10) != 0;
+        if X2APIC_REQUESTED.load(Ordering::Acquire) || x2_active {
+            assert!(x2_supported, "firmware requested unsupported x2APIC");
+            msr.write(value | (1 << 10) | (1 << 11));
+            X2APIC_ACTIVE.store(true, Ordering::Release);
+        } else {
+            msr.write(value | (1 << 11));
+        }
     }
     write(0x80, 0);
     write(0xf0, 0x100 | u32::from(SPURIOUS_VECTOR));
@@ -146,8 +173,15 @@ fn send(id: u32, command: u32) {
         );
         core::hint::spin_loop();
     }
-    write(0x310, id << 24);
-    write(0x300, command);
+    if X2APIC_ACTIVE.load(Ordering::Acquire) {
+        unsafe {
+            Msr::new(0x830)
+                .write((u64::from(id) << 32) | u64::from(command));
+        }
+    } else {
+        write(0x310, id << 24);
+        write(0x300, command);
+    }
 }
 
 /// Prompt an online CPU to reconsider its run queue immediately. This is a
@@ -235,11 +269,11 @@ pub fn start(topology: Option<crate::hal::acpi::Summary>, offset: u64) {
         !topology.truncated && topology.processor_count <= MAX_CPUS,
         "unsupported CPU topology"
     );
-    assert!(
+    X2APIC_REQUESTED.store(
         topology.processor_ids[..topology.processor_count]
             .iter()
-            .all(|id| *id < 256),
-        "x2APIC IDs unsupported"
+            .any(|id| *id > u8::MAX as u32),
+        Ordering::Release,
     );
     LAPIC.store(
         paging::map_mmio(topology.local_apic_address)
@@ -248,6 +282,7 @@ pub fn start(topology: Option<crate::hal::acpi::Summary>, offset: u64) {
         Ordering::Relaxed,
     );
     enable_local();
+    IDS[0].store(local_apic_id(), Ordering::Release);
     write(0x3e0, 3);
     write(0x380, u32::MAX);
     delay_10ms();
@@ -386,6 +421,10 @@ pub fn start(topology: Option<crate::hal::acpi::Summary>, offset: u64) {
         "[SMP] topology/NUMA affinity: PASSED domains={} mask={:#x}",
         topology_domains(),
         online_mask()
+    ));
+    serial::write_line(format_args!(
+        "[SMP] APIC mode: {}",
+        if x2apic_active() { "x2APIC" } else { "xAPIC" }
     ));
 }
 extern "C" fn ap_main() -> ! {

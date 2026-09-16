@@ -23,3 +23,11 @@ Static validation passed with `cargo build -p wovenhat-kernel
 QEMU matrix remains a single-domain topology, so multi-node latency and page
 placement still require hardware or a NUMA-capable VM. Those are tracked as a
 separate Stage 6 gap rather than inferred from this fallback result.
+
+The same SMP layer now supports x2APIC register access through MSR 0x800+
+register windows, 64-bit destination ICR writes, and APIC-ID discovery from
+the x2APIC ID register. It selects x2APIC when firmware has enabled it or
+when the discovered topology contains an APIC ID above 255, and otherwise
+retains xAPIC MMIO. The 1/2/4 CPU logs record `APIC mode: xAPIC`; the x2APIC
+branch requires a host or VM that exposes x2APIC and is therefore not claimed
+as hardware-qualified by this QEMU run.
