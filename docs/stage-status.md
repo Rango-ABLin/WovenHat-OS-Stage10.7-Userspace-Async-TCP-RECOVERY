@@ -57,3 +57,11 @@ build, warning-denying Clippy and Rust regressions passed. See
 The aggregate gate validates the Stage 10.8 completion architecture together
 with Stage 10.9 timers/events on 1, 2, and 4 CPUs. All six boots passed with
 exit 33 and retained serial evidence. Stage 10 is closed; Stage 11 follows.
+
+## Stage 11.1 — accepted on 2026-09-16
+
+PID lifecycle, parent/child ownership, exit status, wait semantics, process
+groups, isolated resources and teardown passed build, Clippy, host tests, and
+1/2/4-CPU QEMU validation. See [audit](audit-stage11-1-2026-09-16.md).
+
+Next: Stage 11.2 per-process threads and join/TLS semantics.

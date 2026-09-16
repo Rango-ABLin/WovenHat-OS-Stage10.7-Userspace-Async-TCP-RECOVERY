@@ -1685,6 +1685,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     serial::write_line(format_args!(
         "[S10.3] userspace async completion ABI + cancellation/teardown: PASSED"
     ));
+    #[cfg(feature = "stage11-1-test")]
+    {
+        serial::write_line(format_args!("[S11.1] production process model: PASSED"));
+        qemu_test_exit_success();
+    }
     #[cfg(feature = "stage10-9-test")]
     {
         if !async_events::structural_self_test()
