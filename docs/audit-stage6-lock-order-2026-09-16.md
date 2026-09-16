@@ -18,6 +18,7 @@ order:
 ```text
 scheduler (10) -> process table (20)
 paging (10) -> COW table (30) -> physical-frame allocator (40)
+pager queue/state (10) -> scheduler (10)
 ```
 
 The tracker is active in the freestanding kernel. Host test doubles implement
@@ -46,7 +47,7 @@ teardown after the guard is dropped. The complete release matrix was rerun
 after this fix and passed.
 
 This closes the bounded lock-order coverage gap for the audited scheduler,
-process, paging, COW, frame-allocation, async-operation, completion-port, and
-file/block/network worker domains. Locks in other subsystems still use their
+process, paging, COW, frame-allocation, pager, async-operation, completion-port,
+and file/block/network worker domains. Locks in other subsystems still use their
 existing compatibility mutexes, and priority inheritance remains separate
 Stage 6 work.

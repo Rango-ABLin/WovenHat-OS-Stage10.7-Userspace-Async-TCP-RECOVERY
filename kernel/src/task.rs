@@ -4,8 +4,6 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
-use spin::Mutex;
-
 use crate::{
     capability::{Capability, CapabilitySet},
     config::{MAX_FILE_DESCRIPTORS, MAX_PAGER_REQUESTS, MAX_PROCESSES, MAX_TASKS, TASK_STACK_SIZE},
@@ -74,8 +72,11 @@ static STAGE9_4D_CPU_MASK: AtomicU64 = AtomicU64::new(0);
 static STAGE9_4D_FAIL: [AtomicU64; crate::smp::MAX_CPUS] =
     [const { AtomicU64::new(0) }; crate::smp::MAX_CPUS];
 
-static PAGER: Mutex<PagerQueue> = Mutex::new(PagerQueue::empty());
-static PAGER_TASK: Mutex<Option<TaskId>> = Mutex::new(None);
+// The pager queue is touched from exception, scheduler, and worker paths.
+// Keep its bounded critical sections at the scheduler rank so page-fault
+// producers cannot be preempted while publishing a request.
+static PAGER: IrqMutex<PagerQueue> = IrqMutex::with_rank(PagerQueue::empty(), 10);
+static PAGER_TASK: IrqMutex<Option<TaskId>> = IrqMutex::with_rank(None, 10);
 static PAGER_REQUESTS: AtomicU64 = AtomicU64::new(0);
 static PAGER_COMPLETIONS: AtomicU64 = AtomicU64::new(0);
 // Stage 7.1.4: narrow scheduler tracing enabled only around the pager acceptance loop.
