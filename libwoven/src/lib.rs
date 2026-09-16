@@ -11,3 +11,4 @@ pub mod async_io { #[derive(Clone, Copy, PartialEq, Eq)] pub struct Operation(pu
 pub mod security { #[derive(Clone, Copy, PartialEq, Eq)] pub struct Capability(pub u64); }
 pub mod time { pub type Ticks = u64; }
 pub mod graphics { #[derive(Clone, Copy, PartialEq, Eq)] pub struct Surface(pub u64); }
+pub mod notifications { #[derive(Clone, Copy, PartialEq, Eq)] pub struct Record { pub kind: u64, pub source: u64, pub payload: u64 } }

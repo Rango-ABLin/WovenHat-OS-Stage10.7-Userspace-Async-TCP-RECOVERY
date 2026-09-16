@@ -261,6 +261,8 @@ pub enum Number {
     TimerClose = 92,
     EventClose = 93,
     SleepUntil = 94,
+    /// user notification buffer -> 0 empty, 1 record copied
+    NotificationPoll = 95,
 }
 
 pub fn entry_address() -> u64 {
@@ -1524,6 +1526,17 @@ fn sys_sleep_until(deadline: u64) -> u64 {
     0
 }
 
+fn sys_notification_poll(user_buffer: u64) -> u64 {
+    if !crate::task::current_has(crate::capability::Capability::Ipc) { return SYSCALL_ERROR; }
+    let Some(note) = crate::notifications::receive() else { return 0; };
+    let mut bytes = [0u8; 24];
+    bytes[0..8].copy_from_slice(&(note.kind as u64).to_le_bytes());
+    bytes[8..16].copy_from_slice(&note.source.to_le_bytes());
+    bytes[16..24].copy_from_slice(&note.payload.to_le_bytes());
+    if crate::paging::copy_to_current_user(user_buffer, &bytes).is_err() { return SYSCALL_ERROR; }
+    1
+}
+
 fn sys_async_cancel(raw_handle: u64) -> u64 {
     let Ok(handle) = async_handle(raw_handle) else {
         return SYSCALL_ERROR;
@@ -1918,6 +1931,7 @@ pub extern "C" fn wovenhat_syscall_dispatch(
         value if value == Number::AsyncCreate as u64 => sys_async_create(arg0),
         value if value == Number::AsyncPoll as u64 => sys_async_poll(arg0, arg1),
         value if value == Number::AsyncWait as u64 => sys_async_wait(arg0, arg1),
+        value if value == Number::NotificationPoll as u64 => sys_notification_poll(arg0),
         value if value == Number::AsyncCancel as u64 => sys_async_cancel(arg0),
         value if value == Number::AsyncComplete as u64 => sys_async_complete(arg0, arg1, arg2),
         value if value == Number::AsyncBlockRead as u64 => sys_async_block_read(arg0),
