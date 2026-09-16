@@ -97,7 +97,8 @@ Current drivers are QEMU-specific. A fully-fledged OS needs a driver framework, 
 - [x] Disk-backed swap policy over reserved raw ATA sectors, with generation-checked handles and RAM fallback.
 - [x] Bounded scheduler-level block-I/O completion worker for primary ATA sector reads/writes/flushes, with QEMU queue/wake/completion regression coverage; ATA remains PIO-polled.
 - [ ] Hardware interrupt/DMA-backed storage completion and full multicore execution with TLB shootdowns.
-- [ ] File permissions tied into your existing UID/GID syscalls (`Getuid`/`Getgid` exist; nothing currently enforces per-file access control)
+- [x] File permissions tied to UID/GID/mode metadata and enforced at VFS
+      create, open, read, write, rename, and remove boundaries.
 - **Definition of done**: can build and store a real userspace toolchain's output on-disk, survive unclean shutdown without corruption, and enforce per-user file permissions.
 
 ### Phase A4: Networking
