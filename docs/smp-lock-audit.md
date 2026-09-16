@@ -72,3 +72,17 @@ Process-table access is locally IRQ-safe through `process_table_lock()`. The int
 `SCHEDULER -> PROCESS_TABLE`; code that begins from process metadata must release that guard before
 acquiring the scheduler. Pager request publication uses one scheduler critical section to mark the
 faulting requester Blocked and make the pager Ready, preventing a lost wakeup.
+
+## Runtime lock guard
+
+`irq_lock::IrqMutex` maintains a bounded per-CPU held-lock stack. Optional
+monotonic ranks reject lower-ranked nesting before a CPU spins, recursive
+acquisition, depth overflow, and non-LIFO guard release. The asynchronous
+operation table is rank 10; completion-port allocation is rank 10 and each
+completion-port slot is rank 20, matching the documented operation-table to
+port order. Host test doubles expose the same constructor API.
+
+The scheduler, process-table, paging, COW, and frame-allocator mutexes still
+use their established ownership wrappers and are not silently treated as
+covered by this worker-lock guard. Complete cross-domain lock-graph tracking
+and priority inheritance remain open Stage 6 work.

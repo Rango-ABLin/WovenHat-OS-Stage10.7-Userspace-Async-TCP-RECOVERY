@@ -1,0 +1,35 @@
+# Stage 6 interrupt-safe lock-order audit — 2026-09-16
+
+`irq_lock::IrqMutex` now records a bounded held-lock stack for each logical
+CPU. A lock may declare a monotonic rank; lower-ranked nesting is rejected
+before spinning. Recursive acquisition, more than eight nested locks, and
+non-LIFO guard release are deterministic failures. Rank zero remains an
+explicit unranked compatibility mode for independent single-lock domains.
+
+The audited asynchronous operation path declares the production order:
+
+```text
+async operation table (10) -> completion-port allocation (10) -> port slot (20)
+```
+
+The tracker is active in the freestanding kernel. Host test doubles implement
+the same `with_rank` constructor so host behavior cannot silently diverge from
+the production API.
+
+Validation completed:
+
+```powershell
+cargo test --test irq_lock
+cargo clippy -p wovenhat-kernel --target x86_64-unknown-none -- -D warnings
+python scripts/test-release.py
+```
+
+The interrupt-lock tests passed (2/2), warning-denying freestanding Clippy
+passed, and the complete release matrix passed, including async runtime,
+memory/storage/network 1/2/4-CPU gates, legacy PIC, release gates, and shell/
+SMP smoke. The Stage 6 hotplug lifecycle also passed twice on both 2- and
+4-CPU QEMU profiles after the tracker was enabled.
+
+This closes the bounded interrupt-safe worker-lock tracking gap. Complete
+cross-domain lock-graph coverage for scheduler/paging/frame-allocator mutexes
+and priority inheritance remain separate Stage 6 work.
