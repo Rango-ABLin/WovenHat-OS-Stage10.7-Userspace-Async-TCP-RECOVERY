@@ -19,6 +19,7 @@ order:
 scheduler (10) -> process table (20)
 paging (10) -> COW table (30) -> physical-frame allocator (40)
 pager queue/state (10) -> scheduler (10)
+teardown registries (notifications, threads, async events) (10)
 ```
 
 The tracker is active in the freestanding kernel. Host test doubles implement

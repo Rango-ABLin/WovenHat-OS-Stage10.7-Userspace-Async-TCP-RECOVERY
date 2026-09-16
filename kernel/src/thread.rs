@@ -1,5 +1,5 @@
 //! Bounded process-thread registry used by the Stage 11.2 runtime boundary.
-use spin::Mutex;
+use crate::irq_lock::IrqMutex as Mutex;
 
 pub const MAX_THREADS: usize = 64;
 
@@ -32,7 +32,7 @@ impl Record {
 
 struct Table { records: [Record; MAX_THREADS] }
 impl Table { const fn new() -> Self { Self { records: [Record::EMPTY; MAX_THREADS] } } }
-static TABLE: Mutex<Table> = Mutex::new(Table::new());
+static TABLE: Mutex<Table> = Mutex::with_rank(Table::new(), 10);
 
 fn lookup(table: &mut Table, id: ThreadId) -> Option<&mut Record> {
     let slot = (id.0 & 0xffff_ffff) as usize;

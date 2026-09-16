@@ -1,5 +1,5 @@
 //! Bounded structured lifecycle notifications.
-use spin::Mutex;
+use crate::irq_lock::IrqMutex as Mutex;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -10,7 +10,7 @@ const EMPTY: Option<Notification> = None;
 const CAPACITY: usize = 64;
 struct Queue { entries: [Option<Notification>; CAPACITY], head: usize, tail: usize, len: usize }
 impl Queue { const fn new() -> Self { Self { entries: [EMPTY; CAPACITY], head: 0, tail: 0, len: 0 } } }
-static QUEUE: Mutex<Queue> = Mutex::new(Queue::new());
+static QUEUE: Mutex<Queue> = Mutex::with_rank(Queue::new(), 10);
 
 pub fn publish(note: Notification) -> bool {
     let mut q = QUEUE.lock();

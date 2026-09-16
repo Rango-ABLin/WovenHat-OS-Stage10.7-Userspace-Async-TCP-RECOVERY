@@ -19,8 +19,8 @@ impl Object {
         }
     }
 }
-static OBJECTS: IrqMutex<[Object; COUNT]> = IrqMutex::new([Object::EMPTY; COUNT]);
-static WORKER: IrqMutex<Option<TaskId>> = IrqMutex::new(None);
+static OBJECTS: IrqMutex<[Object; COUNT]> = IrqMutex::with_rank([Object::EMPTY; COUNT], 10);
+static WORKER: IrqMutex<Option<TaskId>> = IrqMutex::with_rank(None, 10);
 
 fn lookup(objects: &mut [Object; COUNT], owner: u64, raw: u64) -> Result<&mut Object, ()> {
     if raw & 0xffff_0000 != TAG || raw >> 32 == 0 { return Err(()); }
