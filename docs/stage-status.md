@@ -87,3 +87,9 @@ Clippy, and QEMU validation on 1/2/4 CPUs. See
 [audit](audit-stage12-1-2026-09-16.md).
 
 Next: Stage 12.2 WovenFS metadata and crash-consistency design.
+
+## Stages 12.2–12.5 — accepted on 2026-09-16
+
+WovenFS metadata/integrity, volume-authentication primitives, snapshots, and
+storage-management inventory each passed their 1/2/4-CPU gates. See
+[audit](audit-stage12-2-5-2026-09-16.md). Stage 12 is complete.

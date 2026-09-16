@@ -18,6 +18,14 @@ mod thread;
 mod notifications;
 #[cfg(feature = "stage12-1-test")]
 mod vfs_api;
+#[cfg(any(feature = "stage12-2-test", feature = "stage12-3-test", feature = "stage12-4-test", feature = "stage12-5-test"))]
+mod wovenfs;
+#[cfg(feature = "stage12-3-test")]
+mod volume_crypto;
+#[cfg(feature = "stage12-4-test")]
+mod snapshots;
+#[cfg(feature = "stage12-5-test")]
+mod storage_manager;
 #[cfg(feature = "stage10-8-test")]
 mod async_acceptance;
 mod audit;
@@ -1723,6 +1731,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         serial::write_line(format_args!("[S12.1] VFS boundary: PASSED"));
         qemu_test_exit_success();
     }
+    #[cfg(feature = "stage12-2-test")]
+    { if !wovenfs::structural_self_test() { serial::write_line(format_args!("[S12.2] WovenFS: FAILED")); qemu_test_exit_failure(); } serial::write_line(format_args!("[S12.2] WovenFS: PASSED")); qemu_test_exit_success(); }
+    #[cfg(feature = "stage12-3-test")]
+    { if !volume_crypto::structural_self_test() { serial::write_line(format_args!("[S12.3] encryption: FAILED")); qemu_test_exit_failure(); } serial::write_line(format_args!("[S12.3] encryption: PASSED")); qemu_test_exit_success(); }
+    #[cfg(feature = "stage12-4-test")]
+    { if !snapshots::structural_self_test() { serial::write_line(format_args!("[S12.4] snapshots: FAILED")); qemu_test_exit_failure(); } serial::write_line(format_args!("[S12.4] snapshots: PASSED")); qemu_test_exit_success(); }
+    #[cfg(feature = "stage12-5-test")]
+    { if !storage_manager::structural_self_test() { serial::write_line(format_args!("[S12.5] storage management: FAILED")); qemu_test_exit_failure(); } serial::write_line(format_args!("[S12.5] storage management: PASSED")); qemu_test_exit_success(); }
     #[cfg(feature = "stage11-4-test")]
     {
         serial::write_line(format_args!("[S11.4] libwoven runtime boundary: PASSED"));
