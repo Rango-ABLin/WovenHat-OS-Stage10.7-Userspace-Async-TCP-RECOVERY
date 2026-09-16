@@ -8,3 +8,9 @@ target/
 *.log
 
 /wovenhat-disk.img
+/.cargo-build/
+/stage*-artifacts/
+/stage*-logs/
+/audit-artifacts/
+__pycache__/
+*.pyc

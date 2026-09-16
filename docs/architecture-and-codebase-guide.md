@@ -1,0 +1,137 @@
+# WovenHat OS Architecture & Codebase Guide
+
+## Scope and source of truth
+
+This guide describes the Stage 10.7 source, not the proposed 1.0 system. WovenHat
+currently has a monolithic Rust kernel, a UEFI boot image builder, embedded Ring-3
+programs, and host/QEMU acceptance harnesses. The supplied
+[master development roadmap](master-development-roadmap.md) defines future stages.
+[Stage status](stage-status.md) records which gates have actually passed.
+
+## Repository map
+
+| Files | Responsibility |
+| --- | --- |
+| `Cargo.toml`, `kernel/Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/config.toml` | Workspace, pinned toolchain, freestanding kernel artifact and feature selection |
+| `build.rs`, `src/main.rs` | Package the kernel with the UEFI bootloader; expose the generated image path to harnesses |
+| `kernel/src/main.rs`, `config.rs` | Initialization order, subsystem wiring, configuration bounds and boot acceptance orchestration |
+| `hal/`, `ap_start.S`, `smp.rs`, `gdt.rs`, `interrupts.rs`, `pic.rs`, `timer.rs` | CPU/platform discovery, AP startup, descriptor tables, interrupts and timekeeping |
+| `task.rs`, `userspace.rs`, `elf.rs`, `syscall.rs` | Scheduling, process lifecycle, Ring-3 images, ELF validation and syscall dispatch |
+| `memory.rs`, `paging.rs`, `heap.rs`, `swap.rs`, `file_frames.rs`, `file_mapping.rs`, `page_cache.rs` | Physical/virtual memory, allocation, backing storage and file mappings |
+| `block.rs`, `block_cache.rs`, `block_io.rs`, `ata.rs`, `partition.rs`, `gpt.rs`, `storage.rs` | Block devices, request execution, caching, partitions and storage initialization |
+| `vfs.rs`, `fat32.rs`, `async_file.rs` | Filesystem operations and positional asynchronous file requests |
+| `async_op.rs`, `async_network.rs`, `irq_lock.rs` | Completion ownership, asynchronous sockets and interrupt-safe network/completion locks |
+| `network.rs`, `virtio_net.rs` | smoltcp IPv4 sockets and the transitional VirtIO-net transport |
+| `capability.rs`, `wovenguard.rs`, `audit.rs`, `entropy.rs` | Authority, domains, resource policy, security ledger and entropy support |
+| `ipc.rs`, `pipe.rs` | IPC objects, endpoint/message operations and byte pipes |
+| `device.rs`, `keyboard.rs`, `serial.rs`, `console.rs`, `terminal.rs`, `shell.rs` | Device registry, input, diagnostics and command interfaces |
+| `graphics.rs`, `gui.rs` | Existing framebuffer/GUI support; not the future compositor |
+| `panic.rs`, `benchmark.rs` | Failure reporting and existing benchmark support |
+| `tests/`, `scripts/`, `run-stage*-acceptance.ps1` | Host regressions, QEMU orchestration and stage preservation gates |
+
+## Stage 10.7 objects and data flow
+
+`async_op::Handle` identifies a slot and a 32-bit generation. Its raw ABI uses
+bits 0..15 for the slot, bits 32..63 for generation, and requires reserved bits
+16..31 to be zero. A `Completion` is 16 bytes: signed status, reserved word and
+64-bit value. The operation table records `TaskId` ownership, class, state and a
+wait registration. Today ownership is task-bound; a shared per-process completion
+port is Stage 10.8 work, not an existing property.
+
+`network::UserSocket` associates a process owner and descriptor slot with a
+smoltcp socket, peer, generation, async reference count and closing flag.
+`SocketToken` carries slot, generation and owner for in-flight kernel operations.
+Closing a pinned descriptor hides it from further descriptor operations; the
+socket remains available to its existing tokens until the last pin is released.
+
+`async_network::Request` stores owner, request identity, socket token, operation,
+endpoint, length, kernel-owned bytes, result and generic completion handle.
+The bounded queue holds pending, in-progress and completed requests. The worker
+copies one request under the queue lock and releases that lock before entering
+the socket runtime. Cancellation/teardown detach an in-progress request rather
+than freeing its socket under the executing worker. The worker subsequently
+releases that pin on completion or retry.
+
+The submission path is:
+
+1. `syscall.rs` checks WovenGuard network-device authority and validates arguments.
+2. Send copies bytes from userspace immediately; receive retains only capacity.
+3. `async_network.rs` pins the socket and allocates an owner-bound Network handle.
+4. Queue publication precedes signaling the worker's latched scheduler event.
+5. The worker attempts each queue slot at most once per pass. `WouldBlock` leaves
+   that request pending and permits later requests to run. After the bounded
+   pass, the worker waits for an event.
+6. `network::poll()` drives smoltcp, releases its runtime lock, then notifies the
+   worker if one locked queue snapshot sees pending or in-progress work.
+7. Completion publication wakes a registered owner. Poll/wait copy completion
+   and receive bytes to validated userspace destinations before consuming the
+   request, releasing its socket pin and releasing the generic handle.
+
+Failed copyout preserves the kernel result for retry. No asynchronous request
+retains a userspace pointer. Cancellation does not roll back bytes already
+accepted by the socket transport.
+
+## Existing syscall boundary
+
+| Number | API | Behavior |
+| --- | --- | --- |
+| 67 | Async cancellation | Owner-authorized cancellation; class-specific request cleanup |
+| 77 | `AsyncNetSend` | Socket descriptor, input pointer and length; returns a completion handle |
+| 78 | `AsyncNetRecv` | Socket descriptor and capacity; returns a completion handle |
+| 79 | `AsyncNetPoll` | Nonblocking completion/data collection |
+| 80 | `AsyncNetWait` | Event-driven wait followed by retry-safe collection |
+| 81 | `AsyncTcpConnect` | Socket descriptor and packed endpoint; completes on connection readiness |
+
+The audit corrections add no syscall numbers or capabilities. Existing network
+policy gates remain at submission and collection; ownership checks remain on
+handles. Teardown does not depend on retaining network permission.
+
+## Concurrency and lock order
+
+`irq_lock::IrqMutex` disables local maskable interrupts before taking its spin
+mutex. Its guard releases the mutex before restoring the original interrupt
+state and cannot be transferred to another thread. Nested guards preserve IF=0.
+This addresses same-CPU preemption deadlock, which a plain spin mutex cannot
+prevent even when the workload runs on only one CPU.
+
+The network request queue, worker identity, generic completion table, socket
+runtime and VirtIO-net transport use this guard. No task may sleep or switch
+while holding it. The worker drops queue/runtime guards before generic completion
+publication or scheduler event waiting. Teardown can follow scheduler -> request
+queue -> socket runtime. Network polling drops runtime before querying the queue;
+transport polling releases its lock before socket-runtime acquisition. Runtime
+packet handling can take runtime -> transport.
+
+The socket worker remains CPU0-pinned. These changes do not introduce parallel
+smoltcp workers, per-CPU network queues or unrestricted multicore I/O services.
+The existing network runtime remains globally serialized. The guard does not
+make arbitrary legacy subsystem locks safe; broader lock audits remain necessary.
+
+## Tests and evidence
+
+`tests/async_network.rs` includes the production worker with deterministic host
+socket/scheduler doubles. It covers blocked-before-ready requests, bounded passes,
+parking, in-progress readiness notification, cancellation and racing owner cleanup.
+`tests/irq_lock.rs` includes the production guard with host interrupt/mutex doubles.
+`tests/test_tcp_harness.py` verifies host-server success and failure reporting.
+
+The Ring-3 TCP probe queues receive before send on its second connection, forcing
+the worker to handle a blocked operation without starving the send that enables
+the host reply. It also checks invalid completion/data destinations and retries,
+close while pinned, EOF, cancellation and owner teardown. The host requires both
+TCP exchanges, required serial markers and QEMU debug-exit status 33.
+
+`RUN-STAGE10.7.ps1` captures the chained acceptance transcript and snapshots QEMU
+logs under `audit-artifacts/`. Stage 7.6 stress logs are retained per invocation.
+`build.rs` tracks the actual kernel artifact so writing a log does not itself
+trigger image reconstruction. Kernel changes still invalidate the image.
+
+## Boundaries before later stages
+
+Network progress still depends on the existing polling driver, not a new hardware
+interrupt-driven NIC architecture. Send completion means local socket acceptance,
+not remote acknowledgement; closing does not promise graceful draining. Public
+socket descriptors remain process-local integer slots, while in-flight tokens
+carry generations. Generation counters remain finite. Generic completions have
+single-task ownership and no wait-many or completion-port facility. These are
+explicit architectural boundaries, not claims of a finished production network stack.

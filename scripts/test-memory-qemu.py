@@ -37,6 +37,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     serial = out / 'serial.log'
     serial.write_text('')
+    qemu_log = out / 'qemu.log'
     command = [str(qemu), '-machine', 'q35', '-m', '256M', '-smp', str(args.cpus),
                '-display', 'none', '-serial', f'file:{serial}', '-no-reboot',
                '-device', 'isa-debug-exit,iobase=0xf4,iosize=0x04',
@@ -47,12 +48,15 @@ def main():
     try:
         result = subprocess.run(command, cwd=root, capture_output=True, text=True,
                                 timeout=args.timeout, creationflags=flags)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as error:
+        output = (error.stdout or b'') + (error.stderr or b'')
+        qemu_log.write_text(output.decode(errors='replace'), encoding='utf-8')
         log = serial.read_text(errors='replace')
         if log:
             print(log[-12000:], file=sys.stderr)
         print('QEMU boot suite timed out. See', serial, file=sys.stderr)
         return 1
+    qemu_log.write_text(result.stdout + result.stderr, encoding='utf-8')
     log = serial.read_text(errors='replace')
     if args.stage10_5:
         required = [

@@ -6,8 +6,8 @@
 //! The worker sleeps on scheduler events when smoltcp reports WouldBlock;
 //! `network::poll()` signals progress so readiness retries are event-driven.
 
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use spin::Mutex;
+use core::sync::atomic::{AtomicU64, Ordering};
+use crate::irq_lock::IrqMutex as Mutex;
 use smoltcp::wire::IpEndpoint;
 
 use crate::{
@@ -56,10 +56,11 @@ impl Queue {
         *slot = Some(request);
         true
     }
-    fn take_pending(&mut self) -> Option<Work> {
-        for (slot, entry) in self.entries.iter_mut().enumerate() {
+    fn take_pending(&mut self, next_slot: &mut usize) -> Option<Work> {
+        for (slot, entry) in self.entries.iter_mut().enumerate().skip(*next_slot) {
             let Some(request) = entry.as_mut() else { continue; };
             if request.state == State::Pending {
+                *next_slot = slot + 1;
                 request.state = State::InProgress;
                 return Some(Work { slot, request: *request });
             }
@@ -137,7 +138,9 @@ impl Queue {
         }
         count
     }
-    fn has_pending(&self) -> bool { self.entries.iter().flatten().any(|r| r.state == State::Pending) }
+    fn has_work(&self) -> bool {
+        self.entries.iter().flatten().any(|r| r.state != State::Complete)
+    }
     #[cfg(any(feature = "stage10-6-test", feature = "stage10-7-test"))]
     fn active(&self) -> usize { self.entries.iter().filter(|e| e.is_some()).count() }
 }
@@ -148,7 +151,6 @@ static SUBMITTED: AtomicU64 = AtomicU64::new(0);
 static COMPLETED: AtomicU64 = AtomicU64::new(0);
 static CANCELLED: AtomicU64 = AtomicU64::new(0);
 static OWNER_REAPED: AtomicU64 = AtomicU64::new(0);
-static NETWORK_WORK_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy)]
 pub struct UserResult {
@@ -239,22 +241,29 @@ fn signal_worker() {
 
 pub fn network_progress() {
     let worker = *WORKER.lock();
-    let pending = QUEUE.lock().has_pending();
-    let in_progress = NETWORK_WORK_IN_PROGRESS.load(Ordering::Acquire);
-    if pending || in_progress {
+    // Observe Pending and InProgress in ONE critical section. Sampling a queue
+    // predicate and then a separate atomic bridge can miss a transition: first
+    // read Pending=false, then the worker retries and clears the bridge, then
+    // read bridge=false. The request never leaves this queue while being tried.
+    let active = QUEUE.lock().has_work();
+    if active {
         if let Some(worker) = worker { let _ = task::signal_event(worker); }
     }
 }
 
 fn worker_task() -> ! {
     loop {
-        while process_one() {}
+        // Attempt each slot at most once per wake. A blocked connection must
+        // not prevent unrelated sockets from progressing, and retrying blocked
+        // slots within this pass would turn event-driven waiting into a spin.
+        // Submissions to already visited slots latch a scheduler event.
+        let mut next_slot = 0;
+        while process_one(&mut next_slot) {}
         task::wait_for_event();
     }
 }
 
 fn finish_invalid(work: Work, data: [u8; MAX_IO_SIZE]) -> bool {
-    NETWORK_WORK_IN_PROGRESS.store(false, Ordering::Release);
     let plain: Result<usize, SocketError> = Err(SocketError::Address);
     let handle = QUEUE.lock().finish(work.slot, work.request.id, plain, data);
     COMPLETED.fetch_add(1, Ordering::Relaxed);
@@ -264,14 +273,8 @@ fn finish_invalid(work: Work, data: [u8; MAX_IO_SIZE]) -> bool {
     true
 }
 
-fn process_one() -> bool {
-    // Arm the network-progress bridge before removing a Pending request from
-    // the queue. This closes the SMP window where network::poll() could make
-    // a socket ready while the request was temporarily InProgress and the
-    // old pending-only readiness check would discard that wakeup.
-    NETWORK_WORK_IN_PROGRESS.store(true, Ordering::Release);
-    let Some(work) = QUEUE.lock().take_pending() else {
-        NETWORK_WORK_IN_PROGRESS.store(false, Ordering::Release);
+fn process_one(next_slot: &mut usize) -> bool {
+    let Some(work) = QUEUE.lock().take_pending(next_slot) else {
         return false;
     };
     let mut data = work.request.data;
@@ -288,15 +291,12 @@ fn process_one() -> bool {
     match result {
         Err(SocketError::WouldBlock) | Err(SocketError::BufferFull) => {
             QUEUE.lock().retry(work.slot, work.request.id);
-            // The request is Pending again before the bridge is disarmed.
-            // Therefore a progress edge is covered either by in_progress=true
-            // or by the ordinary Pending test; there is no uncovered wakeup
-            // window between retry and wait_for_event().
-            NETWORK_WORK_IN_PROGRESS.store(false, Ordering::Release);
-            false
+            // Both sides of InProgress -> Pending are visible to the single
+            // queue-state snapshot in network_progress(). The scheduler event
+            // latch covers a signal arriving before wait_for_event().
+            true
         }
         other => {
-            NETWORK_WORK_IN_PROGRESS.store(false, Ordering::Release);
             let plain = other.map(|(n, _)| n);
             let handle = QUEUE.lock().finish(work.slot, work.request.id, plain, data);
             COMPLETED.fetch_add(1, Ordering::Relaxed);

@@ -14,3 +14,10 @@ exercise deterministic cancellation and owner teardown.
 
 Run:
   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\RUN-STAGE10.7.ps1
+
+2026-09-16 audit and full acceptance: PASS.
+The worker now uses bounded passes and interrupt-safe locks, and readiness uses
+one coherent queue-state observation. TCP acceptance also covers receive-before-
+send fairness and retry after invalid completion/data destinations.
+See docs/stage-status.md, docs/audit-stage10-7-2026-09-16.md and
+docs/architecture-and-codebase-guide.md for evidence, changes and limitations.

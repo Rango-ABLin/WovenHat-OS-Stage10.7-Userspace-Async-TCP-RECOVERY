@@ -1,5 +1,8 @@
 # WovenHat OS — Master Roadmap to a Fully-Fledged, Best-in-Class OS
 
+> Historical roadmap. The user-supplied [Stage 10.7–36 roadmap](master-development-roadmap.md)
+> now defines development order. Consult [stage status](stage-status.md) for actual acceptance.
+
 **Prepared**: September 2026
 **Based on**: direct review of the current source tree (`kernel/`, `docs/`, CI config) — not the aspirational docs
 **Supersedes**: `docs/os-improvement-roadmap.md` and `docs/COMPLETE-AI-DIRECTIVE.md` (archived to `docs/archive/`), which describe an earlier stage of the project than what actually exists in the repo today

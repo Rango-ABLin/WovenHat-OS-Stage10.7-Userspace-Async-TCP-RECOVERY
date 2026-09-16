@@ -11,7 +11,7 @@ use core::{
     mem::size_of,
     sync::atomic::{fence, Ordering},
 };
-use spin::Mutex;
+use crate::irq_lock::IrqMutex as Mutex;
 
 use crate::{hal::pci, paging};
 

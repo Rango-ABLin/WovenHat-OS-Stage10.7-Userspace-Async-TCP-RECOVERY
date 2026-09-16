@@ -13,7 +13,8 @@ use smoltcp::{
     time::Instant,
     wire::{EthernetAddress, IpAddress, IpCidr, IpEndpoint, Ipv4Address},
 };
-use spin::{Mutex, Once};
+use spin::Once;
+use crate::irq_lock::IrqMutex as Mutex;
 
 use crate::{
     timer,

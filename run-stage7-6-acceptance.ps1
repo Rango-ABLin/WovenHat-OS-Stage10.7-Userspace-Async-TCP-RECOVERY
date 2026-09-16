@@ -2,8 +2,7 @@ $ErrorActionPreference = 'Stop'
 
 Write-Host '=== WovenHat Stage 7.6 Integrated Multicore Userspace Closure Acceptance ==='
 
-$artifactRoot = '.\stage7-6-artifacts'
-Remove-Item $artifactRoot -Recurse -Force -ErrorAction SilentlyContinue
+$artifactRoot = Join-Path '.\stage7-6-artifacts' (Get-Date -Format 'yyyyMMdd-HHmmss-fff')
 New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
 
 function Invoke-Checked([string]$Label, [scriptblock]$Command) {
@@ -30,12 +29,12 @@ function Run-MemoryStress([int]$Cpu, [int]$Runs) {
     New-Item -ItemType Directory -Path $logDir -Force | Out-Null
     for ($run = 1; $run -le $Runs; $run++) {
         Write-Host "=== MEMORY $Cpu CPU RUN $run OF $Runs ==="
-        Get-Process qemu-system-x86_64 -ErrorAction SilentlyContinue | Stop-Process -Force
-        Start-Sleep -Milliseconds 150
         python .\scripts\test-memory-qemu.py --cpus $Cpu
         $code = $LASTEXITCODE
         $src = ".\target\memory-regression-$Cpu-debug\serial.log"
         if (Test-Path $src) { Copy-Item $src (Join-Path $logDir "run-$run.log") -Force }
+        $qemuLog = ".\target\memory-regression-$Cpu-debug\qemu.log"
+        if (Test-Path $qemuLog) { Copy-Item $qemuLog (Join-Path $logDir "run-$run-qemu.log") -Force }
         if ($code -ne 0) {
             Save-Failure $Cpu $run 'memory'
             throw "Stage 7.6 memory test failed on $Cpu CPU(s), run $run"

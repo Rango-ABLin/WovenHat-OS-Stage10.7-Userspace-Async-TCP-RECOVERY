@@ -32,6 +32,7 @@ mod hal;
 mod heap;
 mod interrupts;
 mod ipc;
+mod irq_lock;
 mod keyboard;
 mod memory;
 mod network;

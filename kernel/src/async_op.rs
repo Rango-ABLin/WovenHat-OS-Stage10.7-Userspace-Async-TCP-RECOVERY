@@ -13,7 +13,7 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use spin::Mutex;
+use crate::irq_lock::IrqMutex as Mutex;
 
 use crate::{
     config::MAX_ASYNC_OPERATIONS,

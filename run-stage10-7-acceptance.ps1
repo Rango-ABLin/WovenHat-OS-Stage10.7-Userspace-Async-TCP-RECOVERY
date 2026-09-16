@@ -1,6 +1,12 @@
 $ErrorActionPreference = "Stop"
 Write-Host "=== WovenHat Stage 10.7 Userspace Async TCP Acceptance ==="
 Write-Host ""
+Write-Host "=== Host acceptance-harness regressions ==="
+python -m unittest discover -s tests -p 'test_*.py'
+if ($LASTEXITCODE -ne 0) { throw 'Host acceptance-harness regressions failed' }
+Write-Host "=== Host lint ==="
+cargo clippy -- -D warnings
+if ($LASTEXITCODE -ne 0) { throw 'Host lint failed' }
 Write-Host "=== 1/2 Preserve complete validated Stage 10.6 baseline ==="
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\run-stage10-6-acceptance.ps1
 if ($LASTEXITCODE -ne 0) { throw "Stage 10.6 preservation acceptance failed with exit code $LASTEXITCODE" }

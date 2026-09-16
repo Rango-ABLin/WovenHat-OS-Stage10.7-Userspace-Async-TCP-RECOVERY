@@ -24,13 +24,14 @@ def recv_exact(conn, count):
     return bytes(data)
 
 
-def serve(stop, errors):
+def serve(stop, errors, ready, finished):
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
             server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             server.bind(("127.0.0.1", HOST_PORT))
             server.listen(8)
             server.settimeout(0.2)
+            ready.set()
             completed = 0
             while not stop.is_set() and completed < 2:
                 try:
@@ -49,11 +50,14 @@ def serve(stop, errors):
                             conn.shutdown(socket.SHUT_WR)
                         except OSError:
                             pass
-            if completed < 2 and not stop.is_set():
+            if completed < 2:
                 raise RuntimeError("guest did not complete two Stage 10.7 TCP connections")
+            finished.set()
     except Exception as exc:
         errors.append(exc)
         stop.set()
+    finally:
+        ready.set()
 
 
 def main():
@@ -85,12 +89,15 @@ def main():
     qemu_log = out / 'qemu.log'
 
     stop = threading.Event()
+    ready = threading.Event()
+    finished = threading.Event()
     server_errors = []
-    thread = threading.Thread(target=serve, args=(stop, server_errors), daemon=True)
+    thread = threading.Thread(target=serve, args=(stop, server_errors, ready, finished), daemon=True)
     thread.start()
-    time.sleep(0.05)
-    if server_errors:
-        print(server_errors[0], file=sys.stderr)
+    if not ready.wait(timeout=5) or server_errors:
+        stop.set()
+        thread.join(timeout=2)
+        print(server_errors[0] if server_errors else 'Host TCP listener did not become ready', file=sys.stderr)
         return 1
 
     command = [
@@ -146,7 +153,7 @@ def main():
         ready_marker,
         pass_marker,
     ]
-    if result != 33 or server_errors or any(marker not in log for marker in required):
+    if result != 33 or server_errors or not finished.is_set() or thread.is_alive() or any(marker not in log for marker in required):
         if server_errors:
             print(server_errors[0], file=sys.stderr)
         print(log[-14000:], file=sys.stderr)

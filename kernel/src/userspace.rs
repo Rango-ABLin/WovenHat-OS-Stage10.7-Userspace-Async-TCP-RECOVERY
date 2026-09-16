@@ -639,13 +639,18 @@ global_asm!(
     "mov eax, 77", "mov rdi, r12", "mov rsi, r15", "mov edx, 16", "int 0x80", "cmp rax, -1", "je wovenhat_stage10_7_failure", "mov r13, rax",
     "mov eax, 42", "mov rdi, r12", "int 0x80", "test rax, rax", "jne wovenhat_stage10_7_failure",
     "mov eax, 80", "mov rdi, r13", "mov rsi, r14", "xor edx, edx", "int 0x80", "cmp rax, 1", "jne wovenhat_stage10_7_failure", "cmp dword ptr [r14], 0", "jne wovenhat_stage10_7_failure", "cmp qword ptr [r14 + 8], 16", "jne wovenhat_stage10_7_failure",
-    // Connection B: connect, send request, receive host payload, then observe remote EOF (value 0).
+    // Connection B: queue receive BEFORE send. The host waits for TX, so a
+    // worker that retries only the first blocked slot deterministically stalls.
     "mov eax, 37", "mov edi, 2", "int 0x80", "cmp rax, -1", "je wovenhat_stage10_7_failure", "mov r12, rax",
     "mov eax, 81", "mov rdi, r12", "mov rsi, 0x000046a00a000202", "int 0x80", "cmp rax, -1", "je wovenhat_stage10_7_failure", "mov r13, rax",
     "mov eax, 80", "mov rdi, r13", "mov rsi, r14", "xor edx, edx", "int 0x80", "cmp rax, 1", "jne wovenhat_stage10_7_failure", "cmp dword ptr [r14], 0", "jne wovenhat_stage10_7_failure",
+    "mov eax, 78", "mov rdi, r12", "mov esi, 16", "int 0x80", "cmp rax, -1", "je wovenhat_stage10_7_failure", "mov [rsp - 240], rax",
     "mov eax, 77", "mov rdi, r12", "mov rsi, r15", "mov edx, 16", "int 0x80", "cmp rax, -1", "je wovenhat_stage10_7_failure", "mov r13, rax",
     "mov eax, 80", "mov rdi, r13", "mov rsi, r14", "xor edx, edx", "int 0x80", "cmp rax, 1", "jne wovenhat_stage10_7_failure", "cmp dword ptr [r14], 0", "jne wovenhat_stage10_7_failure",
-    "mov eax, 78", "mov rdi, r12", "mov esi, 16", "int 0x80", "cmp rax, -1", "je wovenhat_stage10_7_failure", "mov r13, rax",
+    "mov r13, [rsp - 240]",
+    // Failed completion/data copyout must leave the receive result retrievable.
+    "mov eax, 80", "mov rdi, r13", "mov rsi, -1", "mov rdx, rbx", "int 0x80", "cmp rax, -1", "jne wovenhat_stage10_7_failure",
+    "mov eax, 80", "mov rdi, r13", "mov rsi, r14", "mov rdx, -1", "int 0x80", "cmp rax, -1", "jne wovenhat_stage10_7_failure",
     "mov eax, 80", "mov rdi, r13", "mov rsi, r14", "mov rdx, rbx", "int 0x80", "cmp rax, 1", "jne wovenhat_stage10_7_failure", "cmp dword ptr [r14], 0", "jne wovenhat_stage10_7_failure", "cmp qword ptr [r14 + 8], 16", "jne wovenhat_stage10_7_failure",
     "mov rax, 0x5441484e45564f57", "cmp [rbx], rax", "jne wovenhat_stage10_7_failure",
     "mov rax, 0x2158522d5043542d", "cmp [rbx + 8], rax", "jne wovenhat_stage10_7_failure",
