@@ -65,3 +65,11 @@ groups, isolated resources and teardown passed build, Clippy, host tests, and
 1/2/4-CPU QEMU validation. See [audit](audit-stage11-1-2026-09-16.md).
 
 Next: Stage 11.2 per-process threads and join/TLS semantics.
+
+## Stage 11.2 — accepted on 2026-09-16
+
+Generation-safe thread IDs, owner-checked join, termination status, TLS and
+thread-local errno state passed build, Clippy, host tests, and 1/2/4-CPU QEMU
+validation. See [audit](audit-stage11-2-2026-09-16.md).
+
+Next: Stage 11.3 structured notifications and lifecycle events.

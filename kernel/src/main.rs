@@ -12,6 +12,8 @@ mod async_file;
 mod async_network;
 mod async_events;
 mod deadline;
+#[cfg(feature = "stage11-2-test")]
+mod thread;
 #[cfg(feature = "stage10-8-test")]
 mod async_acceptance;
 mod audit;
@@ -1688,6 +1690,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     #[cfg(feature = "stage11-1-test")]
     {
         serial::write_line(format_args!("[S11.1] production process model: PASSED"));
+        qemu_test_exit_success();
+    }
+    #[cfg(feature = "stage11-2-test")]
+    {
+        if !thread::structural_self_test() {
+            serial::write_line(format_args!("[S11.2] threads/TLS/join: FAILED"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!("[S11.2] threads/TLS/join: PASSED"));
         qemu_test_exit_success();
     }
     #[cfg(feature = "stage10-9-test")]
