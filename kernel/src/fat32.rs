@@ -602,12 +602,13 @@ pub fn long_name_checksum(short: &[u8; 11]) -> u8 {
     })
 }
 
-/// Encode an ASCII long filename into FAT directory records.
+/// Encode a bounded UTF-8 long filename into FAT directory records.
 ///
 /// Records are returned in on-disk order (highest ordinal first), followed by
 /// the short entry written by the caller. Only printable single-byte UTF-8 is
-/// accepted in this bounded kernel path; non-ASCII names remain rejected until
-/// the VFS string and directory listing buffers grow their Unicode contract.
+/// UTF-8 is converted to UTF-16 code units, including surrogate pairs for
+/// supplementary scalar values. The byte-length bound keeps the path ABI
+/// bounded while the record count remains within the FAT LFN limit.
 pub fn encode_long_name(
     name: &str,
     short: &[u8; 11],
@@ -616,13 +617,38 @@ pub fn encode_long_name(
     let bytes = name.as_bytes();
     if bytes.is_empty()
         || bytes.len() > MAX_LONG_NAME
-        || !bytes
-            .iter()
-            .all(|byte| (0x20..=0x7e).contains(byte) && *byte != b'/' && *byte != b'\\')
     {
         return None;
     }
-    let count = bytes.len().div_ceil(LFN_CHARS_PER_ENTRY);
+    let mut units = [0u16; MAX_LONG_NAME];
+    let mut unit_count = 0usize;
+    for character in name.chars() {
+        if character == '/' || character == '\\' || character < ' ' {
+            return None;
+        }
+        let scalar = character as u32;
+        if scalar <= 0xffff {
+            if (0xd800..=0xdfff).contains(&scalar) {
+                return None;
+            }
+            if unit_count == units.len() {
+                return None;
+            }
+            units[unit_count] = scalar as u16;
+            unit_count += 1;
+        } else if scalar <= 0x10ffff {
+            if unit_count.checked_add(2).is_none_or(|end| end > units.len()) {
+                return None;
+            }
+            let value = scalar - 0x10000;
+            units[unit_count] = 0xd800 | (value >> 10) as u16;
+            units[unit_count + 1] = 0xdc00 | (value & 0x3ff) as u16;
+            unit_count += 2;
+        } else {
+            return None;
+        }
+    }
+    let count = unit_count.div_ceil(LFN_CHARS_PER_ENTRY);
     if count > out.len() {
         return None;
     }
@@ -630,7 +656,7 @@ pub fn encode_long_name(
     for ordinal in 1..=count {
         let index = count - ordinal;
         let start = (ordinal - 1) * LFN_CHARS_PER_ENTRY;
-        let end = bytes.len().min(start + LFN_CHARS_PER_ENTRY);
+        let end = unit_count.min(start + LFN_CHARS_PER_ENTRY);
         let record = &mut out[index];
         record.fill(0xff);
         record[0] = ordinal as u8 | if ordinal == count { 0x40 } else { 0 };
@@ -639,8 +665,8 @@ pub fn encode_long_name(
         record[13] = checksum;
         record[26] = 0;
         record[27] = 0;
-        for (offset, byte) in bytes[start..end].iter().copied().enumerate() {
-            let word = (byte as u16).to_le_bytes();
+        for (offset, word) in units[start..end].iter().copied().enumerate() {
+            let word = word.to_le_bytes();
             let target = match offset {
                 0..=4 => 1 + offset * 2,
                 5..=10 => 14 + (offset - 5) * 2,
@@ -671,7 +697,9 @@ pub fn decode_long_name(
     if count == 0 || count > records.len() || out.is_empty() {
         return None;
     }
-    let mut written = 0;
+    let mut units = [0u16; MAX_LONG_NAME];
+    let mut unit_count = 0usize;
+    let mut terminated = false;
     for ordinal in 1..=count {
         let record = &records[ordinal - 1];
         if record[0] & 0x1f != ordinal as u8
@@ -688,14 +716,67 @@ pub fn decode_long_name(
             };
             let word = u16::from_le_bytes([record[offset], record[offset + 1]]);
             if word == 0 {
-                return Some(written);
+                terminated = true;
+                break;
             }
-            if word == 0xffff || !(0x20..=0x7e).contains(&word) || written == out.len() {
+            if word == 0xffff || unit_count == units.len() {
                 return None;
             }
-            out[written] = word as u8;
-            written += 1;
+            units[unit_count] = word;
+            unit_count += 1;
         }
+        if terminated {
+            break;
+        }
+    }
+    let mut written = 0usize;
+    let mut index = 0usize;
+    while index < unit_count {
+        let unit = units[index];
+        let scalar = if (0xd800..=0xdbff).contains(&unit) {
+            let next = *units.get(index + 1)?;
+            if !(0xdc00..=0xdfff).contains(&next) {
+                return None;
+            }
+            index += 1;
+            0x10000 + (((unit - 0xd800) as u32) << 10) + (next - 0xdc00) as u32
+        } else if (0xdc00..=0xdfff).contains(&unit) {
+            return None;
+        } else {
+            unit as u32
+        };
+        let width = if scalar <= 0x7f {
+            1
+        } else if scalar <= 0x7ff {
+            2
+        } else if scalar <= 0xffff {
+            3
+        } else {
+            4
+        };
+        if written.checked_add(width).is_none_or(|end| end > out.len()) {
+            return None;
+        }
+        match width {
+            1 => out[written] = scalar as u8,
+            2 => {
+                out[written] = 0xc0 | (scalar >> 6) as u8;
+                out[written + 1] = 0x80 | (scalar & 0x3f) as u8;
+            }
+            3 => {
+                out[written] = 0xe0 | (scalar >> 12) as u8;
+                out[written + 1] = 0x80 | ((scalar >> 6) & 0x3f) as u8;
+                out[written + 2] = 0x80 | (scalar & 0x3f) as u8;
+            }
+            _ => {
+                out[written] = 0xf0 | (scalar >> 18) as u8;
+                out[written + 1] = 0x80 | ((scalar >> 12) & 0x3f) as u8;
+                out[written + 2] = 0x80 | ((scalar >> 6) & 0x3f) as u8;
+                out[written + 3] = 0x80 | (scalar & 0x3f) as u8;
+            }
+        }
+        written += width;
+        index += 1;
     }
     Some(written)
 }
@@ -2611,6 +2692,24 @@ pub fn self_test() -> bool {
         ) == Some("A long filename.txt".len())
             && decoded_lfn[.."A long filename.txt".len()] == *b"A long filename.txt"
     });
+    let unicode_name = "caf\u{e9} \u{1f600}.txt";
+    let mut unicode_records = [[0u8; DIRECTORY_ENTRY_SIZE]; MAX_LFN_ENTRIES];
+    let unicode_count = encode_long_name(unicode_name, b"UNICOD~1TXT", &mut unicode_records);
+    let unicode_round_trip = unicode_count.is_some_and(|count| {
+        let mut logical_records = [[0u8; DIRECTORY_ENTRY_SIZE]; MAX_LFN_ENTRIES];
+        for record in unicode_records.iter().take(count) {
+            let ordinal = (record[0] & 0x1f) as usize;
+            logical_records[ordinal - 1] = *record;
+        }
+        let mut decoded = [0u8; MAX_LONG_NAME];
+        decode_long_name(
+            &logical_records,
+            count,
+            long_name_checksum(b"UNICOD~1TXT"),
+            &mut decoded,
+        ) == Some(unicode_name.len())
+            && decoded[..unicode_name.len()] == *unicode_name.as_bytes()
+    });
 
     let mut invalid = TestDisk {
         valid_signature: false,
@@ -2643,6 +2742,7 @@ pub fn self_test() -> bool {
     valid
         && lfn_valid
         && lfn_round_trip
+        && unicode_round_trip
         && invalid_rejected
         && cycle_rejected
         && root_cycle_rejected
@@ -2993,6 +3093,9 @@ fn long_filename_self_test() -> bool {
         && named_entries[0].is_some_and(|entry| {
             entry.entry.short_name[0] == b'W' && entry.long_name_str() == Some(name)
         });
+    let unicode_name = "caf\u{e9} \u{1f600}.txt";
+    let unicode_ok = create_path_file(&mut disk, volume, unicode_name, b"u").is_ok()
+        && resolve_path(&mut disk, volume, unicode_name).is_ok();
     let renamed_name = "Renamed long filename.txt";
     let rename_ok = rename_path(&mut disk, volume, name, renamed_name).is_ok()
         && resolve_path(&mut disk, volume, name).is_err_and(|error| error == Error::NotFound)
@@ -3018,7 +3121,7 @@ fn long_filename_self_test() -> bool {
                 .is_ok_and(|link| matches!(link, ClusterLink::Next(_)))
             && resolve_path(&mut growth_disk, growth_volume, long).is_ok()
     });
-    read_ok && listing_ok && named_listing_ok && rename_ok && delete_ok && growth_ok
+    read_ok && listing_ok && named_listing_ok && unicode_ok && rename_ok && delete_ok && growth_ok
 }
 
 fn directory_growth_self_test() -> bool {
