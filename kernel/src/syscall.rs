@@ -1528,7 +1528,7 @@ fn sys_sleep_until(deadline: u64) -> u64 {
 
 fn sys_notification_poll(user_buffer: u64) -> u64 {
     if !crate::task::current_has(crate::capability::Capability::Ipc) { return SYSCALL_ERROR; }
-    let Some(note) = crate::notifications::receive() else { return 0; };
+    let Some(note) = crate::notifications::receive_for(crate::task::current_process_id()) else { return 0; };
     let mut bytes = [0u8; 24];
     bytes[0..8].copy_from_slice(&(note.kind as u64).to_le_bytes());
     bytes[8..16].copy_from_slice(&note.source.to_le_bytes());

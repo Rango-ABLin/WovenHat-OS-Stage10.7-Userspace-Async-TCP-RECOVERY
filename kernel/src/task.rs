@@ -4425,6 +4425,7 @@ fn complete_process_termination(task_id: TaskId, signal: u8) {
     process.state = ProcessState::Exited;
     process.exit_code = 128 + i32::from(signal);
     let _ = crate::notifications::publish(crate::notifications::Notification {
+        recipient: process.parent.as_u64(),
         kind: crate::notifications::Kind::ChildExit,
         source: process.id.as_u64(),
         payload: process.exit_code as u64,
