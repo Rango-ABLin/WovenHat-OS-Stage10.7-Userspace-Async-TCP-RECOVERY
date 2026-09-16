@@ -17,6 +17,9 @@ use crate::{
     task::{self, TaskId},
 };
 
+#[cfg(test)]
+use crate::task::TaskPriority;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Operation { Connect, Send, Recv }
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -166,10 +169,20 @@ pub struct Stats { pub submitted: u64, pub completed: u64, pub cancelled: u64, p
 
 pub fn start_worker() -> bool {
     if WORKER.lock().is_some() { return true; }
-    match task::spawn_io_service("async-net", worker_task) {
+    match spawn_worker() {
         Ok(id) => { *WORKER.lock() = Some(id); true }
         Err(_) => false,
     }
+}
+
+#[cfg(not(test))]
+fn spawn_worker() -> Result<TaskId, task::SpawnError> {
+    task::spawn_io_service("async-net", worker_task)
+}
+
+#[cfg(test)]
+fn spawn_worker() -> Result<TaskId, ()> {
+    task::spawn_with_priority("async-net", worker_task, TaskPriority::NORMAL)
 }
 
 fn submit(operation: Operation, descriptor: u64, endpoint: Option<IpEndpoint>, data: [u8; MAX_IO_SIZE], length: usize) -> Result<async_op::Handle, ()> {

@@ -44,4 +44,6 @@ their queue, VFS, ATA, and smoltcp state remains protected by global locks and
 they retain no CPU-local ownership across event waits. A fresh 4-CPU memory
 boot and live 4-CPU network round trip passed after this change. This closes
 the scheduler-side service execution gap; unrestricted concurrent device
-throughput still depends on DMA-capable drivers and remains open.
+throughput still depends on DMA-capable drivers and remains open. The full
+release matrix was rerun after this migration and passed; see
+`target/release-validation/results.json`.
