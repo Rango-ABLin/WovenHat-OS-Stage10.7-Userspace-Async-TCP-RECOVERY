@@ -6,7 +6,7 @@ use crate::{
     async_op::{self, AsyncClass, Completion as AsyncCompletion},
     block::{BlockDevice, Error, SECTOR_SIZE},
     config::MAX_BLOCK_IO_REQUESTS,
-    task::{self, TaskId, TaskPriority},
+    task::{self, TaskId},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -228,7 +228,7 @@ pub fn start_worker() -> bool {
     if WORKER_TASK.lock().is_some() {
         return true;
     }
-    match task::spawn_with_priority("block-io", worker_task, TaskPriority::NORMAL) {
+    match task::spawn_io_service("block-io", worker_task) {
         Ok(id) => {
             *WORKER_TASK.lock() = Some(id);
             true

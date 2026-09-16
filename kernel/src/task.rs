@@ -4863,6 +4863,32 @@ pub unsafe fn spawn_migratable_on(
     spawn_kernel_on(cpu, name, entry, true, online_affinity_mask())
 }
 
+/// Start a globally synchronized kernel service that may move between CPUs
+/// while it is Ready. Services must keep all state behind a global lock, retain
+/// no per-CPU pointers or interrupt-state assumptions across waits, and use
+/// only the scheduler/event primitives plus their audited shared subsystem.
+/// This is the controlled bridge for asynchronous I/O workers; it does not
+/// make ordinary userspace or legacy device paths freely migratable.
+pub fn spawn_io_service(name: &'static str, entry: fn() -> !) -> Result<TaskId, SpawnError> {
+    let cpu = {
+        let scheduler = SCHEDULER.lock();
+        let loads = scheduler.run_loads();
+        (0..crate::smp::online_count())
+            .min_by_key(|cpu| {
+                (
+                    usize::from(crate::smp::cpu_domain(*cpu) != crate::smp::cpu_domain(crate::smp::cpu_index())),
+                    loads[*cpu].runnable(),
+                    *cpu,
+                )
+            })
+            .unwrap_or(0)
+    };
+    // SAFETY: callers are the audited asynchronous service workers. Their
+    // queues and subsystem state are globally synchronized and they retain no
+    // CPU-local ownership across scheduler waits.
+    unsafe { spawn_migratable_on(cpu, name, entry) }
+}
+
 /// Move one explicitly migratable task to another online CPU.
 ///
 /// The global scheduler lock is the ownership hand-off: migration is accepted

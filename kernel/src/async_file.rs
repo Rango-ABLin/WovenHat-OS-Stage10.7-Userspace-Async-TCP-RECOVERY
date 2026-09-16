@@ -13,7 +13,7 @@ use spin::Mutex;
 use crate::{
     async_op::{self, AsyncClass, Completion},
     config::{MAX_ASYNC_FILE_REQUESTS, MAX_IO_SIZE},
-    task::{self, TaskId, TaskPriority},
+    task::{self, TaskId},
     vfs,
     wovenguard::FileScope,
 };
@@ -156,7 +156,7 @@ pub struct Stats { pub submitted: u64, pub completed: u64, pub cancelled: u64, p
 
 pub fn start_worker() -> bool {
     if WORKER.lock().is_some() { return true; }
-    match task::spawn_with_priority("async-file", worker_task, TaskPriority::NORMAL) {
+    match task::spawn_io_service("async-file", worker_task) {
         Ok(id) => { *WORKER.lock() = Some(id); true }, Err(_) => false,
     }
 }

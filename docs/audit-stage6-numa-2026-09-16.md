@@ -37,3 +37,11 @@ warning-denying kernel/host lint, standalone host regressions, 1/2/4 CPU debug
 memory/storage/network, legacy-PIC fallback, 4 CPU release memory/storage/
 network, release build, and shell/SMP smoke. The current freeze report is
 `target/release-validation/results.json`.
+
+Asynchronous block, file, and network workers now use the audited
+`spawn_io_service` path. They can migrate between online CPUs while Ready;
+their queue, VFS, ATA, and smoltcp state remains protected by global locks and
+they retain no CPU-local ownership across event waits. A fresh 4-CPU memory
+boot and live 4-CPU network round trip passed after this change. This closes
+the scheduler-side service execution gap; unrestricted concurrent device
+throughput still depends on DMA-capable drivers and remains open.

@@ -24,6 +24,8 @@ Stage 6 turns the Stage-5 CPU-owned scheduler into a bounded multicore scheduler
     initial placement and rebalancing prefer a local domain and fall back to
     deterministic load balancing when SRAT is absent.
 12. x2APIC MSR register and 64-bit ICR support with automatic xAPIC fallback.
+13. Audited asynchronous block/file/network workers use a migratable service
+    path while Ready; global queue and subsystem locks preserve ownership.
 
 ## Ownership/safety contract
 
@@ -63,7 +65,8 @@ The full `scripts/test-release.py` matrix must remain green before Stage 6 is fo
 
 - general userspace task migration;
 - multicore syscall/service execution;
-- concurrent filesystem/network/device-I/O paths;
+- unrestricted concurrent filesystem/network/device-I/O throughput and
+  DMA-backed service paths;
 - NUMA-aware page allocation and memory locality policy (CPU-domain-aware
   scheduler placement is implemented; page placement remains deferred);
 - x2APIC hardware qualification on APIC IDs above 255;
