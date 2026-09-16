@@ -9,7 +9,7 @@ mistaken for full production completion.
 | Stage 6 | Bounded SMP, TLB shootdowns, 1–4 CPU tests | General multicore userspace, NUMA, hotplug, hardware coverage |
 | Stages 7–9 | Isolation, IPC, capabilities, WovenGuard, ELF W^X | Dynamic libc/linking, complete signals, scheduler-backed threads |
 | Stage 10 | TCP, completion ports, timer/event foundations | Successful Ring-3 timer/event gate and one unified completion path |
-| Stage 11 | Process/thread state, notifications, `libwoven`, loader checks | Real user threads, integrated notifications, PIE/ASLR, relocations, shared libraries, TLS, RELRO |
+| Stage 11 | Process/thread state, notifications, `libwoven`, loader checks, production ASLR | Real scheduler-backed user threads, dynamic relocations, shared libraries, loader TLS, RELRO |
 | Stage 12 | Typed VFS, metadata, checksums, snapshot/mount boundaries, xattrs and restore records | Native WovenFS, journaling/COW disk replay, full data rollback, production AEAD/key vault, mount integration |
 
 For every open item we will add implementation, focused host tests, 1/2/4 CPU
