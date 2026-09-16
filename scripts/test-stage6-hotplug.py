@@ -12,6 +12,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--qemu', default=shutil.which('qemu-system-x86_64') or r'C:\Program Files\qemu\qemu-system-x86_64.exe')
     parser.add_argument('--firmware', type=Path)
+    parser.add_argument('--cpus', type=int, choices=(2, 4), default=2)
     parser.add_argument('--timeout', type=float, default=180)
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
@@ -19,7 +20,7 @@ def main():
     firmware = args.firmware or qemu.parent / 'share' / 'edk2-x86_64-code.fd'
     if not qemu.is_file() or not firmware.is_file():
         parser.error('QEMU and firmware files must exist')
-    out = root / 'audit-artifacts' / f'stage6-hotplug-2cpu-{time.time_ns()}'
+    out = root / 'audit-artifacts' / f'stage6-hotplug-{args.cpus}cpu-{time.time_ns()}'
     out.mkdir(parents=True)
     build = subprocess.run(['cargo', 'run', '--quiet', '--features', 'stage6-hotplug-test', '--', '--print-image'],
                            cwd=root, text=True, capture_output=True)
@@ -28,7 +29,7 @@ def main():
         print(build.stderr, file=sys.stderr)
         return 1
     serial = out / 'serial.log'
-    command = [str(qemu), '-machine', 'q35', '-m', '256M', '-smp', '2',
+    command = [str(qemu), '-machine', 'q35', '-m', '256M', '-smp', str(args.cpus),
                '-display', 'none', '-serial', f'file:{serial}', '-no-reboot',
                '-device', 'isa-debug-exit,iobase=0xf4,iosize=0x04',
                '-drive', f'if=pflash,format=raw,readonly=on,file={firmware}',
@@ -43,14 +44,16 @@ def main():
             print('QEMU timeout; evidence:', out, file=sys.stderr)
             return 1
     log = serial.read_text(errors='replace') if serial.exists() else ''
-    required = ['[SMP] online=2 expected=2',
+    online_after = args.cpus - 1
+    mask_after = (1 << online_after) - 1
+    required = [f'[SMP] online={args.cpus} expected={args.cpus}',
                 '[SMP] topology/NUMA affinity: PASSED',
-                '[S6.HOTPLUG] offline AP: PASSED online=1 mask=0x1']
+                f'[S6.HOTPLUG] offline AP: PASSED online={online_after} mask=0x{mask_after:x}']
     if result.returncode != 33 or any(marker not in log for marker in required):
         print(log[-12000:], file=sys.stderr)
         print('FAILED; evidence:', out, file=sys.stderr)
         return 1
-    print(f'Stage 6 hotplug: PASS (2->1 CPUs, exit 33). Evidence: {out}')
+    print(f'Stage 6 hotplug: PASS ({args.cpus}->{online_after} CPUs, exit 33). Evidence: {out}')
     return 0
 
 
