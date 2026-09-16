@@ -67,9 +67,12 @@ and the [ownership/lock audit](smp-lock-audit.md).
 - [x] Bounded ACPI SRAT CPU-domain discovery with domain-local placement and
       rebalancing; see `docs/audit-stage6-numa-2026-09-16.md`.
 - [x] x2APIC MSR register/ICR support with xAPIC fallback.
+- [x] Bounded highest-numbered AP offline transition with scheduler-safe task
+      evacuation and post-transition online-mask publication.
 - [x] Ownership audit defining which legacy services remain BSP-only.
 - [ ] General multicore userspace, task migration and concurrent I/O service calls.
-- [ ] Measured near-linear speedup, wider hardware coverage, NUMA and hotplug.
+- [ ] General re-online/hotplug lifecycle, measured near-linear speedup, wider
+      hardware coverage, and multi-node NUMA qualification.
 
 ### Phase A2: Real Driver Model & Hardware Portability
 Current drivers are QEMU-specific. A fully-fledged OS needs a driver framework, not one-off hacks.

@@ -28,6 +28,9 @@ Stage 6 turns the Stage-5 CPU-owned scheduler into a bounded multicore scheduler
     path while Ready; global queue and subsystem locks preserve ownership.
 14. SRAT memory-affinity records tag usable frame ranges; allocations prefer
     the current CPU domain and preserve the domain on reclaimed frames.
+15. Bounded AP offline control evacuates eligible work, parks the target in a
+    scheduler-owned idle checkpoint, masks its local timer, and publishes the
+    reduced online mask/count only after the transition is complete.
 
 ## Ownership/safety contract
 
@@ -64,7 +67,9 @@ A complete `smptest` should include:
 - `[SMP] scheduler/barrier: PASSED`
 - `[SMP] acknowledged TLB shootdowns: PASSED`
 
-The full `scripts/test-release.py` matrix must remain green before Stage 6 is formally accepted.
+The full `scripts/test-release.py` matrix and the dedicated
+`scripts/test-stage6-hotplug.py` gate must remain green before Stage 6 is
+formally accepted.
 
 ## Deferred beyond Stage 6
 
@@ -74,6 +79,7 @@ The full `scripts/test-release.py` matrix must remain green before Stage 6 is fo
   DMA-backed service paths;
 - multi-node NUMA page-placement qualification and memory locality tuning;
 - x2APIC hardware qualification on APIC IDs above 255;
-- CPU hotplug;
+- CPU re-online/AP restart and hotplug qualification beyond the bounded
+  highest-numbered AP offline transition;
 - scheduler classes beyond the current bounded priority model;
 - production lock dependency tracking and priority inheritance.

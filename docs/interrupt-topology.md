@@ -25,5 +25,7 @@ truncated processor entry.
 As of 0.8.0, the bounded topology drives xAPIC CPU startup, per-CPU LAPIC timers
 and keyboard IOAPIC routing (including polarity/trigger overrides). The PIC
 remains a fallback when usable ACPI topology is absent. The current supported
-configuration has at most four CPUs and one IOAPIC; x2APIC, multiple IOAPICs and
-CPU hotplug remain unsupported. See [release notes](release-0.8.0.md).
+configuration has at most four CPUs and one IOAPIC. The SMP layer supports x2APIC
+register transport and a bounded highest-numbered AP offline transition; AP
+re-online/restart, multiple IOAPICs, and APIC-ID-above-255 hardware qualification
+remain open. See [release notes](release-0.8.0.md).
