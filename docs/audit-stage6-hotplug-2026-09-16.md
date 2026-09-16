@@ -12,7 +12,8 @@ The transition is deliberately conservative. Running tasks are never moved;
 dead tasks are transferred to the BSP for reclamation; pinned or otherwise
 non-migratable work rejects the request. Cancellation and rejection states are
 explicit and bounded. Re-online reuses the parked AP bootstrap context and
-reclaims the prior offline-idle slot before restoring the local timer.
+reclaims the prior offline-idle slot before restoring the local timer. The
+focused gate repeats this lifecycle twice to prove bounded slot reuse.
 
 Validation command:
 
@@ -28,12 +29,12 @@ online-prefix markers:
 - `[SMP] online=2 expected=2`
 - `[SMP] topology/NUMA affinity: PASSED`
 - `[S6.HOTPLUG] offline AP: PASSED online=1 mask=0x1`
-- `[S6.HOTPLUG] offline+online AP: PASSED online=2 mask=0x3` (2 CPU run)
-- `[S6.HOTPLUG] offline+online AP: PASSED online=4 mask=0xf` (4 CPU run)
+- `[S6.HOTPLUG] lifecycle: PASSED cycles=2 online=2 mask=0x3` (2 CPU run)
+- `[S6.HOTPLUG] lifecycle: PASSED cycles=2 online=4 mask=0xf` (4 CPU run)
 
 The durable logs are retained under
-`audit-artifacts/stage6-hotplug-2cpu-1789576535269785600/` and
-`audit-artifacts/stage6-hotplug-4cpu-1789576556298362800/`.
+`audit-artifacts/stage6-hotplug-2cpu-1789577159086322400/` and
+`audit-artifacts/stage6-hotplug-4cpu-1789577187755511700/`.
 
 Warning-denying freestanding Clippy also passed with the hotplug feature:
 
