@@ -10,5 +10,9 @@ still halts the acceptance run and reports queued/completed pager work, so a
 real scheduler deadlock cannot be hidden by an unbounded wait.
 
 After the change, a focused 20-run two-CPU memory/pager stress passed 20/20,
-with every run exiting QEMU with status 33 and all required markers. The full
-Stage 7.1.5 matrix is rerun after this correction before acceptance.
+with every run exiting QEMU with status 33 and all required markers. The
+termination lifecycle probe is now decoupled from the heavy mmap ELF loader: it
+uses the existing minimal `/bin/true` image, while the mmap image continues
+through its own dedicated pager probe. One fresh memory/boot run on each of 1,
+2, and 4 CPUs passed after this correction. The full Stage 7.1.5 matrix remains
+the final acceptance gate.

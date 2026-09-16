@@ -2191,12 +2191,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     // therefore provably off-CPU: the scheduler may retire it immediately,
     // but ProcessState::Exited must not be published until that retirement is
     // complete. wait_process then owns deferred address-space destruction.
-    let Some(kill_program) =
-        userspace::load_elf_with_argv(&pager_image[..pager_image_len], &["/bin/mmaptest"])
-    else {
+    serial::write_line(format_args!("[TERM] create termination target: BEGIN"));
+    let Some(kill_program) = userspace::create_true_process() else {
         console.println("TERMINATION TEST IMAGE: LOAD FAILED");
         halt();
     };
+    serial::write_line(format_args!("[TERM] create termination target: DONE"));
+    serial::write_line(format_args!("[TERM] spawn termination target: BEGIN"));
     let kill_pid = match task::spawn_user_process("termination-target", kill_program) {
         Ok((pid, _)) => pid,
         Err(_) => {
@@ -2204,6 +2205,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             halt();
         }
     };
+    serial::write_line(format_args!("[TERM] spawn termination target: DONE pid={}", kill_pid.as_u64()));
     if task::process_exited(kill_pid)
         || task::kill_process(kill_pid.as_u64(), 15).is_err()
         || !task::process_exited(kill_pid)
