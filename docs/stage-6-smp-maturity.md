@@ -31,6 +31,12 @@ Stage 6 turns the Stage-5 CPU-owned scheduler into a bounded multicore scheduler
 15. Bounded AP offline control evacuates eligible work, parks the target in a
     scheduler-owned idle checkpoint, masks its local timer, and publishes the
     reduced online mask/count only after the transition is complete.
+16. A parked AP can rejoin the contiguous online prefix using its retained
+    bootstrap context; its idle slot and local timer are restored before the
+    online acknowledgement is published.
+15. Bounded AP offline control evacuates eligible work, parks the target in a
+    scheduler-owned idle checkpoint, masks its local timer, and publishes the
+    reduced online mask/count only after the transition is complete.
 
 ## Ownership/safety contract
 
@@ -79,7 +85,7 @@ formally accepted.
   DMA-backed service paths;
 - multi-node NUMA page-placement qualification and memory locality tuning;
 - x2APIC hardware qualification on APIC IDs above 255;
-- CPU re-online/AP restart and hotplug qualification beyond the bounded
-  highest-numbered AP offline transition;
+- Hotplug qualification beyond the bounded contiguous-prefix offline/re-online
+  lifecycle, including non-contiguous topology and hardware stress;
 - scheduler classes beyond the current bounded priority model;
 - production lock dependency tracking and priority inheritance.

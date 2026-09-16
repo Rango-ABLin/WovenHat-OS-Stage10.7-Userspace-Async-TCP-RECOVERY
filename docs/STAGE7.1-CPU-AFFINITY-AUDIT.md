@@ -41,8 +41,8 @@ Existing migration stress, runnable-load, automatic-rebalance, IPI, TLB shootdow
 These are intentionally deferred so Stage 7.1 stays auditable:
 - userspace migration;
 - process-level affinity syscalls;
-- AP re-online/restart and hotplug transitions beyond the bounded Stage 6
-  highest-numbered AP offline control;
+- Hotplug transitions beyond the bounded Stage 6 contiguous-prefix
+  offline/re-online control;
 - NUMA/topology-aware placement;
 - scheduler classes/cgroups/cpusets;
 - migration of Running, Switching, Blocked or Sleeping tasks.

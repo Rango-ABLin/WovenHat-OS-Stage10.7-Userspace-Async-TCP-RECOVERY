@@ -19,7 +19,7 @@ preemption, stale-translation, and acknowledged-shootdown markers.
 
 The bounded contract remains explicit: general userspace migration, concurrent
 filesystem/network/device-I/O service execution, NUMA-aware page allocation,
-CPU re-online/AP restart, APIC-ID-above-255 hardware qualification, and
+non-contiguous hotplug, APIC-ID-above-255 hardware qualification, and
 production lock dependency tracking are deferred work. Bounded highest-numbered
 AP offline control is covered by the
 [hotplug audit](audit-stage6-hotplug-2026-09-16.md). CPU-domain placement and
