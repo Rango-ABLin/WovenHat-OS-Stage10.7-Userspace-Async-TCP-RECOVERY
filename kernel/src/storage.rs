@@ -336,12 +336,18 @@ fn import_directory(
             device,
             volume,
             fat32::metadata_path_hash(&path),
+            fat32::metadata_path_tag(&path),
         )
         .ok()
         .flatten()
         {
             let _ = vfs::set_metadata(&path, metadata.uid, metadata.gid, metadata.mode);
-            if fat32::finalize_file_metadata(device, volume, fat32::metadata_path_hash(&path))
+            if fat32::finalize_file_metadata(
+                device,
+                volume,
+                fat32::metadata_path_hash(&path),
+                fat32::metadata_path_tag(&path),
+            )
                 .ok()
                 .unwrap_or(false)
             {
@@ -975,21 +981,22 @@ fn persist_metadata_on_device(
     pending: bool,
 ) -> Result<(), PersistError> {
     let hash = fat32::metadata_path_hash(path);
+    let tag = fat32::metadata_path_tag(path);
     match fat32::mount(device) {
-        Ok(volume) => write_metadata_state(device, volume, hash, metadata, pending)
+        Ok(volume) => write_metadata_state(device, volume, hash, tag, metadata, pending)
             .map_err(map_persist_err)?,
         Err(fat32::Error::InvalidBootSector | fat32::Error::UnsupportedGeometry) => {
             if let Ok(Some(part)) = partition::find_fat32(device) {
                 let mut view = partition::PartitionDevice::new(device, part)
                     .map_err(|_| PersistError::Failed)?;
                 let volume = fat32::mount(&mut view).map_err(map_persist_err)?;
-                write_metadata_state(&mut view, volume, hash, metadata, pending)
+                write_metadata_state(&mut view, volume, hash, tag, metadata, pending)
                     .map_err(map_persist_err)?;
             } else if let Ok(Some(part)) = gpt::find_fat_partition(device) {
                 let mut view = partition::PartitionDevice::new(device, part)
                     .map_err(|_| PersistError::Failed)?;
                 let volume = fat32::mount(&mut view).map_err(map_persist_err)?;
-                write_metadata_state(&mut view, volume, hash, metadata, pending)
+                write_metadata_state(&mut view, volume, hash, tag, metadata, pending)
                     .map_err(map_persist_err)?;
             } else {
                 return Err(PersistError::Failed);
@@ -1004,13 +1011,14 @@ fn write_metadata_state(
     device: &mut impl crate::block::BlockDevice,
     volume: fat32::Volume,
     hash: u64,
+    tag: u32,
     metadata: fat32::FileMetadata,
     pending: bool,
 ) -> Result<(), fat32::Error> {
     if pending {
-        fat32::write_file_metadata_pending(device, volume, hash, metadata)
+        fat32::write_file_metadata_pending(device, volume, hash, tag, metadata)
     } else {
-        fat32::finalize_file_metadata(device, volume, hash).map(|_| ())
+        fat32::finalize_file_metadata(device, volume, hash, tag).map(|_| ())
     }
 }
 

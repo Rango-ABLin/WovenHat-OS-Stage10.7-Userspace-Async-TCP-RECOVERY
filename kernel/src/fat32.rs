@@ -305,6 +305,15 @@ pub fn metadata_path_hash(path: &str) -> u64 {
     })
 }
 
+/// Independent bounded discriminator used with the primary path hash.
+pub fn metadata_path_tag(path: &str) -> u32 {
+    let mut hash = 0x811c_9dc5u32 ^ path.len() as u32;
+    for byte in path.bytes().rev() {
+        hash = (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193);
+    }
+    hash
+}
+
 fn metadata_sector(volume: Volume, index: usize) -> Result<u64, Error> {
     if index >= METADATA_SECTOR_COUNT {
         return Err(Error::UnsupportedGeometry);
@@ -331,6 +340,7 @@ pub fn read_file_metadata(
     device: &mut impl BlockDevice,
     volume: Volume,
     path_hash: u64,
+    path_tag: u32,
 ) -> Result<Option<FileMetadata>, Error> {
     for sector_index in 0..METADATA_SECTOR_COUNT {
         let mut sector = [0u8; SECTOR_SIZE];
@@ -340,7 +350,11 @@ pub fn read_file_metadata(
         }
         for index in 0..METADATA_CAPACITY {
             let offset = METADATA_HEADER_SIZE + index * METADATA_RECORD_SIZE;
-            if sector[offset + 18] == 0 || read_u64(&sector, offset) != path_hash {
+            if sector[offset + 18] == 0
+                || read_u64(&sector, offset) != path_hash
+                || (read_u32(&sector, offset + 20) != 0
+                    && read_u32(&sector, offset + 20) != path_tag)
+            {
                 continue;
             }
             return Ok(Some(FileMetadata {
@@ -358,9 +372,17 @@ pub fn write_file_metadata(
     device: &mut impl BlockDevice,
     volume: Volume,
     path_hash: u64,
+    path_tag: u32,
     metadata: FileMetadata,
 ) -> Result<(), Error> {
-    write_file_metadata_state(device, volume, path_hash, metadata, METADATA_STATE_COMMITTED)
+    write_file_metadata_state(
+        device,
+        volume,
+        path_hash,
+        path_tag,
+        metadata,
+        METADATA_STATE_COMMITTED,
+    )
 }
 
 /// Write an intent before the corresponding file-data transaction starts.
@@ -368,15 +390,24 @@ pub fn write_file_metadata_pending(
     device: &mut impl BlockDevice,
     volume: Volume,
     path_hash: u64,
+    path_tag: u32,
     metadata: FileMetadata,
 ) -> Result<(), Error> {
-    write_file_metadata_state(device, volume, path_hash, metadata, METADATA_STATE_PENDING)
+    write_file_metadata_state(
+        device,
+        volume,
+        path_hash,
+        path_tag,
+        metadata,
+        METADATA_STATE_PENDING,
+    )
 }
 
 fn write_file_metadata_state(
     device: &mut impl BlockDevice,
     volume: Volume,
     path_hash: u64,
+    path_tag: u32,
     metadata: FileMetadata,
     state: u8,
 ) -> Result<(), Error> {
@@ -395,7 +426,10 @@ fn write_file_metadata_state(
             let offset = METADATA_HEADER_SIZE + index * METADATA_RECORD_SIZE;
             if sector[offset + 18] == 0 {
                 free.get_or_insert(offset);
-            } else if read_u64(&sector, offset) == path_hash {
+            } else if read_u64(&sector, offset) == path_hash
+                && (read_u32(&sector, offset + 20) == 0
+                    || read_u32(&sector, offset + 20) == path_tag)
+            {
                 target = Some(offset);
                 break;
             }
@@ -413,6 +447,7 @@ fn write_file_metadata_state(
     sector[offset + 16..offset + 18].copy_from_slice(&metadata.mode.to_le_bytes());
     sector[offset + 18] = 1;
     sector[offset + 19] = state;
+    sector[offset + 20..offset + 24].copy_from_slice(&path_tag.to_le_bytes());
     device
         .write_sector(metadata_sector(volume, sector_index)?, &sector)
         .map_err(Error::Block)
@@ -423,6 +458,7 @@ pub fn finalize_file_metadata(
     device: &mut impl BlockDevice,
     volume: Volume,
     path_hash: u64,
+    path_tag: u32,
 ) -> Result<bool, Error> {
     for sector_index in 0..METADATA_SECTOR_COUNT {
         let mut sector = [0u8; SECTOR_SIZE];
@@ -432,7 +468,11 @@ pub fn finalize_file_metadata(
         }
         for index in 0..METADATA_CAPACITY {
             let offset = METADATA_HEADER_SIZE + index * METADATA_RECORD_SIZE;
-            if sector[offset + 18] != 0 && read_u64(&sector, offset) == path_hash {
+            if sector[offset + 18] != 0
+                && read_u64(&sector, offset) == path_hash
+                && (read_u32(&sector, offset + 20) == 0
+                    || read_u32(&sector, offset + 20) == path_tag)
+            {
                 if sector[offset + 19] == METADATA_STATE_PENDING {
                     sector[offset + 19] = METADATA_STATE_COMMITTED;
                     device
@@ -451,6 +491,7 @@ pub fn remove_file_metadata(
     device: &mut impl BlockDevice,
     volume: Volume,
     path_hash: u64,
+    path_tag: u32,
 ) -> Result<(), Error> {
     for sector_index in 0..METADATA_SECTOR_COUNT {
         let mut sector = [0u8; SECTOR_SIZE];
@@ -460,7 +501,11 @@ pub fn remove_file_metadata(
         }
         for index in 0..METADATA_CAPACITY {
             let offset = METADATA_HEADER_SIZE + index * METADATA_RECORD_SIZE;
-            if sector[offset + 18] != 0 && read_u64(&sector, offset) == path_hash {
+            if sector[offset + 18] != 0
+                && read_u64(&sector, offset) == path_hash
+                && (read_u32(&sector, offset + 20) == 0
+                    || read_u32(&sector, offset + 20) == path_tag)
+            {
                 sector[offset + 18] = 0;
                 return device
                     .write_sector(metadata_sector(volume, sector_index)?, &sector)
@@ -3286,13 +3331,20 @@ fn long_filename_self_test() -> bool {
         mode: 0o640,
     };
     let metadata_hash = metadata_path_hash(name);
-    let metadata_ok = write_file_metadata_pending(&mut disk, volume, metadata_hash, metadata)
+    let metadata_tag = metadata_path_tag(name);
+    let metadata_ok = write_file_metadata_pending(
+        &mut disk,
+        volume,
+        metadata_hash,
+        metadata_tag,
+        metadata,
+    )
         .is_ok()
-        && read_file_metadata(&mut disk, volume, metadata_hash) == Ok(Some(metadata))
-        && finalize_file_metadata(&mut disk, volume, metadata_hash) == Ok(true)
-        && write_file_metadata(&mut disk, volume, metadata_hash, metadata).is_ok()
-        && remove_file_metadata(&mut disk, volume, metadata_path_hash(name)).is_ok()
-        && read_file_metadata(&mut disk, volume, metadata_path_hash(name)) == Ok(None);
+        && read_file_metadata(&mut disk, volume, metadata_hash, metadata_tag) == Ok(Some(metadata))
+        && finalize_file_metadata(&mut disk, volume, metadata_hash, metadata_tag) == Ok(true)
+        && write_file_metadata(&mut disk, volume, metadata_hash, metadata_tag, metadata).is_ok()
+        && remove_file_metadata(&mut disk, volume, metadata_hash, metadata_tag).is_ok()
+        && read_file_metadata(&mut disk, volume, metadata_hash, metadata_tag) == Ok(None);
     if create_path_file(&mut disk, volume, name, b"lfn").is_err() {
         return false;
     }
