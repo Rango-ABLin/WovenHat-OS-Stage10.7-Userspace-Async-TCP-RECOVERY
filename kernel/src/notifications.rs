@@ -2,6 +2,7 @@
 use spin::Mutex;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum Kind { Terminate = 1, Suspend = 2, Resume = 3, ChildExit = 4, Exception = 5, User = 6 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Notification { pub kind: Kind, pub source: u64, pub payload: u64 }
@@ -17,6 +18,7 @@ pub fn publish(note: Notification) -> bool {
     let tail = q.tail;
     q.entries[tail] = Some(note); q.tail = (tail + 1) % CAPACITY; q.len += 1; true
 }
+#[allow(dead_code)]
 pub fn receive() -> Option<Notification> {
     let mut q = QUEUE.lock();
     let head = q.head;

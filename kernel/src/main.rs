@@ -14,7 +14,6 @@ mod async_events;
 mod deadline;
 #[cfg(feature = "stage11-2-test")]
 mod thread;
-#[cfg(feature = "stage11-3-test")]
 mod notifications;
 #[cfg(feature = "stage12-1-test")]
 mod vfs_api;

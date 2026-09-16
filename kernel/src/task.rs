@@ -4424,6 +4424,11 @@ fn complete_process_termination(task_id: TaskId, signal: u8) {
     process.pending_signal = u64::from(signal);
     process.state = ProcessState::Exited;
     process.exit_code = 128 + i32::from(signal);
+    let _ = crate::notifications::publish(crate::notifications::Notification {
+        kind: crate::notifications::Kind::ChildExit,
+        source: process.id.as_u64(),
+        payload: process.exit_code as u64,
+    });
     release_file_table(&mut process.files);
 }
 
