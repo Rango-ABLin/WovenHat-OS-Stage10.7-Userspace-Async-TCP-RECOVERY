@@ -2287,14 +2287,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     // distorted by per-switch serial I/O.
     task::set_yield_trace_enabled(false);
     let pager_wait_start = timer::ticks();
-    // A busy QEMU host can delay several timer quanta while the AP-owned
-    // process faults pages and the BSP pager services them. Keep the timeout
-    // bounded, but allow enough scheduler progress for the documented SMP
-    // stress gate instead of treating host contention as a deadlock.
-    const PAGER_WAIT_BUDGET: u64 = 1_000;
     let mut pager_wait_iteration = 0u64;
     while !pager_exited {
-        if timer::ticks().wrapping_sub(pager_wait_start) > PAGER_WAIT_BUDGET {
+        if timer::ticks().wrapping_sub(pager_wait_start) > 200 {
             let (queued, completed) = task::pager_stats();
             serial::write_line(format_args!(
                 "[PAGER] mmaptest timeout queued={} completed={}",
