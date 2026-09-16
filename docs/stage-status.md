@@ -13,11 +13,12 @@ kernel/host Clippy, all Rust host tests, 1/2/4-CPU memory/storage/network
 gates, legacy PIC fallback, 4-CPU release gates, and shell/SMP smoke. See
 [the Stage 6 audit](audit-stage6-2026-09-16.md).
 
-General multicore userspace, concurrent device/filesystem service execution,
-NUMA-aware page allocation, CPU hotplug, APIC-ID-above-255 hardware
+General multicore userspace, unrestricted concurrent device/filesystem service
+throughput, NUMA-aware page allocation, CPU hotplug, APIC-ID-above-255 hardware
 qualification, and production lock dependency tracking remain explicit
-deferred requirements in the Stage 6 contract. CPU-domain placement and the
-x2APIC MSR transport are implemented; see
+deferred requirements in the Stage 6 contract. CPU-domain placement, audited
+Ready-state I/O service migration, and the x2APIC MSR transport are
+implemented; see
 [the NUMA/x2APIC audit](audit-stage6-numa-2026-09-16.md).
 
 ## Stage 10.7 — accepted on 2026-09-16
