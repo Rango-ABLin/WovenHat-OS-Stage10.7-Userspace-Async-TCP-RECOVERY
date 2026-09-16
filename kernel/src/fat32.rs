@@ -78,6 +78,23 @@ pub struct DirectoryEntry {
     pub attributes: u8,
 }
 
+/// Directory entry plus its validated bounded FAT long filename, when present.
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+pub struct NamedDirectoryEntry {
+    pub entry: DirectoryEntry,
+    pub long_name: [u8; MAX_LONG_NAME],
+    pub long_name_length: usize,
+}
+
+impl NamedDirectoryEntry {
+    pub fn long_name_str(&self) -> Option<&str> {
+        (self.long_name_length != 0)
+            .then(|| core::str::from_utf8(&self.long_name[..self.long_name_length]).ok())
+            .flatten()
+    }
+}
+
 #[derive(Clone, Copy)]
 struct DirectorySlot {
     lba: u64,
@@ -266,6 +283,15 @@ pub fn list_root(
     list_directory(device, volume, volume.root_cluster, output)
 }
 
+/// List entries in the volume root directory with validated long names.
+pub fn list_root_named(
+    device: &mut impl BlockDevice,
+    volume: Volume,
+    output: &mut [Option<NamedDirectoryEntry>],
+) -> Result<usize, Error> {
+    list_directory_named(device, volume, volume.root_cluster, output)
+}
+
 /// Visit entries in any directory starting at `dir_cluster`.
 pub fn for_each_directory_entry<F>(
     device: &mut impl BlockDevice,
@@ -375,6 +401,33 @@ pub fn list_directory(
     for_each_directory_entry(device, volume, dir_cluster, |entry| {
         let slot = output.get_mut(count).ok_or(Error::DirectoryFull)?;
         *slot = Some(entry);
+        count += 1;
+        Ok(())
+    })?;
+    Ok(count)
+}
+
+/// List entries while preserving validated FAT long names in a bounded result.
+/// A zero `long_name_length` means the caller should format `entry.short_name`.
+pub fn list_directory_named(
+    device: &mut impl BlockDevice,
+    volume: Volume,
+    dir_cluster: u32,
+    output: &mut [Option<NamedDirectoryEntry>],
+) -> Result<usize, Error> {
+    let mut count = 0usize;
+    for_each_directory_entry_named(device, volume, dir_cluster, |entry, display_name| {
+        let slot = output.get_mut(count).ok_or(Error::DirectoryFull)?;
+        let mut named = NamedDirectoryEntry {
+            entry,
+            long_name: [0; MAX_LONG_NAME],
+            long_name_length: 0,
+        };
+        if let Some(display_name) = display_name {
+            named.long_name_length = display_name.len();
+            named.long_name[..display_name.len()].copy_from_slice(display_name.as_bytes());
+        }
+        *slot = Some(named);
         count += 1;
         Ok(())
     })?;
@@ -2935,6 +2988,11 @@ fn long_filename_self_test() -> bool {
     )
     .is_ok()
         && listed;
+    let mut named_entries = [None; 1];
+    let named_listing_ok = list_root_named(&mut disk, volume, &mut named_entries) == Ok(1)
+        && named_entries[0].is_some_and(|entry| {
+            entry.entry.short_name[0] == b'W' && entry.long_name_str() == Some(name)
+        });
     let renamed_name = "Renamed long filename.txt";
     let rename_ok = rename_path(&mut disk, volume, name, renamed_name).is_ok()
         && resolve_path(&mut disk, volume, name).is_err_and(|error| error == Error::NotFound)
@@ -2960,7 +3018,7 @@ fn long_filename_self_test() -> bool {
                 .is_ok_and(|link| matches!(link, ClusterLink::Next(_)))
             && resolve_path(&mut growth_disk, growth_volume, long).is_ok()
     });
-    read_ok && listing_ok && rename_ok && delete_ok && growth_ok
+    read_ok && listing_ok && named_listing_ok && rename_ok && delete_ok && growth_ok
 }
 
 fn directory_growth_self_test() -> bool {
