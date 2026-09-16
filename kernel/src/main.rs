@@ -41,7 +41,6 @@ mod completion_port;
 mod device;
 #[cfg(feature = "stage13-1-test")]
 mod driver;
-#[cfg(feature = "stage1-5-test")]
 mod journal;
 mod elf;
 mod entropy;

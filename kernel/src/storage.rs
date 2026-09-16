@@ -871,6 +871,7 @@ fn live_directory_growth_self_test() -> Result<(), &'static str> {
 /// Multi-component paths are supported. Missing FAT32 directories are created
 /// automatically; every component currently follows FAT 8.3 naming rules.
 pub fn persist_path(path: &str) -> Result<(), PersistError> {
+    let _replayed_intents = crate::journal::recover();
     if !path.starts_with("/mnt/") {
         return Err(PersistError::NotSupported);
     }
@@ -904,8 +905,14 @@ pub fn persist_path(path: &str) -> Result<(), PersistError> {
     if !block_io::primary_ata_present() {
         return Err(PersistError::NoDevice);
     }
+    let Some(journal_token) = crate::journal::begin(crate::journal::path_hash(path),
+        data[..length].iter().fold(0xcbf29ce484222325, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x100000001b3))) else {
+        return Err(PersistError::Failed);
+    };
     let mut disk = block_io::primary_ata();
-    persist_on_device(&mut disk, relative, &data[..length])
+    let result = persist_on_device(&mut disk, relative, &data[..length]);
+    if result.is_ok() { let _ = crate::journal::commit(journal_token); }
+    result
 }
 
 fn persist_on_device(
