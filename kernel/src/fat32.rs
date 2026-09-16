@@ -406,6 +406,11 @@ pub fn encode_short_name(name: &str) -> Option<[u8; 11]> {
     Some(out)
 }
 
+#[derive(Clone, Copy)]
+struct LongDirectoryReservation {
+    slots: [(u64, usize); MAX_LFN_ENTRIES + 1],
+}
+
 /// Look up either an 8.3 alias or an ASCII long filename in a directory.
 pub fn find_in_directory_name(
     device: &mut impl BlockDevice,
@@ -1446,7 +1451,9 @@ pub fn create_file_in_directory(
     name: &str,
     data: &[u8],
 ) -> Result<(), Error> {
-    let short = encode_short_name(name).ok_or(Error::NameTooLong)?;
+    let Some(short) = encode_short_name(name) else {
+        return create_long_file_in_directory(device, volume, dir_cluster, name, data);
+    };
     if data.len() > u32::MAX as usize {
         return Err(Error::NoSpace);
     }
@@ -1508,12 +1515,155 @@ pub fn create_file_in_directory(
     Ok(())
 }
 
+fn generate_short_alias(
+    device: &mut impl BlockDevice,
+    volume: Volume,
+    dir_cluster: u32,
+    name: &str,
+) -> Result<[u8; 11], Error> {
+    let extension = name
+        .rsplit_once('.')
+        .map(|(_, extension)| extension)
+        .filter(|extension| !extension.is_empty() && extension.len() <= 3);
+    let mut alias = [b' '; 11];
+    for serial in 1..100 {
+        alias.fill(b' ');
+        alias[..6].copy_from_slice(b"WOVEN~");
+        if serial >= 10 {
+            alias[6] = b'0' + (serial / 10) as u8;
+            alias[7] = b'0' + (serial % 10) as u8;
+        } else {
+            alias[6] = b'0' + serial as u8;
+        }
+        if let Some(extension) = extension {
+            for (index, byte) in extension.bytes().enumerate() {
+                alias[8 + index] = to_fat_char(byte).ok_or(Error::NameTooLong)?;
+            }
+        }
+        match find_in_directory(device, volume, dir_cluster, &alias) {
+            Err(Error::NotFound) => return Ok(alias),
+            Ok(_) => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(Error::DirectoryFull)
+}
+
+fn find_long_directory_slots(
+    device: &mut impl BlockDevice,
+    volume: Volume,
+    dir_cluster: u32,
+    count: usize,
+) -> Result<LongDirectoryReservation, Error> {
+    if count == 0 || count > MAX_LFN_ENTRIES + 1 {
+        return Err(Error::NameTooLong);
+    }
+    let mut cluster = dir_cluster;
+    let mut visited = [0u32; MAX_DIRECTORY_CLUSTERS];
+    let mut visited_count = 0;
+    let mut run = [(0u64, 0usize); MAX_LFN_ENTRIES + 1];
+    let mut run_len = 0;
+    let mut sector = [0u8; SECTOR_SIZE];
+    loop {
+        if visited_count == visited.len() || visited[..visited_count].contains(&cluster) {
+            return Err(if visited_count == visited.len() {
+                Error::ChainTooLong
+            } else {
+                Error::ChainLoop
+            });
+        }
+        visited[visited_count] = cluster;
+        visited_count += 1;
+        let base = volume.cluster_lba(cluster)?;
+        for sector_index in 0..volume.sectors_per_cluster as u64 {
+            let lba = base + sector_index;
+            device.read_sector(lba, &mut sector).map_err(Error::Block)?;
+            for index in 0..DIRECTORY_ENTRIES_PER_SECTOR {
+                let offset = index * DIRECTORY_ENTRY_SIZE;
+                let first = sector[offset];
+                if first == 0 || first == 0xe5 {
+                    if run_len < run.len() {
+                        run[run_len] = (lba, offset);
+                        run_len += 1;
+                    }
+                    if run_len == count {
+                        return Ok(LongDirectoryReservation { slots: run });
+                    }
+                } else {
+                    run_len = 0;
+                }
+            }
+        }
+        cluster = match next_cluster(device, volume, cluster)? {
+            ClusterLink::Next(next) => next,
+            ClusterLink::End => return Err(Error::DirectoryFull),
+        };
+    }
+}
+
+fn create_long_file_in_directory(
+    device: &mut impl BlockDevice,
+    volume: Volume,
+    dir_cluster: u32,
+    name: &str,
+    data: &[u8],
+) -> Result<(), Error> {
+    if data.len() > u32::MAX as usize {
+        return Err(Error::NoSpace);
+    }
+    let short = generate_short_alias(device, volume, dir_cluster, name)?;
+    let mut records = [[0u8; DIRECTORY_ENTRY_SIZE]; MAX_LFN_ENTRIES];
+    let record_count = encode_long_name(name, &short, &mut records).ok_or(Error::NameTooLong)?;
+    let reservation = find_long_directory_slots(device, volume, dir_cluster, record_count + 1)?;
+    let bytes_per_cluster = volume.sectors_per_cluster as usize * SECTOR_SIZE;
+    let needed_clusters = if data.is_empty() {
+        0
+    } else {
+        data.len().div_ceil(bytes_per_cluster)
+    };
+    let first_cluster = allocate_file_chain(device, volume, needed_clusters)?;
+    if let Err(error) = write_file_data_chain(device, volume, first_cluster, data) {
+        if first_cluster >= 2 {
+            let _ = free_cluster_chain(device, volume, first_cluster);
+        }
+        return Err(error);
+    }
+    for (index, record) in records.iter().take(record_count).enumerate() {
+        if let Err(error) = write_raw_directory_slot(
+            device,
+            reservation.slots[index].0,
+            reservation.slots[index].1,
+            record,
+        ) {
+            if first_cluster >= 2 {
+                let _ = free_cluster_chain(device, volume, first_cluster);
+            }
+            return Err(error);
+        }
+    }
+    if let Err(error) = write_directory_entry(
+        device,
+        reservation.slots[record_count].0,
+        reservation.slots[record_count].1,
+        &short,
+        0x20,
+        first_cluster,
+        data.len() as u32,
+    ) {
+        if first_cluster >= 2 {
+            let _ = free_cluster_chain(device, volume, first_cluster);
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
 fn resolve_parent_cluster(
     device: &mut impl BlockDevice,
     volume: Volume,
     path: &str,
     create_missing: bool,
-) -> Result<(u32, [u8; 13], usize), Error> {
+) -> Result<(u32, [u8; MAX_LONG_NAME], usize), Error> {
     let path = path.trim_matches('/');
     if path.is_empty() {
         return Err(Error::NameTooLong);
@@ -1534,16 +1684,15 @@ fn resolve_parent_cluster(
         return Err(Error::NameTooLong);
     }
     let leaf = parts[count - 1];
-    if encode_short_name(leaf).is_none() {
+    let mut leaf_buf = [0u8; MAX_LONG_NAME];
+    if leaf.len() > leaf_buf.len() {
         return Err(Error::NameTooLong);
     }
-    let mut leaf_buf = [0u8; 13];
     leaf_buf[..leaf.len()].copy_from_slice(leaf.as_bytes());
 
     let mut cluster = volume.root_cluster;
     for component in &parts[..count - 1] {
-        let short = encode_short_name(component).ok_or(Error::NameTooLong)?;
-        match find_in_directory(device, volume, cluster, &short) {
+        match find_in_directory_name(device, volume, cluster, component) {
             Ok(entry) => {
                 if entry.attributes & DIRECTORY_ATTRIBUTE == 0 || entry.first_cluster < 2 {
                     return Err(Error::NotFound);
@@ -2276,6 +2425,7 @@ pub fn self_test() -> bool {
         && range_self_test()
         && streaming_read_self_test()
         && mutation_self_test()
+        && long_filename_self_test()
         && directory_growth_self_test()
         && overwrite_rollback_self_test()
         && directory_extension_rollback_self_test()
@@ -2586,6 +2736,19 @@ fn numbered_child_path<'a>(
     out[dir_bytes.len()] = b'/';
     out[dir_bytes.len() + 1..total].copy_from_slice(leaf.as_bytes());
     core::str::from_utf8(&out[..total]).ok()
+}
+
+fn long_filename_self_test() -> bool {
+    let mut disk = MutableFatDisk::new();
+    let Ok(volume) = mount(&mut disk) else {
+        return false;
+    };
+    let name = "A long filename.txt";
+    if create_path_file(&mut disk, volume, name, b"lfn").is_err() {
+        return false;
+    }
+    let mut bytes = [0u8; 4];
+    read_path_bytes(&mut disk, volume, name, &mut bytes) == Ok(3) && &bytes[..3] == b"lfn"
 }
 
 fn directory_growth_self_test() -> bool {
