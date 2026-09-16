@@ -1,6 +1,8 @@
 # WovenHat OS Stage 6 — SMP Maturity Foundation
 
-Status: implementation complete; requires validation on the Windows/QEMU development host.
+Status: bounded implementation complete; NUMA CPU-domain placement is
+validated on the Windows/QEMU development host. Multi-node page placement and
+hardware qualification remain open.
 
 ## Objective
 
@@ -18,6 +20,9 @@ Stage 6 turns the Stage-5 CPU-owned scheduler into a bounded multicore scheduler
 8. BSP timer-driven periodic balancing at a deliberately low cadence.
 9. Migration, load-accounting, automatic-balancing, reschedule-IPI, and repeated migration stress regressions in `smptest`.
 10. Release QEMU memory/storage harnesses require the new Stage-6 success markers.
+11. ACPI SRAT CPU-affinity discovery records bounded NUMA proximity domains;
+    initial placement and rebalancing prefer a local domain and fall back to
+    deterministic load balancing when SRAT is absent.
 
 ## Ownership/safety contract
 
@@ -58,7 +63,8 @@ The full `scripts/test-release.py` matrix must remain green before Stage 6 is fo
 - general userspace task migration;
 - multicore syscall/service execution;
 - concurrent filesystem/network/device-I/O paths;
-- topology/NUMA-aware balancing;
+- NUMA-aware page allocation and memory locality policy (CPU-domain-aware
+  scheduler placement is implemented; page placement remains deferred);
 - x2APIC;
 - CPU hotplug;
 - scheduler classes beyond the current bounded priority model;

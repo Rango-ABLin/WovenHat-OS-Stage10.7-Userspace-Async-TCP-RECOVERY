@@ -1079,9 +1079,16 @@ impl Scheduler {
     fn least_loaded_cpu_for_mask(&self, affinity_mask: usize) -> Option<usize> {
         let online = crate::smp::online_count();
         let loads = self.run_loads();
+        let local_domain = crate::smp::cpu_domain(crate::smp::cpu_index());
         (0..online)
             .filter(|cpu| affinity_mask & cpu_bit(*cpu) != 0)
-            .min_by_key(|cpu| (loads[*cpu].runnable(), *cpu))
+            .min_by_key(|cpu| {
+                (
+                    usize::from(crate::smp::cpu_domain(*cpu) != local_domain),
+                    loads[*cpu].runnable(),
+                    *cpu,
+                )
+            })
     }
 
     /// Move at most one explicitly migratable Ready task from the busiest CPU to
@@ -1120,8 +1127,17 @@ impl Scheduler {
                     continue;
                 }
                 let gain = source_load - target_load;
-                if best.is_none_or(|(_, _, best_target, best_gain)| {
-                    gain > best_gain || (gain == best_gain && target < best_target)
+                let cross_domain = usize::from(
+                    crate::smp::cpu_domain(source) != crate::smp::cpu_domain(target),
+                );
+                if best.is_none_or(|(_, best_source, best_target, best_gain)| {
+                    let best_cross = usize::from(
+                        crate::smp::cpu_domain(best_source)
+                            != crate::smp::cpu_domain(best_target),
+                    );
+                    cross_domain < best_cross
+                        || (cross_domain == best_cross
+                            && (gain > best_gain || (gain == best_gain && target < best_target)))
                 }) {
                     best = Some((slot, source, target, gain));
                 }

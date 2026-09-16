@@ -6,6 +6,7 @@ const SDT_HEADER_LENGTH: usize = 36;
 const MAX_TABLE_LENGTH: usize = 64 * 1024;
 const MAX_TABLES: usize = 256;
 const MADT_HEADER_LENGTH: usize = SDT_HEADER_LENGTH + 8;
+const SRAT_HEADER_LENGTH: usize = SDT_HEADER_LENGTH + 12;
 const MAX_MADT_ENTRIES: usize = 256;
 const MAX_MADT_ENTRY_LENGTH: usize = u8::MAX as usize;
 
@@ -27,6 +28,10 @@ pub struct Summary {
     pub local_apic_address: u64,
     pub enabled_processors: u16,
     pub processor_ids: [u32; 16],
+    /// NUMA proximity domain for each `processor_ids` entry. Zero is the
+    /// firmware/default domain when SRAT has no CPU affinity record.
+    pub processor_domains: [u32; 16],
+    pub numa_domains: u16,
     pub processor_count: usize,
     pub io_apic_address: u32,
     pub io_apic_gsi_base: u32,
@@ -89,6 +94,8 @@ pub fn discover(
         truncated: total_tables > MAX_TABLES,
         ..Summary::default()
     };
+    let mut srat_tables = [(0_u64, 0_usize); 4];
+    let mut srat_count = 0_usize;
     for index in 0..scanned {
         let entry_address = root_address
             .checked_add((SDT_HEADER_LENGTH + index * entry_size) as u64)
@@ -122,10 +129,115 @@ pub fn discover(
             b"FACP" => summary.fadt = true,
             b"HPET" => summary.hpet = true,
             b"MCFG" => summary.mcfg = true,
+            b"SRAT" => {
+                if srat_count < srat_tables.len() {
+                    srat_tables[srat_count] = (table_address, table.length);
+                    srat_count += 1;
+                } else {
+                    summary.truncated = true;
+                }
+            }
             _ => {}
         }
     }
+    for (address, length) in srat_tables.into_iter().take(srat_count) {
+        parse_srat(physical_offset, address, length, regions, &mut summary)?;
+    }
     Ok(summary)
+}
+
+fn parse_srat(
+    physical_offset: u64,
+    address: u64,
+    length: usize,
+    regions: &[MemoryRegion],
+    summary: &mut Summary,
+) -> Result<(), Error> {
+    if length < SRAT_HEADER_LENGTH {
+        return Err(Error::InvalidLength);
+    }
+    let mut offset = SRAT_HEADER_LENGTH;
+    let mut entries = 0_usize;
+    while offset < length {
+        if entries == MAX_MADT_ENTRIES {
+            summary.truncated = true;
+            break;
+        }
+        let entry_address = address
+            .checked_add(offset as u64)
+            .ok_or(Error::AddressOverflow)?;
+        let mut header = [0_u8; 2];
+        read_physical(physical_offset, entry_address, &mut header, regions)?;
+        let entry_length = header[1] as usize;
+        if entry_length < 2
+            || offset
+                .checked_add(entry_length)
+                .is_none_or(|end| end > length)
+        {
+            return Err(Error::InvalidLength);
+        }
+        let mut entry = [0_u8; MAX_MADT_ENTRY_LENGTH];
+        read_physical(
+            physical_offset,
+            entry_address,
+            &mut entry[..entry_length],
+            regions,
+        )?;
+        update_srat_summary(&entry[..entry_length], summary)?;
+        entries += 1;
+        offset += entry_length;
+    }
+    Ok(())
+}
+
+fn update_srat_summary(entry: &[u8], summary: &mut Summary) -> Result<(), Error> {
+    if entry.len() < 2 || entry[1] as usize != entry.len() {
+        return Err(Error::InvalidLength);
+    }
+    let (id, domain, enabled) = match entry[0] {
+        // Processor Local APIC affinity: proximity-domain low byte at 2,
+        // APIC ID at 3, flags at 4, and the high three domain bytes at 9..12.
+        0 => {
+            if entry.len() < 16 {
+                return Err(Error::InvalidLength);
+            }
+            let domain = u32::from(entry[2])
+                | (u32::from(entry[9]) << 8)
+                | (u32::from(entry[10]) << 16)
+                | (u32::from(entry[11]) << 24);
+            (u32::from(entry[3]), domain, read_u32(entry, 4) & 1 != 0)
+        }
+        // x2APIC affinity: proximity domain at 4, x2APIC ID at 8, flags at 12.
+        2 => {
+            if entry.len() < 24 {
+                return Err(Error::InvalidLength);
+            }
+            (read_u32(entry, 8), read_u32(entry, 4), read_u32(entry, 12) & 1 != 0)
+        }
+        _ => return Ok(()),
+    };
+    if !enabled {
+        return Ok(());
+    }
+    let Some(index) = summary.processor_ids[..summary.processor_count]
+        .iter()
+        .position(|candidate| *candidate == id)
+    else {
+        return Ok(());
+    };
+    summary.processor_domains[index] = domain;
+    let mut domains = 0_u16;
+    for (position, candidate) in summary.processor_domains[..summary.processor_count]
+        .iter()
+        .copied()
+        .enumerate()
+    {
+        if !summary.processor_domains[..position].contains(&candidate) {
+            domains = domains.saturating_add(1);
+        }
+    }
+    summary.numa_domains = domains.max(1);
+    Ok(())
 }
 
 fn parse_madt(
@@ -407,5 +519,17 @@ pub fn self_test() -> bool {
     let malformed_rejected =
         update_madt_summary(&[0, 7, 0, 0, 0, 0, 0], &mut topology) == Err(Error::InvalidLength);
 
-    valid && checksum_rejected && topology_valid && malformed_rejected
+    let mut srat = [0_u8; 16];
+    srat[0] = 0;
+    srat[1] = 16;
+    srat[2] = 3;
+    srat[3] = 0;
+    srat[4] = 1;
+    topology.processor_ids[0] = 0;
+    topology.processor_count = 1;
+    let srat_valid = update_srat_summary(&srat, &mut topology).is_ok()
+        && topology.processor_domains[0] == 3
+        && topology.numa_domains == 1;
+
+    valid && checksum_rejected && topology_valid && malformed_rejected && srat_valid
 }

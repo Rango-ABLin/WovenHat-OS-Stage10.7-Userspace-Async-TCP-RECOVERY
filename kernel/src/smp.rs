@@ -13,6 +13,7 @@ pub const TIMER_VECTOR: u8 = 0xe0;
 pub const RESCHEDULE_VECTOR: u8 = 0xe1;
 pub const SPURIOUS_VECTOR: u8 = 0xff;
 static IDS: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(u32::MAX) }; MAX_CPUS];
+static DOMAINS: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(0) }; MAX_CPUS];
 static ONLINE: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
 static ACK: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 static GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -72,8 +73,28 @@ pub fn online_mask() -> usize {
             }
         })
 }
+pub fn cpu_domain(cpu: usize) -> u32 {
+    if cpu < MAX_CPUS {
+        DOMAINS[cpu].load(Ordering::Acquire)
+    } else {
+        u32::MAX
+    }
+}
+pub fn topology_domains() -> u16 {
+    let mut seen = [u32::MAX; MAX_CPUS];
+    let mut count = 0_u16;
+    for cpu in 0..online_count() {
+        let domain = cpu_domain(cpu);
+        if !seen[..count as usize].contains(&domain) {
+            seen[count as usize] = domain;
+            count = count.saturating_add(1);
+        }
+    }
+    count.max(1)
+}
 pub fn prepare(regions: &[MemoryRegion]) {
     IDS[0].store(__cpuid(1).ebx >> 24, Ordering::Relaxed);
+    DOMAINS[0].store(0, Ordering::Release);
     ONLINE[0].store(true, Ordering::Release);
     // The frame allocator excludes the low MiB. Never overwrite firmware/reserved RAM.
     for region in regions {
@@ -262,6 +283,12 @@ pub fn start(topology: Option<crate::hal::acpi::Summary>, offset: u64) {
             | if (flags >> 2) & 3 == 3 { 1 << 15 } else { 0 },
     );
     IOAPIC.store(io, Ordering::Release);
+    if let Some(index) = topology.processor_ids[..topology.processor_count]
+        .iter()
+        .position(|id| *id == IDS[0].load(Ordering::Relaxed))
+    {
+        DOMAINS[0].store(topology.processor_domains[index], Ordering::Release);
+    }
     if topology.processor_count > 1 {
         let low = BOOT_PAGE.load(Ordering::Relaxed);
         assert!(low != 0, "no usable AP trampoline page below 1 MiB");
@@ -319,6 +346,12 @@ pub fn start(topology: Option<crate::hal::acpi::Summary>, offset: u64) {
                     continue;
                 }
                 IDS[cpu].store(*id, Ordering::Release);
+                let domain = topology.processor_ids[..topology.processor_count]
+                    .iter()
+                    .position(|candidate| candidate == id)
+                    .map(|index| topology.processor_domains[index])
+                    .unwrap_or(0);
+                DOMAINS[cpu].store(domain, Ordering::Release);
                 patch(&ap_stack)
                     .cast::<u64>()
                     .write_unaligned(STACKS[cpu].0.get() as u64 + 131072);
@@ -348,6 +381,11 @@ pub fn start(topology: Option<crate::hal::acpi::Summary>, offset: u64) {
         "[SMP] online={} expected={} LAPIC/IOAPIC enabled",
         online_count(),
         topology.processor_count
+    ));
+    serial::write_line(format_args!(
+        "[SMP] topology/NUMA affinity: PASSED domains={} mask={:#x}",
+        topology_domains(),
+        online_mask()
     ));
 }
 extern "C" fn ap_main() -> ! {

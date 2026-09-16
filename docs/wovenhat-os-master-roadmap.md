@@ -64,6 +64,8 @@ and the [ownership/lock audit](smp-lock-audit.md).
 - [x] Conservative automatic rebalancing with dedicated reschedule IPIs.
 - [x] Rebalancing/reschedule/migration stress tests across the 1/2/4 CPU matrix.
 - [x] Acknowledged cross-core TLB shootdowns and stale-translation regression.
+- [x] Bounded ACPI SRAT CPU-domain discovery with domain-local placement and
+      rebalancing; see `docs/audit-stage6-numa-2026-09-16.md`.
 - [x] Ownership audit defining which legacy services remain BSP-only.
 - [ ] General multicore userspace, task migration and concurrent I/O service calls.
 - [ ] Measured near-linear speedup, wider hardware coverage, NUMA and hotplug.
