@@ -1,4 +1,5 @@
 use spin::Mutex;
+use unicode_normalization::UnicodeNormalization;
 
 use crate::config::{
     MAX_OPEN_FILES, MAX_PATH_SIZE as PATH_CAPACITY, MAX_VFS_NODES as MAX_NODES, VFS_NODE_CAPACITY,
@@ -514,6 +515,12 @@ fn validate_absolute_path(path: &str) -> Result<(), Error> {
     if path.as_bytes().contains(&0) {
         return Err(Error::InvalidPath);
     }
+    // Store one canonical UTF-8 spelling for every name. FAT32 lookup also
+    // normalizes names, while this boundary rejects decomposed input before it
+    // can create duplicate VFS entries.
+    if !is_nfc_path(path) {
+        return Err(Error::InvalidPath);
+    }
     // The VFS accepts canonical absolute paths. Shell/task resolvers handle
     // relative paths and dot components before entering this layer. Limit each
     // component to the directory-entry ABI so names are never truncated.
@@ -525,6 +532,21 @@ fn validate_absolute_path(path: &str) -> Result<(), Error> {
         return Err(Error::InvalidPath);
     }
     Ok(())
+}
+
+fn is_nfc_path(path: &str) -> bool {
+    let mut normalized = [0u8; PATH_CAPACITY];
+    let mut length = 0usize;
+    for ch in path.nfc() {
+        let mut encoded = [0u8; 4];
+        let bytes = ch.encode_utf8(&mut encoded).as_bytes();
+        if length + bytes.len() > normalized.len() {
+            return false;
+        }
+        normalized[length..length + bytes.len()].copy_from_slice(bytes);
+        length += bytes.len();
+    }
+    normalized[..length] == *path.as_bytes()
 }
 
 /// Return the slash-prefixed suffix only at a directory boundary.
@@ -1399,6 +1421,9 @@ fn set_scratch_backing(node: &mut Node, path: &str, length: usize) {
 
 /// Exercise path semantics on the statically allocated scratch registry.
 fn path_semantics_self_test(fs: &mut Registry) -> bool {
+    if !is_nfc_path("/caf\u{e9}") || is_nfc_path("/cafe\u{301}") {
+        return false;
+    }
     for path in [
         "",
         "relative",

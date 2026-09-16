@@ -3685,6 +3685,12 @@ fn long_filename_self_test() -> bool {
         checksum: 0x1234,
         metadata,
     };
+    let intent2 = JournalIntent {
+        path_hash: metadata_hash ^ 0x9e37_79b9_7f4a_7c15,
+        path_tag: metadata_tag.wrapping_add(1),
+        checksum: 0x5678,
+        metadata,
+    };
     let metadata_ok = write_file_metadata_pending(
         &mut disk,
         volume,
@@ -3700,8 +3706,12 @@ fn long_filename_self_test() -> bool {
         && read_file_metadata(&mut disk, volume, metadata_hash, metadata_tag) == Ok(None)
         && append_journal_intent(&mut disk, volume, intent).is_ok()
         && read_journal_intent(&mut disk, volume, metadata_hash, metadata_tag) == Ok(Some(intent))
+        && append_journal_intent(&mut disk, volume, intent2).is_ok()
         && remove_journal_intent(&mut disk, volume, metadata_hash, metadata_tag).is_ok()
-        && read_journal_intent(&mut disk, volume, metadata_hash, metadata_tag) == Ok(None);
+        && read_journal_intent(&mut disk, volume, metadata_hash, metadata_tag) == Ok(None)
+        && read_journal_intent(&mut disk, volume, intent2.path_hash, intent2.path_tag)
+            == Ok(Some(intent2))
+        && remove_journal_intent(&mut disk, volume, intent2.path_hash, intent2.path_tag).is_ok();
     if create_path_file(&mut disk, volume, name, b"lfn").is_err() {
         return false;
     }

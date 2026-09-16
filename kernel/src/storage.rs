@@ -1026,10 +1026,15 @@ pub fn persist_path(path: &str) -> Result<(), PersistError> {
         if let Some(metadata) = metadata {
             result = persist_metadata_on_device(&mut disk, path, metadata, false);
             if result.is_ok() {
-                result = persist_inode_metadata_on_device(&mut disk, path, metadata);
-            }
-            if result.is_ok() {
-                result = clear_path_metadata_on_device(&mut disk, path);
+                result = persist_inode_metadata_on_device(&mut disk, path, metadata)
+                    .map(|written| {
+                        if written {
+                            clear_path_metadata_on_device(&mut disk, path)
+                        } else {
+                            Ok(())
+                        }
+                    })
+                    .and_then(|result| result);
             }
             if result.is_ok() {
                 result = persist_journal_on_device(
@@ -1086,9 +1091,9 @@ fn persist_inode_metadata_on_device(
     device: &mut impl crate::block::BlockDevice,
     path: &str,
     metadata: fat32::FileMetadata,
-) -> Result<(), PersistError> {
+) -> Result<bool, PersistError> {
     let relative = path.strip_prefix("/mnt/").ok_or(PersistError::NotSupported)?;
-    match fat32::mount(device) {
+    let written = match fat32::mount(device) {
         Ok(volume) => write_inode_for_volume(device, volume, relative, metadata)
             .map_err(map_persist_err)?,
         Err(fat32::Error::InvalidBootSector | fat32::Error::UnsupportedGeometry) => {
@@ -1097,20 +1102,21 @@ fn persist_inode_metadata_on_device(
                     .map_err(|_| PersistError::Failed)?;
                 let volume = fat32::mount(&mut view).map_err(map_persist_err)?;
                 write_inode_for_volume(&mut view, volume, relative, metadata)
-                    .map_err(map_persist_err)?;
+                    .map_err(map_persist_err)?
             } else if let Ok(Some(part)) = gpt::find_fat_partition(device) {
                 let mut view = partition::PartitionDevice::new(device, part)
                     .map_err(|_| PersistError::Failed)?;
                 let volume = fat32::mount(&mut view).map_err(map_persist_err)?;
                 write_inode_for_volume(&mut view, volume, relative, metadata)
-                    .map_err(map_persist_err)?;
+                    .map_err(map_persist_err)?
             } else {
                 return Err(PersistError::Failed);
             }
         }
         Err(_) => return Err(PersistError::Failed),
-    }
-    device.flush().map_err(|_| PersistError::Failed)
+    };
+    device.flush().map_err(|_| PersistError::Failed)?;
+    Ok(written)
 }
 
 fn write_inode_for_volume(
@@ -1118,9 +1124,13 @@ fn write_inode_for_volume(
     volume: fat32::Volume,
     relative: &str,
     metadata: fat32::FileMetadata,
-) -> Result<(), fat32::Error> {
+) -> Result<bool, fat32::Error> {
     let entry = fat32::resolve_path(device, volume, relative)?;
-    fat32::write_inode_metadata(device, volume, entry.first_cluster, metadata)
+    if entry.first_cluster < 2 {
+        return Ok(false);
+    }
+    fat32::write_inode_metadata(device, volume, entry.first_cluster, metadata)?;
+    Ok(true)
 }
 
 fn clear_path_metadata_on_device(
@@ -1339,9 +1349,15 @@ pub fn delete_path(path: &str) -> Result<(), MutationError> {
         return Err(MutationError::ReadOnly);
     }
     FILE_PAGES.lock().invalidate();
+    let inode = inode_on_device(&mut disk, relative).ok().flatten();
     let mut result = delete_on_cached_device(&mut disk, relative);
     if result.is_ok() {
         result = remove_metadata_on_device(&mut disk, path);
+    }
+    if result.is_ok() {
+        if let Some(inode) = inode {
+            result = remove_inode_metadata_on_device(&mut disk, inode);
+        }
     }
     let flushed = disk.flush().map_err(|_| MutationError::Failed);
     let status = result.and(flushed);
@@ -1398,6 +1414,68 @@ fn remove_metadata_on_device(
                     .map_err(|_| MutationError::Failed)?;
                 let volume = fat32::mount(&mut view).map_err(map_mutation_err)?;
                 fat32::remove_file_metadata(&mut view, volume, hash, tag)
+                    .map_err(map_mutation_err)
+            } else {
+                Err(MutationError::Failed)
+            }
+        }
+        Err(_) => Err(MutationError::Failed),
+    }
+}
+
+fn inode_on_device(
+    device: &mut impl crate::block::BlockDevice,
+    relative: &str,
+) -> Result<Option<u32>, MutationError> {
+    match fat32::mount(device) {
+        Ok(volume) => Ok(fat32::resolve_path(device, volume, relative)
+            .ok()
+            .map(|entry| entry.first_cluster)
+            .filter(|inode| *inode >= 2)),
+        Err(fat32::Error::InvalidBootSector | fat32::Error::UnsupportedGeometry) => {
+            if let Ok(Some(part)) = partition::find_fat32(device) {
+                let mut view = partition::PartitionDevice::new(device, part)
+                    .map_err(|_| MutationError::Failed)?;
+                let volume = fat32::mount(&mut view).map_err(map_mutation_err)?;
+                Ok(fat32::resolve_path(&mut view, volume, relative)
+                    .ok()
+                    .map(|entry| entry.first_cluster)
+                    .filter(|inode| *inode >= 2))
+            } else if let Ok(Some(part)) = gpt::find_fat_partition(device) {
+                let mut view = partition::PartitionDevice::new(device, part)
+                    .map_err(|_| MutationError::Failed)?;
+                let volume = fat32::mount(&mut view).map_err(map_mutation_err)?;
+                Ok(fat32::resolve_path(&mut view, volume, relative)
+                    .ok()
+                    .map(|entry| entry.first_cluster)
+                    .filter(|inode| *inode >= 2))
+            } else {
+                Err(MutationError::Failed)
+            }
+        }
+        Err(_) => Err(MutationError::Failed),
+    }
+}
+
+fn remove_inode_metadata_on_device(
+    device: &mut impl crate::block::BlockDevice,
+    inode: u32,
+) -> Result<(), MutationError> {
+    match fat32::mount(device) {
+        Ok(volume) => fat32::remove_inode_metadata(device, volume, inode)
+            .map_err(map_mutation_err),
+        Err(fat32::Error::InvalidBootSector | fat32::Error::UnsupportedGeometry) => {
+            if let Ok(Some(part)) = partition::find_fat32(device) {
+                let mut view = partition::PartitionDevice::new(device, part)
+                    .map_err(|_| MutationError::Failed)?;
+                let volume = fat32::mount(&mut view).map_err(map_mutation_err)?;
+                fat32::remove_inode_metadata(&mut view, volume, inode)
+                    .map_err(map_mutation_err)
+            } else if let Ok(Some(part)) = gpt::find_fat_partition(device) {
+                let mut view = partition::PartitionDevice::new(device, part)
+                    .map_err(|_| MutationError::Failed)?;
+                let volume = fat32::mount(&mut view).map_err(map_mutation_err)?;
+                fat32::remove_inode_metadata(&mut view, volume, inode)
                     .map_err(map_mutation_err)
             } else {
                 Err(MutationError::Failed)
