@@ -646,7 +646,9 @@ pub fn create_disk_file_with_writable(
 
 /// Create or overwrite a writable file.
 pub fn write_file(path: &str, data: &[u8]) -> Result<(), Error> {
-    REGISTRY.lock().write_file(path, data)
+    let result = REGISTRY.lock().write_file(path, data);
+    if result.is_ok() && path.starts_with("/mnt/") { crate::storage::mark_mnt_dirty(); }
+    result
 }
 
 /// Validate removal without mutating the registry.
@@ -702,7 +704,9 @@ pub fn remove(path: &str) -> Result<(), Error> {
         registry.nodes[index].path.fill(0);
         Ok(())
     } else {
-        registry.remove(path)
+        let result = registry.remove(path);
+        if result.is_ok() && path.starts_with("/mnt/") { crate::storage::mark_mnt_dirty(); }
+        result
     }
 }
 
@@ -711,12 +715,16 @@ pub fn can_rename(old: &str, new: &str) -> Result<(), Error> {
 }
 
 pub fn rename(old: &str, new: &str) -> Result<(), Error> {
-    REGISTRY.lock().rename(old, new)
+    let result = REGISTRY.lock().rename(old, new);
+    if result.is_ok() && (old.starts_with("/mnt/") || new.starts_with("/mnt/")) { crate::storage::mark_mnt_dirty(); }
+    result
 }
 
 /// Create a directory. Parent must already exist.
 pub fn mkdir(path: &str) -> Result<(), Error> {
-    REGISTRY.lock().mkdir(path).map(|_| ())
+    let result = REGISTRY.lock().mkdir(path).map(|_| ());
+    if result.is_ok() && path.starts_with("/mnt/") { crate::storage::mark_mnt_dirty(); }
+    result
 }
 
 /// Query metadata for a path.
