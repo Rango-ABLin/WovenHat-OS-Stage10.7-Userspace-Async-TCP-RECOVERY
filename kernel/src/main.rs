@@ -2206,11 +2206,19 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         }
     };
     serial::write_line(format_args!("[TERM] spawn termination target: DONE pid={}", kill_pid.as_u64()));
-    if task::process_exited(kill_pid)
-        || task::kill_process(kill_pid.as_u64(), 15).is_err()
-        || !task::process_exited(kill_pid)
-        || task::wait_process(kill_pid.as_u64()) != Ok(143)
-    {
+    let exited_before_kill = task::process_exited(kill_pid);
+    serial::write_line(format_args!("[TERM] process_exited before kill={}", exited_before_kill));
+    let kill_result = if exited_before_kill {
+        Err(())
+    } else {
+        task::kill_process(kill_pid.as_u64(), 15).map_err(|_| ())
+    };
+    serial::write_line(format_args!("[TERM] kill result={}", kill_result.is_ok()));
+    let exited_after_kill = task::process_exited(kill_pid);
+    serial::write_line(format_args!("[TERM] process_exited after kill={}", exited_after_kill));
+    let wait_status = task::wait_process(kill_pid.as_u64());
+    serial::write_line(format_args!("[TERM] wait status ok={}", wait_status == Ok(143)));
+    if exited_before_kill || kill_result.is_err() || !exited_after_kill || wait_status != Ok(143) {
         console.println("SCHEDULER-OWNED TERMINATION: FAILED");
         halt();
     }
