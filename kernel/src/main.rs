@@ -1722,12 +1722,21 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     }
     #[cfg(feature = "stage6-hotplug-test")]
     {
-        if smp::online_count() < 2 || !smp::request_cpu_offline(smp::online_count() - 1) {
+        let offline_cpu = smp::online_count().saturating_sub(1);
+        if smp::online_count() < 2 || !smp::request_cpu_offline(offline_cpu) {
             serial::write_line(format_args!("[S6.HOTPLUG] offline AP: FAILED"));
             qemu_test_exit_failure();
         }
         serial::write_line(format_args!(
             "[S6.HOTPLUG] offline AP: PASSED online={} mask={:#x}",
+            smp::online_count(), smp::online_mask()
+        ));
+        if !smp::request_cpu_online(offline_cpu) {
+            serial::write_line(format_args!("[S6.HOTPLUG] online AP: FAILED"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!(
+            "[S6.HOTPLUG] offline+online AP: PASSED online={} mask={:#x}",
             smp::online_count(), smp::online_mask()
         ));
         qemu_test_exit_success();

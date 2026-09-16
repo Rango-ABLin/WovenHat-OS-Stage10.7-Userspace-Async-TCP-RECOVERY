@@ -48,12 +48,13 @@ def main():
     mask_after = (1 << online_after) - 1
     required = [f'[SMP] online={args.cpus} expected={args.cpus}',
                 '[SMP] topology/NUMA affinity: PASSED',
-                f'[S6.HOTPLUG] offline AP: PASSED online={online_after} mask=0x{mask_after:x}']
+                f'[S6.HOTPLUG] offline AP: PASSED online={online_after} mask=0x{mask_after:x}',
+                f'[S6.HOTPLUG] offline+online AP: PASSED online={args.cpus} mask=0x{((1 << args.cpus) - 1):x}']
     if result.returncode != 33 or any(marker not in log for marker in required):
         print(log[-12000:], file=sys.stderr)
         print('FAILED; evidence:', out, file=sys.stderr)
         return 1
-    print(f'Stage 6 hotplug: PASS ({args.cpus}->{online_after} CPUs, exit 33). Evidence: {out}')
+    print(f'Stage 6 hotplug: PASS ({args.cpus}->{online_after}->{args.cpus} CPUs, exit 33). Evidence: {out}')
     return 0
 
 

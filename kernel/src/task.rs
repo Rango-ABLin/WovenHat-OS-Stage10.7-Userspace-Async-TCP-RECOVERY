@@ -4810,8 +4810,21 @@ pub fn init_ap(cpu: usize) {
 
 fn evacuate_cpu(scheduler: &mut Scheduler, target: usize) -> bool {
     let current_slot = scheduler.current_slot[target];
+    let target_bit = cpu_bit(target);
     for (slot, task) in scheduler.tasks.iter_mut().enumerate() {
-        if task.cpu != target || matches!(task.state, TaskState::Empty) {
+        if task.state == TaskState::Empty {
+            continue;
+        }
+        if task.state == TaskState::Dead {
+            if task.cpu == target {
+                // A dead task owns no runnable context. Move it to the BSP so
+                // its scheduler-owned reclamation can run after the AP parks.
+                task.cpu = 0;
+                task.affinity_mask = cpu_bit(0);
+            }
+            continue;
+        }
+        if task.cpu != target && task.affinity_mask & target_bit == 0 {
             continue;
         }
         // The CPU-owned idle task is handled by the checkpoint after all
@@ -4823,28 +4836,31 @@ fn evacuate_cpu(scheduler: &mut Scheduler, target: usize) -> bool {
         if matches!(task.name, "idle" | "cpu-idle") {
             continue;
         }
-        if task.state == TaskState::Dead {
-            // A dead task owns no runnable context. Move it to the BSP so its
-            // scheduler-owned reclamation can run after the AP is parked.
-            task.cpu = 0;
-            task.affinity_mask = cpu_bit(0);
-            continue;
-        }
-        if matches!(task.state, TaskState::Running | TaskState::Switching) {
-            if slot == current_slot {
-                continue;
+        if task.cpu == target {
+            if matches!(task.state, TaskState::Running | TaskState::Switching) {
+                if slot == current_slot {
+                    continue;
+                }
+                return false;
             }
+            if !task.migratable {
+                return false;
+            }
+            let Some(destination) = (0..target)
+                .find(|cpu| task.affinity_mask & cpu_bit(*cpu) != 0)
+            else {
+                return false;
+            };
+            task.cpu = destination;
+        } else if !task.migratable {
+            // A task owned by another CPU with a hard affinity bit for the
+            // target cannot safely retain that bit after the target leaves.
             return false;
         }
-        if !task.migratable {
+        task.affinity_mask &= !target_bit;
+        if task.affinity_mask == 0 {
             return false;
         }
-        let Some(destination) = (0..target)
-            .find(|cpu| task.affinity_mask & cpu_bit(*cpu) != 0)
-        else {
-            return false;
-        };
-        task.cpu = destination;
     }
     true
 }
@@ -4891,6 +4907,36 @@ pub fn offline_cpu_checkpoint(target: usize) -> bool {
         idle.cpu = 0;
         idle.affinity_mask = cpu_bit(0);
         scheduler.task_count = scheduler.task_count.saturating_sub(1);
+        scheduler.validate_affinity_invariants();
+        true
+    })
+}
+
+/// Recreate the idle task for a CPU whose AP context was parked by the
+/// hotplug checkpoint. The previous `offline-idle` entry is reused to keep
+/// repeated offline/online cycles bounded by the fixed task table.
+pub fn online_cpu_checkpoint(target: usize) -> bool {
+    if target == 0
+        || target >= crate::smp::online_count()
+        || !crate::smp::cpu_is_online(target)
+    {
+        return false;
+    }
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut scheduler = SCHEDULER.lock();
+        let Some(slot) = scheduler.tasks.iter().position(|task| {
+            task.state == TaskState::Empty
+                || (task.state == TaskState::Dead && task.name == "offline-idle")
+        }) else {
+            return false;
+        };
+        let id = TaskId(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed));
+        scheduler.tasks[slot].initialize(slot, id, "cpu-idle", idle_task, TaskPriority::LOW);
+        scheduler.tasks[slot].cpu = target;
+        scheduler.tasks[slot].affinity_mask = cpu_bit(target);
+        scheduler.tasks[slot].state = TaskState::Running;
+        scheduler.current_slot[target] = slot;
+        scheduler.task_count += 1;
         scheduler.validate_affinity_invariants();
         true
     })

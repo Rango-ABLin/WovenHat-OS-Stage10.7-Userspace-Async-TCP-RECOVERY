@@ -15,7 +15,8 @@ pub const SPURIOUS_VECTOR: u8 = 0xff;
 static IDS: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(u32::MAX) }; MAX_CPUS];
 static DOMAINS: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(0) }; MAX_CPUS];
 static ONLINE: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
-// 0=idle, 1=requested, 2=transitioning, 3=rejected, 4=cancelled, 5=offline.
+// 0=idle, 1=offline requested, 2=offline transitioning, 3=rejected,
+// 4=cancelled, 5=offline, 6=online requested, 7=online.
 static OFFLINE_STATE: [AtomicU8; MAX_CPUS] = [const { AtomicU8::new(0) }; MAX_CPUS];
 static ACK: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 static GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -126,6 +127,44 @@ pub fn request_cpu_offline(cpu: usize) -> bool {
     }
 }
 
+/// Ask a parked AP to rejoin the contiguous online prefix. The AP retains its
+/// bootstrap context while parked, so re-online does not allocate a new stack
+/// or rerun firmware startup. Only the next CPU after the current prefix may
+/// rejoin; this keeps scheduler CPU indexing and affinity masks deterministic.
+#[allow(dead_code)] // Management syscall wiring is a later lifecycle stage.
+pub fn request_cpu_online(cpu: usize) -> bool {
+    if cpu == 0
+        || cpu != online_count()
+        || cpu >= MAX_CPUS
+        || OFFLINE_STATE[cpu].load(Ordering::Acquire) != 5
+    {
+        return false;
+    }
+    OFFLINE_STATE[cpu].store(6, Ordering::Release);
+    if !wake_offline_cpu(cpu) {
+        let _ = OFFLINE_STATE[cpu].compare_exchange(6, 4, Ordering::AcqRel, Ordering::Acquire);
+        return false;
+    }
+    let start = unsafe { core::arch::x86_64::_rdtsc() };
+    loop {
+        match OFFLINE_STATE[cpu].load(Ordering::Acquire) {
+            7 => return true,
+            3 | 4 => return false,
+            _ => {}
+        }
+        if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 5_000_000_000 {
+            serial::write_line(format_args!(
+                "[S6.HOTPLUG] online request timeout cpu={} state={}",
+                cpu,
+                OFFLINE_STATE[cpu].load(Ordering::Acquire)
+            ));
+            let _ = OFFLINE_STATE[cpu].compare_exchange(6, 4, Ordering::AcqRel, Ordering::Acquire);
+            return false;
+        }
+        core::hint::spin_loop();
+    }
+}
+
 /// CPU-local checkpoint called by `idle_task`. On success this function never
 /// returns a second time on that CPU: the caller parks with interrupts masked.
 pub fn offline_checkpoint(cpu: usize) -> bool {
@@ -156,6 +195,36 @@ pub fn offline_checkpoint(cpu: usize) -> bool {
     COUNT.store(cpu, Ordering::Release);
     OFFLINE_STATE[cpu].store(5, Ordering::Release);
     true
+}
+
+/// CPU-local checkpoint that reconstructs the scheduler-owned idle task after
+/// a parked AP receives an online request. The old offline-idle slot is reused
+/// so repeated lifecycle tests do not consume task-table capacity.
+pub fn online_checkpoint(cpu: usize) -> bool {
+    if cpu == 0
+        || cpu != online_count()
+        || OFFLINE_STATE[cpu].load(Ordering::Acquire) != 6
+    {
+        return false;
+    }
+    x86_64::instructions::interrupts::disable();
+    // Publish the CPU before creating its live idle TCB, matching AP bootstrap
+    // ordering. This prevents the scheduler invariant checker from observing
+    // a live task whose affinity refers to a still-offline CPU.
+    ONLINE[cpu].store(true, Ordering::Release);
+    COUNT.store(cpu + 1, Ordering::Release);
+    if task::online_cpu_checkpoint(cpu) {
+        start_timer();
+        OFFLINE_STATE[cpu].store(7, Ordering::Release);
+        true
+    } else {
+        serial::write_line(format_args!("[S6.HOTPLUG] online checkpoint rejected cpu={}", cpu));
+        ONLINE[cpu].store(false, Ordering::Release);
+        COUNT.store(cpu, Ordering::Release);
+        OFFLINE_STATE[cpu].store(3, Ordering::Release);
+        x86_64::instructions::interrupts::enable();
+        false
+    }
 }
 pub fn cpu_domain(cpu: usize) -> u32 {
     if cpu < MAX_CPUS {
@@ -270,6 +339,17 @@ pub fn reschedule_cpu(cpu: usize) -> bool {
     if cpu == cpu_index() {
         task::request_reschedule();
         return true;
+    }
+    RESCHEDULE_IPIS.fetch_add(1, Ordering::Relaxed);
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        send(IDS[cpu].load(Ordering::Relaxed), u32::from(RESCHEDULE_VECTOR));
+    });
+    true
+}
+
+fn wake_offline_cpu(cpu: usize) -> bool {
+    if cpu >= MAX_CPUS || OFFLINE_STATE[cpu].load(Ordering::Acquire) != 6 {
+        return false;
     }
     RESCHEDULE_IPIS.fetch_add(1, Ordering::Relaxed);
     x86_64::instructions::interrupts::without_interrupts(|| {
@@ -523,8 +603,10 @@ extern "C" fn ap_main() -> ! {
         task::yield_now();
         if offline_checkpoint(cpu) {
             loop {
-                x86_64::instructions::interrupts::disable();
-                x86_64::instructions::hlt();
+                x86_64::instructions::interrupts::enable_and_hlt();
+                if online_checkpoint(cpu) {
+                    break;
+                }
             }
         }
         x86_64::instructions::interrupts::enable_and_hlt();
