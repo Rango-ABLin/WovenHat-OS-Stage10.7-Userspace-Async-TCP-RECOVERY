@@ -33,8 +33,8 @@ online-prefix markers:
 - `[S6.HOTPLUG] lifecycle: PASSED cycles=2 online=4 mask=0xf` (4 CPU run)
 
 The durable logs are retained under
-`audit-artifacts/stage6-hotplug-2cpu-1789577159086322400/` and
-`audit-artifacts/stage6-hotplug-4cpu-1789577187755511700/`.
+`audit-artifacts/stage6-hotplug-2cpu-1789580521035747800/` and
+`audit-artifacts/stage6-hotplug-4cpu-1789580543179207500/`.
 
 Warning-denying freestanding Clippy also passed with the hotplug feature:
 
