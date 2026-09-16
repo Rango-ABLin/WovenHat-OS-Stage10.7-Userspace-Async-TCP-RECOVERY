@@ -1,0 +1,10 @@
+target/
+.vscode/
+*.pdb
+*.ilk
+*.obj
+*.exe
+*.dll
+*.log
+
+/wovenhat-disk.img

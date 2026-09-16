@@ -1,0 +1,746 @@
+--- a/kernel/src/async_op.rs
++++ b/kernel/src/async_op.rs
+@@ -1,10 +1,15 @@
+-//! Stage 10.2 generic asynchronous operation/completion substrate.
++//! Stage 10.2/10.3 generic asynchronous operation/completion substrate.
+ //!
+ //! Producers allocate a bounded generation-tagged operation for the current
+ //! task, perform work elsewhere, and complete it through [`complete`].  The
+ //! owner can then [`wait`] without polling.  Wait registration and completion
+-//! are serialized by one table lock, so completion-before-sleep cannot be lost
+-//! and does not leave a stale scheduler-event permit behind.
++//! are serialized by one table lock, so completion-before-sleep cannot be lost.
++//!
++//! Stage 10.3 adds a stable raw-handle ABI, non-consuming readiness inspection,
++//! owner cancellation, service-owned completion, and deterministic owner
++//! teardown.  The split between `wait_ready` and `release_current` is deliberate:
++//! userspace syscall code can copy a completion to Ring 3 before consuming the
++//! kernel slot, so a bad userspace pointer never destroys a completed result.
+ 
+ use core::sync::atomic::{AtomicU64, Ordering};
+ 
+@@ -24,20 +29,69 @@
+     Service = 3,
+ }
+ 
++impl AsyncClass {
++    pub const fn from_u64(value: u64) -> Option<Self> {
++        match value {
++            0 => Some(Self::Block),
++            1 => Some(Self::Network),
++            2 => Some(Self::Device),
++            3 => Some(Self::Service),
++            _ => None,
++        }
++    }
++}
++
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub struct Handle {
+     slot: u16,
+     generation: u32,
+ }
+ 
++impl Handle {
++    /// Stable Stage 10.3 userspace representation.
++    ///
++    /// Bits 0..15 are the bounded table slot, bits 32..63 are the generation,
++    /// and bits 16..31 are reserved and must be zero. Generation zero is never
++    /// allocated and therefore cannot name a live operation.
++    pub const fn to_raw(self) -> u64 {
++        ((self.generation as u64) << 32) | self.slot as u64
++    }
++
++    pub const fn from_raw(raw: u64) -> Option<Self> {
++        if raw & 0x0000_ffff_0000 != 0 {
++            return None;
++        }
++        let generation = (raw >> 32) as u32;
++        let slot = (raw & 0xffff) as u16;
++        if generation == 0 || slot as usize >= MAX_ASYNC_OPERATIONS {
++            return None;
++        }
++        Some(Self { slot, generation })
++    }
++}
++
++#[repr(C)]
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub struct Completion {
+     pub status: i32,
++    pub reserved: u32,
+     pub value: u64,
+ }
+ 
+ impl Completion {
+-    pub const OK: Self = Self { status: 0, value: 0 };
++    pub const OK: Self = Self {
++        status: 0,
++        reserved: 0,
++        value: 0,
++    };
++
++    pub const fn new(status: i32, value: u64) -> Self {
++        Self {
++            status,
++            reserved: 0,
++            value,
++        }
++    }
+ }
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+@@ -47,6 +101,7 @@
+     InvalidHandle,
+     NotOwner,
+     AlreadyComplete,
++    WrongClass,
+ }
+ 
+ #[derive(Clone, Copy, PartialEq, Eq)]
+@@ -77,6 +132,12 @@
+             completion: Completion::OK,
+         }
+     }
++
++    fn release(&mut self) {
++        self.state = State::Free;
++        self.waiting = false;
++        self.completion = Completion::OK;
++    }
+ }
+ 
+ struct Table {
+@@ -128,6 +189,8 @@
+ static WAITS: AtomicU64 = AtomicU64::new(0);
+ static SIGNALS: AtomicU64 = AtomicU64::new(0);
+ static RELEASED: AtomicU64 = AtomicU64::new(0);
++static CANCELLED: AtomicU64 = AtomicU64::new(0);
++static OWNER_REAPED: AtomicU64 = AtomicU64::new(0);
+ static STALE_REJECTIONS: AtomicU64 = AtomicU64::new(0);
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+@@ -137,6 +200,8 @@
+     pub waits: u64,
+     pub signals: u64,
+     pub released: u64,
++    pub cancelled: u64,
++    pub owner_reaped: u64,
+     pub stale_rejections: u64,
+     pub active: usize,
+ }
+@@ -165,7 +230,7 @@
+ ///
+ /// A scheduler event is emitted only when the owner has already registered a
+ /// wait. If completion wins the race, the completed state itself is the latch;
+-/// a later `wait` consumes the result directly and no stale event permit is
++/// a later wait observes the result directly and no stale event permit is
+ /// created.
+ pub fn complete(handle: Handle, completion: Completion) -> Result<(), Error> {
+     let waiter = {
+@@ -190,12 +255,46 @@
+     Ok(())
+ }
+ 
+-/// Waits for and consumes one operation owned by the current task.
+-///
+-/// The operation slot is released before returning. A copied/stale handle can
+-/// therefore never observe a later occupant of the same table slot because the
+-/// generation changes on every allocation.
+-pub fn wait(handle: Handle) -> Result<Completion, Error> {
++/// Userspace-service completion path. Hardware/device completion remains a
++/// kernel producer responsibility: Ring 3 may complete only its own Service
++/// class operations.
++pub fn complete_current_service(handle: Handle, completion: Completion) -> Result<(), Error> {
++    let owner = task::current_task_id_if_running().ok_or(Error::NoCurrentTask)?;
++    {
++        let mut table = TABLE.lock();
++        let Some(slot) = table.get_mut(handle) else {
++            STALE_REJECTIONS.fetch_add(1, Ordering::Relaxed);
++            return Err(Error::InvalidHandle);
++        };
++        if slot.owner != owner {
++            return Err(Error::NotOwner);
++        }
++        if slot.class != AsyncClass::Service {
++            return Err(Error::WrongClass);
++        }
++    }
++    complete(handle, completion)
++}
++
++/// Nonblocking readiness inspection. A completed result is *not* consumed.
++/// This is the safe primitive for Ring-3 copyout: callers may retry after an
++/// invalid userspace destination without losing the completion.
++pub fn peek_current(handle: Handle) -> Result<Option<Completion>, Error> {
++    let owner = task::current_task_id_if_running().ok_or(Error::NoCurrentTask)?;
++    let mut table = TABLE.lock();
++    let Some(slot) = table.get_mut(handle) else {
++        STALE_REJECTIONS.fetch_add(1, Ordering::Relaxed);
++        return Err(Error::InvalidHandle);
++    };
++    if slot.owner != owner {
++        return Err(Error::NotOwner);
++    }
++    Ok((slot.state == State::Complete).then_some(slot.completion))
++}
++
++/// Blocks until a completion is ready but leaves the slot allocated.
++/// Userspace syscall code releases only after successful copyout.
++pub fn wait_ready(handle: Handle) -> Result<Completion, Error> {
+     let owner = task::current_task_id_if_running().ok_or(Error::NoCurrentTask)?;
+     loop {
+         let completion = {
+@@ -208,31 +307,35 @@
+                 return Err(Error::NotOwner);
+             }
+             if slot.state == State::Complete {
+-                let result = slot.completion;
+-                slot.state = State::Free;
+-                slot.waiting = false;
+-                Some(result)
++                Some(slot.completion)
+             } else {
+-                // This registration is serialized with complete(). Once true,
+-                // completion must either signal us or already be visible here.
++                // Serialized with complete(): once true, completion either
++                // signals this owner or is visible on the next table check.
+                 slot.waiting = true;
+                 None
+             }
+         };
+ 
+         if let Some(completion) = completion {
+-            RELEASED.fetch_add(1, Ordering::Relaxed);
+             return Ok(completion);
+         }
+ 
+         WAITS.fetch_add(1, Ordering::Relaxed);
+         task::wait_for_event();
+-        // Unrelated events are permitted. Recheck our generation-tagged state.
++        // Unrelated events are permitted. Recheck generation-tagged state.
+     }
+ }
+ 
+-/// Releases a still-pending operation owned by the current task.
+-/// Used for producer rollback when enqueueing the real work fails.
++/// Waits for and consumes one operation owned by the current task.
++pub fn wait(handle: Handle) -> Result<Completion, Error> {
++    let completion = wait_ready(handle)?;
++    release_current(handle)?;
++    Ok(completion)
++}
++
++/// Releases an operation owned by the current task, whether pending or already
++/// complete. Producer rollback and successful userspace completion copyout both
++/// use this primitive.
+ pub fn release_current(handle: Handle) -> Result<(), Error> {
+     let owner = task::current_task_id_if_running().ok_or(Error::NoCurrentTask)?;
+     let mut table = TABLE.lock();
+@@ -243,12 +346,49 @@
+     if slot.owner != owner {
+         return Err(Error::NotOwner);
+     }
+-    slot.state = State::Free;
+-    slot.waiting = false;
++    slot.release();
+     RELEASED.fetch_add(1, Ordering::Relaxed);
+     Ok(())
+ }
+ 
++/// Explicit owner cancellation. If a producer races the cancellation, the
++/// table lock defines the linearization point. A producer arriving after
++/// cancellation observes a stale handle and cannot complete a later occupant.
++pub fn cancel_current(handle: Handle) -> Result<(), Error> {
++    let owner = task::current_task_id_if_running().ok_or(Error::NoCurrentTask)?;
++    let mut table = TABLE.lock();
++    let Some(slot) = table.get_mut(handle) else {
++        STALE_REJECTIONS.fetch_add(1, Ordering::Relaxed);
++        return Err(Error::InvalidHandle);
++    };
++    if slot.owner != owner {
++        return Err(Error::NotOwner);
++    }
++    slot.release();
++    CANCELLED.fetch_add(1, Ordering::Relaxed);
++    RELEASED.fetch_add(1, Ordering::Relaxed);
++    Ok(())
++}
++
++/// Deterministically reclaim every operation owned by a task that is exiting.
++/// This is safe against concurrent producers because completion and teardown
++/// serialize on `TABLE`; late producers see InvalidHandle after release.
++pub fn release_owner(owner: TaskId) -> usize {
++    let mut released = 0usize;
++    let mut table = TABLE.lock();
++    for slot in &mut table.slots {
++        if slot.state != State::Free && slot.owner == owner {
++            slot.release();
++            released += 1;
++        }
++    }
++    if released != 0 {
++        OWNER_REAPED.fetch_add(released as u64, Ordering::Relaxed);
++        RELEASED.fetch_add(released as u64, Ordering::Relaxed);
++    }
++    released
++}
++
+ pub fn stats() -> Stats {
+     Stats {
+         allocated: ALLOCATED.load(Ordering::Acquire),
+@@ -256,15 +396,17 @@
+         waits: WAITS.load(Ordering::Acquire),
+         signals: SIGNALS.load(Ordering::Acquire),
+         released: RELEASED.load(Ordering::Acquire),
++        cancelled: CANCELLED.load(Ordering::Acquire),
++        owner_reaped: OWNER_REAPED.load(Ordering::Acquire),
+         stale_rejections: STALE_REJECTIONS.load(Ordering::Acquire),
+         active: TABLE.lock().active_count(),
+     }
+ }
+ 
+-/// Allocation-free structural probe for the Stage 10.2 generic API.
++/// Allocation-free structural probe for the generic API.
+ ///
+-/// All operation classes are exercised. Completion-before-wait is verified
+-/// without requiring a scheduler signal, and stale handle reuse is rejected.
++/// All operation classes are exercised. Completion-before-wait, stable raw
++/// handles, non-consuming peek, cancellation, and stale reuse are verified.
+ pub fn structural_self_test() -> bool {
+     let before = stats();
+     let classes = [
+@@ -279,17 +421,20 @@
+         let Ok(handle) = allocate_current(class) else {
+             return false;
+         };
++        if Handle::from_raw(handle.to_raw()) != Some(handle) {
++            return false;
++        }
+         if first_stale.is_none() {
+             first_stale = Some(handle);
+         }
+-        if class_current(handle) != Ok(class) {
++        if class_current(handle) != Ok(class) || peek_current(handle) != Ok(None) {
+             return false;
+         }
+-        let completion = Completion {
+-            status: index as i32,
+-            value: 0x1020 + index as u64,
+-        };
+-        if complete(handle, completion).is_err() || wait(handle) != Ok(completion) {
++        let completion = Completion::new(index as i32, 0x1020 + index as u64);
++        if complete(handle, completion).is_err()
++            || peek_current(handle) != Ok(Some(completion))
++            || wait(handle) != Ok(completion)
++        {
+             return false;
+         }
+     }
+@@ -301,10 +446,18 @@
+         return false;
+     }
+ 
++    let Ok(cancelled) = allocate_current(AsyncClass::Service) else {
++        return false;
++    };
++    if cancel_current(cancelled).is_err() || peek_current(cancelled) != Err(Error::InvalidHandle) {
++        return false;
++    }
++
+     let after = stats();
+-    after.allocated >= before.allocated + 4
++    after.allocated >= before.allocated + 5
+         && after.completed >= before.completed + 4
+-        && after.released >= before.released + 4
+-        && after.stale_rejections > before.stale_rejections
++        && after.released >= before.released + 5
++        && after.cancelled > before.cancelled
++        && after.stale_rejections >= before.stale_rejections + 2
+         && after.active == before.active
+ }
+--- a/kernel/src/block_io.rs
++++ b/kernel/src/block_io.rs
+@@ -417,7 +417,7 @@
+         let status = if result.is_ok() { 0 } else { -1 };
+         let _ = async_op::complete(
+             completion,
+-            AsyncCompletion { status, value: work.request.id },
++            AsyncCompletion::new(status, work.request.id),
+         );
+     }
+     true
+--- a/kernel/src/syscall.rs
++++ b/kernel/src/syscall.rs
+@@ -89,6 +89,7 @@
+ static COMPLETIONS: AtomicU64 = AtomicU64::new(0);
+ static IO_COMPLETIONS: AtomicU64 = AtomicU64::new(0);
+ static YIELD_PENDING: AtomicBool = AtomicBool::new(false);
++static ASYNC_ABI_COMPLETIONS: AtomicU64 = AtomicU64::new(0);
+ 
+ const IO_WRITE: u64 = 1 << 0;
+ const IO_OPEN: u64 = 1 << 1;
+@@ -104,6 +105,12 @@
+ const IO_STDIN: u64 = 1 << 11;
+ const IO_STDERR: u64 = 1 << 12;
+ 
++const ASYNC_CREATE: u64 = 1 << 0;
++const ASYNC_POLL: u64 = 1 << 1;
++const ASYNC_WAIT: u64 = 1 << 2;
++const ASYNC_CANCEL: u64 = 1 << 3;
++const ASYNC_COMPLETE: u64 = 1 << 4;
++
+ #[derive(Clone, Copy, PartialEq, Eq)]
+ pub enum Number {
+     Read = 0,
+@@ -205,6 +212,16 @@
+     MmapFileLazyWritable = 61,
+     MmapFileShared = 62,
+     Msync = 63,
++    /// class -> generation-tagged owner-bound async handle
++    AsyncCreate = 64,
++    /// handle, user Completion* -> 0 pending, 1 completed/consumed
++    AsyncPoll = 65,
++    /// handle, user Completion* -> blocks event-driven, returns 1 on copyout
++    AsyncWait = 66,
++    /// handle -> release pending/completed operation without waiting
++    AsyncCancel = 67,
++    /// service handle, status, value -> complete an owner-managed service event
++    AsyncComplete = 68,
+ }
+ 
+ pub fn entry_address() -> u64 {
+@@ -281,6 +298,11 @@
+ pub fn user_fork_verified() -> bool {
+     IO_COMPLETIONS.load(Ordering::Acquire) & IO_FORK == IO_FORK
+ }
++
++pub fn user_async_verified() -> bool {
++    let required = ASYNC_CREATE | ASYNC_POLL | ASYNC_WAIT | ASYNC_CANCEL | ASYNC_COMPLETE;
++    ASYNC_ABI_COMPLETIONS.load(Ordering::Acquire) & required == required
++}
+ pub fn last_completed(number: Number) -> bool {
+     LAST_COMPLETED.load(Ordering::Acquire) == number as u64
+ }
+@@ -1308,6 +1330,143 @@
+     }
+ }
+ 
++
++fn authorize_async_class(class: crate::async_op::AsyncClass) -> bool {
++    match class {
++        crate::async_op::AsyncClass::Block => {
++            crate::task::authorize_current_device(crate::wovenguard::DeviceClass::Storage)
++        }
++        crate::async_op::AsyncClass::Network => {
++            crate::task::authorize_current_device(crate::wovenguard::DeviceClass::Network)
++        }
++        crate::async_op::AsyncClass::Device => {
++            crate::task::authorize_current_device(crate::wovenguard::DeviceClass::Generic)
++        }
++        crate::async_op::AsyncClass::Service => {
++            crate::task::current_has(crate::capability::Capability::Ipc)
++        }
++    }
++}
++
++fn async_handle(raw: u64) -> Result<crate::async_op::Handle, ()> {
++    crate::async_op::Handle::from_raw(raw).ok_or(())
++}
++
++fn copy_async_completion_to_user(
++    user_completion: u64,
++    completion: crate::async_op::Completion,
++) -> Result<(), ()> {
++    let mut bytes = [0u8; 16];
++    bytes[0..4].copy_from_slice(&completion.status.to_ne_bytes());
++    bytes[4..8].copy_from_slice(&completion.reserved.to_ne_bytes());
++    bytes[8..16].copy_from_slice(&completion.value.to_ne_bytes());
++    crate::paging::copy_to_current_user(user_completion, &bytes).map_err(|_| ())
++}
++
++fn sys_async_create(class: u64) -> u64 {
++    let Some(class) = crate::async_op::AsyncClass::from_u64(class) else {
++        return SYSCALL_ERROR;
++    };
++    if !authorize_async_class(class) {
++        return SYSCALL_ERROR;
++    }
++    match crate::async_op::allocate_current(class) {
++        Ok(handle) => {
++            ASYNC_ABI_COMPLETIONS.fetch_or(ASYNC_CREATE, Ordering::Release);
++            handle.to_raw()
++        }
++        Err(_) => SYSCALL_ERROR,
++    }
++}
++
++fn sys_async_poll(raw_handle: u64, user_completion: u64) -> u64 {
++    let Ok(handle) = async_handle(raw_handle) else {
++        return SYSCALL_ERROR;
++    };
++    let Ok(class) = crate::async_op::class_current(handle) else {
++        return SYSCALL_ERROR;
++    };
++    if !authorize_async_class(class) {
++        return SYSCALL_ERROR;
++    }
++    match crate::async_op::peek_current(handle) {
++        Ok(None) => {
++            ASYNC_ABI_COMPLETIONS.fetch_or(ASYNC_POLL, Ordering::Release);
++            0
++        }
++        Ok(Some(completion)) => {
++            if copy_async_completion_to_user(user_completion, completion).is_err() {
++                return SYSCALL_ERROR;
++            }
++            if crate::async_op::release_current(handle).is_err() {
++                return SYSCALL_ERROR;
++            }
++            ASYNC_ABI_COMPLETIONS.fetch_or(ASYNC_POLL, Ordering::Release);
++            1
++        }
++        Err(_) => SYSCALL_ERROR,
++    }
++}
++
++fn sys_async_wait(raw_handle: u64, user_completion: u64) -> u64 {
++    let Ok(handle) = async_handle(raw_handle) else {
++        return SYSCALL_ERROR;
++    };
++    let Ok(class) = crate::async_op::class_current(handle) else {
++        return SYSCALL_ERROR;
++    };
++    if !authorize_async_class(class) {
++        return SYSCALL_ERROR;
++    }
++    let Ok(completion) = crate::async_op::wait_ready(handle) else {
++        return SYSCALL_ERROR;
++    };
++    if copy_async_completion_to_user(user_completion, completion).is_err() {
++        return SYSCALL_ERROR;
++    }
++    if crate::async_op::release_current(handle).is_err() {
++        return SYSCALL_ERROR;
++    }
++    ASYNC_ABI_COMPLETIONS.fetch_or(ASYNC_WAIT, Ordering::Release);
++    1
++}
++
++fn sys_async_cancel(raw_handle: u64) -> u64 {
++    let Ok(handle) = async_handle(raw_handle) else {
++        return SYSCALL_ERROR;
++    };
++    // Cancellation is always permitted to the owner. Policy tightening must
++    // never prevent safe teardown of authority that was valid when created.
++    match crate::async_op::cancel_current(handle) {
++        Ok(()) => {
++            ASYNC_ABI_COMPLETIONS.fetch_or(ASYNC_CANCEL, Ordering::Release);
++            0
++        }
++        Err(_) => SYSCALL_ERROR,
++    }
++}
++
++fn sys_async_complete(raw_handle: u64, status: u64, value: u64) -> u64 {
++    let Ok(handle) = async_handle(raw_handle) else {
++        return SYSCALL_ERROR;
++    };
++    if crate::async_op::class_current(handle) != Ok(crate::async_op::AsyncClass::Service)
++        || !crate::task::current_has(crate::capability::Capability::Ipc)
++    {
++        return SYSCALL_ERROR;
++    }
++    match crate::async_op::complete_current_service(
++        handle,
++        crate::async_op::Completion::new(status as i32, value),
++    ) {
++        Ok(()) => {
++            ASYNC_ABI_COMPLETIONS.fetch_or(ASYNC_COMPLETE, Ordering::Release);
++            0
++        }
++        Err(_) => SYSCALL_ERROR,
++    }
++}
++
+ #[unsafe(no_mangle)]
+ pub extern "C" fn wovenhat_syscall_dispatch(
+     number: u64,
+@@ -1415,6 +1574,11 @@
+         value if value == Number::Dhcp as u64 => sys_dhcp(arg0),
+         value if value == Number::PingStart as u64 => sys_ping_start(arg0),
+         value if value == Number::PingPoll as u64 => sys_ping_poll(),
++        value if value == Number::AsyncCreate as u64 => sys_async_create(arg0),
++        value if value == Number::AsyncPoll as u64 => sys_async_poll(arg0, arg1),
++        value if value == Number::AsyncWait as u64 => sys_async_wait(arg0, arg1),
++        value if value == Number::AsyncCancel as u64 => sys_async_cancel(arg0),
++        value if value == Number::AsyncComplete as u64 => sys_async_complete(arg0, arg1, arg2),
+         _ => u64::MAX,
+     };
+ 
+--- a/kernel/src/task.rs
++++ b/kernel/src/task.rs
+@@ -2101,6 +2101,11 @@
+             "kernel task cannot exit as a process"
+         );
+ 
++        // Stage 10.3: an exiting owner must not strand generic async slots.
++        // Producers racing this teardown are serialized by async_op::TABLE;
++        // a late completion sees a stale generation-tagged handle.
++        crate::async_op::release_owner(task_id);
++
+         // Interrupts are already disabled here. Use the same process-table
+         // guard as every other path so the lock's IRQ-safety contract is not
+         // bypassed during process teardown. Lock order is SCHEDULER ->
+@@ -4235,6 +4240,9 @@
+ /// is deferred to `wait_process`; this keeps teardown out of the scheduler
+ /// critical section while making the zombie state truthful.
+ fn complete_process_termination(task_id: TaskId, signal: u8) {
++    // Remote/scheduler-driven termination bypasses exit_current_process(), so
++    // it needs the same Stage 10.3 async-owner reclamation guarantee.
++    crate::async_op::release_owner(task_id);
+     let mut processes = process_table_lock();
+     let Some(process) = processes
+         .iter_mut()
+--- a/kernel/src/userspace.rs
++++ b/kernel/src/userspace.rs
+@@ -102,6 +102,87 @@
+     "int 0x80",
+     "cmp rax, 1000",
+     "jne wovenhat_user_failure",
++    // Stage 10.3: exercise the real Ring-3 async completion ABI.
++    // Allocate a writable completion buffer.
++    "mov eax, 8",
++    "mov edi, 4096",
++    "mov esi, 1",
++    "int 0x80",
++    "cmp rax, -1",
++    "je wovenhat_user_failure",
++    "mov r14, rax",
++    // AsyncCreate(Service=3).
++    "mov eax, 64",
++    "mov edi, 3",
++    "int 0x80",
++    "cmp rax, -1",
++    "je wovenhat_user_failure",
++    "mov r12, rax",
++    // AsyncPoll must report pending without consuming the handle.
++    "mov eax, 65",
++    "mov rdi, r12",
++    "mov rsi, r14",
++    "int 0x80",
++    "test rax, rax",
++    "jne wovenhat_user_failure",
++    // Owner-managed Service completion. Device/network/block producers remain kernel-only.
++    "mov eax, 68",
++    "mov rdi, r12",
++    "mov esi, 7",
++    "mov edx, 0x1234",
++    "int 0x80",
++    "test rax, rax",
++    "jne wovenhat_user_failure",
++    // Completion-before-wait must be latched and copied to Ring 3.
++    "mov eax, 66",
++    "mov rdi, r12",
++    "mov rsi, r14",
++    "int 0x80",
++    "cmp rax, 1",
++    "jne wovenhat_user_failure",
++    "cmp dword ptr [r14], 7",
++    "jne wovenhat_user_failure",
++    "cmp qword ptr [r14 + 8], 0x1234",
++    "jne wovenhat_user_failure",
++    // The consumed generation-tagged handle must now be stale.
++    "mov eax, 65",
++    "mov rdi, r12",
++    "mov rsi, r14",
++    "int 0x80",
++    "cmp rax, -1",
++    "jne wovenhat_user_failure",
++    // Explicit cancellation must also invalidate the handle.
++    "mov eax, 64",
++    "mov edi, 3",
++    "int 0x80",
++    "cmp rax, -1",
++    "je wovenhat_user_failure",
++    "mov r12, rax",
++    "mov eax, 67",
++    "mov rdi, r12",
++    "int 0x80",
++    "test rax, rax",
++    "jne wovenhat_user_failure",
++    "mov eax, 65",
++    "mov rdi, r12",
++    "mov rsi, r14",
++    "int 0x80",
++    "cmp rax, -1",
++    "jne wovenhat_user_failure",
++    // Release the temporary userspace completion buffer.
++    "mov eax, 9",
++    "mov rdi, r14",
++    "mov esi, 4096",
++    "int 0x80",
++    "test rax, rax",
++    "jne wovenhat_user_failure",
++    // Deliberately abandon one pending Service operation. Process teardown must
++    // reclaim it, proving Stage 10.3 owner cleanup rather than relying on apps.
++    "mov eax, 64",
++    "mov edi, 3",
++    "int 0x80",
++    "cmp rax, -1",
++    "je wovenhat_user_failure",
+     "mov eax, 4",
+     "int 0x80",
+     "xor edi, edi",
+@@ -1871,6 +1952,31 @@
+     "mov eax, 7",
+     "int 0x80",
+     "ret",
++    ".global wovenhat_sys_async_create",
++    "wovenhat_sys_async_create:",
++    "mov eax, 64",
++    "int 0x80",
++    "ret",
++    ".global wovenhat_sys_async_poll",
++    "wovenhat_sys_async_poll:",
++    "mov eax, 65",
++    "int 0x80",
++    "ret",
++    ".global wovenhat_sys_async_wait",
++    "wovenhat_sys_async_wait:",
++    "mov eax, 66",
++    "int 0x80",
++    "ret",
++    ".global wovenhat_sys_async_cancel",
++    "wovenhat_sys_async_cancel:",
++    "mov eax, 67",
++    "int 0x80",
++    "ret",
++    ".global wovenhat_sys_async_complete",
++    "wovenhat_sys_async_complete:",
++    "mov eax, 68",
++    "int 0x80",
++    "ret",
+     ".global wovenhat_sys_fork",
+     "wovenhat_sys_fork:",
+     "mov eax, 16",
+--- a/kernel/src/main.rs
++++ b/kernel/src/main.rs
+@@ -1647,6 +1647,17 @@
+         console.println("USER MMAP/MUNMAP: FAILED");
+         halt();
+     }
++    let async_stats = async_op::stats();
++    if !syscall::user_async_verified() || async_stats.active != 0 || async_stats.owner_reaped < 2 {
++        serial::write_line(format_args!(
++            "[S10.3] userspace async completion ABI: FAILED verified={} active={} owner_reaped={}",
++            syscall::user_async_verified(), async_stats.active, async_stats.owner_reaped
++        ));
++        halt();
++    }
++    serial::write_line(format_args!(
++        "[S10.3] userspace async completion ABI + cancellation/teardown: PASSED"
++    ));
+     if !syscall::user_identity_verified() {
+         console.println("USER UID/GID SYSCALLS: FAILED");
+         halt();

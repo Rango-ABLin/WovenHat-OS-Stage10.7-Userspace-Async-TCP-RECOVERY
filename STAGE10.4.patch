@@ -1,0 +1,860 @@
+--- a/kernel/src/block_io.rs
++++ b/kernel/src/block_io.rs
+@@ -31,6 +31,7 @@
+     data: [u8; SECTOR_SIZE],
+     result: Result<(), Error>,
+     state: RequestState,
++    owner: TaskId,
+     completion: Option<async_op::Handle>,
+ }
+ 
+@@ -40,6 +41,7 @@
+         operation: Operation,
+         lba: u64,
+         data: [u8; SECTOR_SIZE],
++        owner: TaskId,
+         completion: Option<async_op::Handle>,
+     ) -> Self {
+         Self {
+@@ -49,6 +51,7 @@
+             data,
+             result: Ok(()),
+             state: RequestState::Pending,
++            owner,
+             completion,
+         }
+     }
+@@ -79,12 +82,13 @@
+         operation: Operation,
+         lba: u64,
+         data: [u8; SECTOR_SIZE],
++        owner: TaskId,
+         completion: Option<async_op::Handle>,
+     ) -> Option<u64> {
+         let slot = self.entries.iter_mut().find(|entry| entry.is_none())?;
+         let id = self.next_id;
+         self.next_id = self.next_id.wrapping_add(1).max(1);
+-        *slot = Some(Request::pending(id, operation, lba, data, completion));
++        *slot = Some(Request::pending(id, operation, lba, data, owner, completion));
+         Some(id)
+     }
+ 
+@@ -143,6 +147,40 @@
+         None
+     }
+ 
++    fn peek_by_completion(
++        &self,
++        handle: async_op::Handle,
++    ) -> Option<(Result<(), Error>, Operation, [u8; SECTOR_SIZE])> {
++        self.entries.iter().flatten().find_map(|request| {
++            (request.completion == Some(handle) && request.state == RequestState::Complete)
++                .then_some((request.result, request.operation, request.data))
++        })
++    }
++
++    fn remove_by_completion(&mut self, handle: async_op::Handle) -> bool {
++        for entry in &mut self.entries {
++            if entry
++                .as_ref()
++                .is_some_and(|request| request.completion == Some(handle))
++            {
++                *entry = None;
++                return true;
++            }
++        }
++        false
++    }
++
++    fn release_owner(&mut self, owner: TaskId) -> usize {
++        let mut released = 0usize;
++        for entry in &mut self.entries {
++            if entry.as_ref().is_some_and(|request| request.owner == owner) {
++                *entry = None;
++                released += 1;
++            }
++        }
++        released
++    }
++
+     fn pending_count(&self) -> usize {
+         self.entries
+             .iter()
+@@ -285,6 +323,83 @@
+     task::exit_current_task()
+ }
+ 
++#[derive(Clone, Copy)]
++pub struct UserResult {
++    pub result: Result<(), Error>,
++    pub is_read: bool,
++    pub data: [u8; SECTOR_SIZE],
++}
++
++fn enqueue_user(
++    operation: Operation,
++    lba: u64,
++    data: [u8; SECTOR_SIZE],
++) -> Result<async_op::Handle, Error> {
++    if !should_queue() {
++        return Err(Error::DeviceFault);
++    }
++    let owner = task::current_task_id_if_running().ok_or(Error::DeviceFault)?;
++    let completion = async_op::allocate_current(AsyncClass::Block)
++        .map_err(|_| Error::DeviceFault)?;
++    if QUEUE
++        .lock()
++        .push(operation, lba, data, owner, Some(completion))
++        .is_none()
++    {
++        let _ = async_op::release_current(completion);
++        return Err(Error::DeviceFault);
++    }
++    QUEUED.fetch_add(1, Ordering::Relaxed);
++    if let Some(worker) = *WORKER_TASK.lock() {
++        let _ = task::signal_event(worker);
++    }
++    Ok(completion)
++}
++
++/// Stage 10.4 Ring-3 submission path. Read data remains in a kernel-owned
++/// bounce buffer until the owner explicitly collects the completed request.
++pub fn submit_user_read(lba: u64) -> Result<async_op::Handle, Error> {
++    enqueue_user(Operation::Read, lba, [0; SECTOR_SIZE])
++}
++
++/// Stage 10.4 Ring-3 write submission. The userspace sector has already been
++/// copied into this kernel-owned buffer before the request becomes visible to
++/// the worker, so no raw Ring-3 pointer survives the syscall boundary.
++pub fn submit_user_write(
++    lba: u64,
++    data: [u8; SECTOR_SIZE],
++) -> Result<async_op::Handle, Error> {
++    enqueue_user(Operation::Write, lba, data)
++}
++
++pub fn peek_user_result(handle: async_op::Handle) -> Option<UserResult> {
++    QUEUE
++        .lock()
++        .peek_by_completion(handle)
++        .map(|(result, operation, data)| UserResult {
++            result,
++            is_read: operation == Operation::Read,
++            data,
++        })
++}
++
++pub fn consume_user_result(handle: async_op::Handle) -> bool {
++    QUEUE.lock().remove_by_completion(handle)
++}
++
++pub fn cancel_user_request(handle: async_op::Handle) -> bool {
++    QUEUE.lock().remove_by_completion(handle)
++}
++
++/// Reclaim queued/in-progress/completed block requests owned by an exiting
++/// task. A worker that already copied an in-progress WorkItem may still finish
++/// the device transaction, but the request-id check prevents it from attaching
++/// the result to a reused queue slot, and the later async completion sees a
++/// stale generation after async_op owner teardown.
++pub fn release_owner(owner: TaskId) -> usize {
++    QUEUE.lock().release_owner(owner)
++}
++
+ pub fn stats() -> Stats {
+     let queue = QUEUE.lock();
+     Stats {
+@@ -356,7 +471,11 @@
+     }
+     let completion = async_op::allocate_current(AsyncClass::Block)
+         .map_err(|_| Error::DeviceFault)?;
+-    let Some(id) = QUEUE.lock().push(operation, lba, data, Some(completion)) else {
++    let owner = task::current_task_id_if_running().ok_or(Error::DeviceFault)?;
++    let Some(id) = QUEUE
++        .lock()
++        .push(operation, lba, data, owner, Some(completion))
++    else {
+         let _ = async_op::release_current(completion);
+         return Err(Error::DeviceFault);
+     };
+@@ -469,7 +588,7 @@
+     first[..12].copy_from_slice(b"wovenhat-io!");
+     second.fill(0xaa);
+ 
+-    let Some(write_id) = queue.push(Operation::Write, 2, first, None) else {
++    let Some(write_id) = queue.push(Operation::Write, 2, first, TaskId::from_u64(0), None) else {
+         return false;
+     };
+     if queue.pending_count() != 1 || !drive_one(&mut queue, &mut disk) {
+@@ -483,7 +602,7 @@
+         return false;
+     }
+ 
+-    let Some(read_id) = queue.push(Operation::Read, 2, [0; SECTOR_SIZE], None) else {
++    let Some(read_id) = queue.push(Operation::Read, 2, [0; SECTOR_SIZE], TaskId::from_u64(0), None) else {
+         return false;
+     };
+     if !drive_one(&mut queue, &mut disk)
+@@ -495,12 +614,12 @@
+ 
+     let mut ids = [0_u64; MAX_BLOCK_IO_REQUESTS];
+     for (index, slot) in ids.iter_mut().enumerate() {
+-        let Some(id) = queue.push(Operation::Write, index as u64 % 4, second, None) else {
++        let Some(id) = queue.push(Operation::Write, index as u64 % 4, second, TaskId::from_u64(0), None) else {
+             return false;
+         };
+         *slot = id;
+     }
+-    if queue.push(Operation::Flush, 0, [0; SECTOR_SIZE], None).is_some()
++    if queue.push(Operation::Flush, 0, [0; SECTOR_SIZE], TaskId::from_u64(0), None).is_some()
+         || queue.active_count() != MAX_BLOCK_IO_REQUESTS
+     {
+         return false;
+@@ -516,7 +635,7 @@
+     }
+ 
+     disk.set_read_only(true);
+-    let Some(fail_id) = queue.push(Operation::Write, 1, first, None) else {
++    let Some(fail_id) = queue.push(Operation::Write, 1, first, TaskId::from_u64(0), None) else {
+         return false;
+     };
+     drive_one(&mut queue, &mut disk)
+--- a/kernel/src/syscall.rs
++++ b/kernel/src/syscall.rs
+@@ -222,6 +222,14 @@
+     AsyncCancel = 67,
+     /// service handle, status, value -> complete an owner-managed service event
+     AsyncComplete = 68,
++    /// LBA -> generation-tagged Block handle backed by the real block worker
++    AsyncBlockRead = 69,
++    /// LBA, userspace 512-byte sector -> generation-tagged Block handle
++    AsyncBlockWrite = 70,
++    /// Block handle, user BlockCompletion* -> 0 pending, 1 copied/consumed
++    AsyncBlockPoll = 71,
++    /// Block handle, user BlockCompletion* -> blocks event-driven, 1 copied/consumed
++    AsyncBlockWait = 72,
+ }
+ 
+ pub fn entry_address() -> u64 {
+@@ -1367,7 +1375,9 @@
+     let Some(class) = crate::async_op::AsyncClass::from_u64(class) else {
+         return SYSCALL_ERROR;
+     };
+-    if !authorize_async_class(class) {
++    // Ring 3 may directly manufacture only Service operations. Hardware-backed
++    // classes receive handles from their dedicated submission syscalls.
++    if class != crate::async_op::AsyncClass::Service || !authorize_async_class(class) {
+         return SYSCALL_ERROR;
+     }
+     match crate::async_op::allocate_current(class) {
+@@ -1386,7 +1396,7 @@
+     let Ok(class) = crate::async_op::class_current(handle) else {
+         return SYSCALL_ERROR;
+     };
+-    if !authorize_async_class(class) {
++    if class != crate::async_op::AsyncClass::Service || !authorize_async_class(class) {
+         return SYSCALL_ERROR;
+     }
+     match crate::async_op::peek_current(handle) {
+@@ -1415,7 +1425,7 @@
+     let Ok(class) = crate::async_op::class_current(handle) else {
+         return SYSCALL_ERROR;
+     };
+-    if !authorize_async_class(class) {
++    if class != crate::async_op::AsyncClass::Service || !authorize_async_class(class) {
+         return SYSCALL_ERROR;
+     }
+     let Ok(completion) = crate::async_op::wait_ready(handle) else {
+@@ -1435,8 +1445,15 @@
+     let Ok(handle) = async_handle(raw_handle) else {
+         return SYSCALL_ERROR;
+     };
++    let Ok(class) = crate::async_op::class_current(handle) else {
++        return SYSCALL_ERROR;
++    };
+     // Cancellation is always permitted to the owner. Policy tightening must
+     // never prevent safe teardown of authority that was valid when created.
++    // Block requests additionally detach their kernel bounce-buffer queue slot.
++    if class == crate::async_op::AsyncClass::Block {
++        let _ = crate::block_io::cancel_user_request(handle);
++    }
+     match crate::async_op::cancel_current(handle) {
+         Ok(()) => {
+             ASYNC_ABI_COMPLETIONS.fetch_or(ASYNC_CANCEL, Ordering::Release);
+@@ -1467,6 +1484,94 @@
+     }
+ }
+ 
++fn copy_block_completion_to_user(
++    user_result: u64,
++    completion: crate::async_op::Completion,
++    result: crate::block_io::UserResult,
++) -> Result<(), ()> {
++    // ABI: 16-byte generic Completion header followed by one 512-byte sector.
++    // For writes and failed reads the payload is zeroed so kernel bounce-buffer
++    // contents are never exposed accidentally.
++    let mut bytes = [0u8; 16 + crate::block::SECTOR_SIZE];
++    bytes[0..4].copy_from_slice(&completion.status.to_ne_bytes());
++    bytes[4..8].copy_from_slice(&completion.reserved.to_ne_bytes());
++    bytes[8..16].copy_from_slice(&completion.value.to_ne_bytes());
++    if result.is_read && result.result.is_ok() {
++        bytes[16..].copy_from_slice(&result.data);
++    }
++    crate::paging::copy_to_current_user(user_result, &bytes).map_err(|_| ())
++}
++
++fn sys_async_block_read(lba: u64) -> u64 {
++    if !crate::task::authorize_current_device(crate::wovenguard::DeviceClass::Storage) {
++        return SYSCALL_ERROR;
++    }
++    match crate::block_io::submit_user_read(lba) {
++        Ok(handle) => handle.to_raw(),
++        Err(_) => SYSCALL_ERROR,
++    }
++}
++
++fn sys_async_block_write(lba: u64, user_sector: u64) -> u64 {
++    if !crate::task::authorize_current_device(crate::wovenguard::DeviceClass::Storage) {
++        return SYSCALL_ERROR;
++    }
++    let mut data = [0u8; crate::block::SECTOR_SIZE];
++    if crate::paging::copy_from_current_user(user_sector, &mut data).is_err() {
++        return SYSCALL_ERROR;
++    }
++    match crate::block_io::submit_user_write(lba, data) {
++        Ok(handle) => handle.to_raw(),
++        Err(_) => SYSCALL_ERROR,
++    }
++}
++
++fn finish_async_block(handle: crate::async_op::Handle, user_result: u64, wait: bool) -> u64 {
++    if crate::async_op::class_current(handle) != Ok(crate::async_op::AsyncClass::Block)
++        || !crate::task::authorize_current_device(crate::wovenguard::DeviceClass::Storage)
++    {
++        return SYSCALL_ERROR;
++    }
++    let completion = if wait {
++        match crate::async_op::wait_ready(handle) {
++            Ok(completion) => completion,
++            Err(_) => return SYSCALL_ERROR,
++        }
++    } else {
++        match crate::async_op::peek_current(handle) {
++            Ok(Some(completion)) => completion,
++            Ok(None) => return 0,
++            Err(_) => return SYSCALL_ERROR,
++        }
++    };
++    let Some(result) = crate::block_io::peek_user_result(handle) else {
++        return SYSCALL_ERROR;
++    };
++    if copy_block_completion_to_user(user_result, completion, result).is_err() {
++        return SYSCALL_ERROR;
++    }
++    if !crate::block_io::consume_user_result(handle)
++        || crate::async_op::release_current(handle).is_err()
++    {
++        return SYSCALL_ERROR;
++    }
++    1
++}
++
++fn sys_async_block_poll(raw_handle: u64, user_result: u64) -> u64 {
++    let Ok(handle) = async_handle(raw_handle) else {
++        return SYSCALL_ERROR;
++    };
++    finish_async_block(handle, user_result, false)
++}
++
++fn sys_async_block_wait(raw_handle: u64, user_result: u64) -> u64 {
++    let Ok(handle) = async_handle(raw_handle) else {
++        return SYSCALL_ERROR;
++    };
++    finish_async_block(handle, user_result, true)
++}
++
+ #[unsafe(no_mangle)]
+ pub extern "C" fn wovenhat_syscall_dispatch(
+     number: u64,
+@@ -1579,6 +1684,10 @@
+         value if value == Number::AsyncWait as u64 => sys_async_wait(arg0, arg1),
+         value if value == Number::AsyncCancel as u64 => sys_async_cancel(arg0),
+         value if value == Number::AsyncComplete as u64 => sys_async_complete(arg0, arg1, arg2),
++        value if value == Number::AsyncBlockRead as u64 => sys_async_block_read(arg0),
++        value if value == Number::AsyncBlockWrite as u64 => sys_async_block_write(arg0, arg1),
++        value if value == Number::AsyncBlockPoll as u64 => sys_async_block_poll(arg0, arg1),
++        value if value == Number::AsyncBlockWait as u64 => sys_async_block_wait(arg0, arg1),
+         _ => u64::MAX,
+     };
+ 
+--- a/kernel/src/task.rs
++++ b/kernel/src/task.rs
+@@ -1309,6 +1309,70 @@
+     processes[process_slot] = Some(process);
+     Ok((process_id, context))
+ }
++/// Spawn a least-privilege Ring-3 system service with an explicit capability set.
++///
++/// Ordinary applications remain in `SecurityDomain::User` and cannot acquire
++/// raw storage/device authority. Stage 10.4 uses this path for the storage ABI
++/// acceptance probe, and later service-manager work can reuse the same boundary.
++pub fn spawn_user_system_service(
++    name: &'static str,
++    program: userspace::UserProgram,
++    capabilities: CapabilitySet,
++) -> Result<(ProcessId, TaskId, UserTaskContext), ProcessError> {
++    if !program.image.is_valid()
++        || !capabilities.is_subset_of(
++            wovenguard::domain_ceiling(wovenguard::SecurityDomain::SystemService),
++        )
++    {
++        let _ = userspace::destroy(program.address_space);
++        return Err(ProcessError::Full);
++    }
++
++    let parent = ProcessId(current_process_id());
++    let context = prepare_user_context(
++        program.image.entry as usize,
++        program.image.stack_top as usize,
++    );
++    let mut scheduler = SCHEDULER.lock();
++    scheduler.reap_dead();
++    let Some(task_slot) = scheduler
++        .tasks
++        .iter()
++        .position(|task| task.state == TaskState::Empty)
++    else {
++        let _ = userspace::destroy(program.address_space);
++        return Err(ProcessError::Full);
++    };
++
++    let task_id = TaskId(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed));
++    let process = create_process(task_id, parent, program.address_space);
++    let process_id = process.id;
++    let mut processes = process_table_lock();
++    let Some(process_slot) = processes.iter().position(|entry| entry.is_none()) else {
++        let _ = userspace::destroy(program.address_space);
++        return Err(ProcessError::Full);
++    };
++    if ipc::register(process_id.as_u64()).is_err() {
++        let _ = userspace::destroy(program.address_space);
++        return Err(ProcessError::Full);
++    }
++
++    scheduler.tasks[task_slot].initialize_user(
++        task_slot,
++        task_id,
++        name,
++        context,
++        program.address_space.paging(),
++    );
++    scheduler.tasks[task_slot].security_domain = wovenguard::SecurityDomain::SystemService;
++    scheduler.tasks[task_slot].capabilities = capabilities;
++    scheduler.tasks[task_slot].capability_lineages = [None; Capability::COUNT];
++    scheduler.tasks[task_slot].sandbox_profile = wovenguard::SandboxProfile::new(104, capabilities);
++    scheduler.task_count += 1;
++    processes[process_slot] = Some(process);
++    Ok((process_id, task_id, context))
++}
++
+ /// Spawn an explicitly SMP-audited userspace process with a hard affinity mask.
+ ///
+ /// Stage 7.6 keeps legacy `spawn_user_process()` CPU0-owned, but gives audited
+@@ -2104,6 +2168,7 @@
+         // Stage 10.3: an exiting owner must not strand generic async slots.
+         // Producers racing this teardown are serialized by async_op::TABLE;
+         // a late completion sees a stale generation-tagged handle.
++        crate::block_io::release_owner(task_id);
+         crate::async_op::release_owner(task_id);
+ 
+         // Interrupts are already disabled here. Use the same process-table
+@@ -4242,6 +4307,7 @@
+ fn complete_process_termination(task_id: TaskId, signal: u8) {
+     // Remote/scheduler-driven termination bypasses exit_current_process(), so
+     // it needs the same Stage 10.3 async-owner reclamation guarantee.
++    crate::block_io::release_owner(task_id);
+     crate::async_op::release_owner(task_id);
+     let mut processes = process_table_lock();
+     let Some(process) = processes
+--- a/kernel/src/userspace.rs
++++ b/kernel/src/userspace.rs
+@@ -192,6 +192,100 @@
+ );
+ 
+ global_asm!(
++    ".section .rodata.wovenhat_stage10_4_stub, \"a\"",
++    ".global wovenhat_stage10_4_program_start",
++    ".global wovenhat_stage10_4_program_end",
++    "wovenhat_stage10_4_program_start:",
++    // 528-byte completion record in stack scratch space.
++    "lea r13, [rsp - 640]",
++    // Real asynchronous read of LBA 0.
++    "mov eax, 69",
++    "xor edi, edi",
++    "int 0x80",
++    "cmp rax, -1",
++    "je wovenhat_stage10_4_failure",
++    "mov r12, rax",
++    "mov eax, 72",
++    "mov rdi, r12",
++    "mov rsi, r13",
++    "int 0x80",
++    "cmp rax, 1",
++    "jne wovenhat_stage10_4_failure",
++    // Device result can be success or a normal device/bounds error; the async
++    // lifecycle itself must always complete and consume the handle.
++    "cmp dword ptr [r13], 0",
++    "je 31f",
++    "cmp dword ptr [r13], -1",
++    "jne wovenhat_stage10_4_failure",
++    "31:",
++    "mov eax, 71",
++    "mov rdi, r12",
++    "mov rsi, r13",
++    "int 0x80",
++    "cmp rax, -1",
++    "jne wovenhat_stage10_4_failure",
++    // Prove write copy-in + real queueing without modifying media: LBA -1 is
++    // rejected by ATA bounds checking before any write command is issued.
++    "lea r15, [rsp - 1152]",
++    "mov rcx, 64",
++    "xor eax, eax",
++    "mov rdi, r15",
++    "rep stosq",
++    "mov eax, 70",
++    "mov rdi, -1",
++    "mov rsi, r15",
++    "int 0x80",
++    "cmp rax, -1",
++    "je wovenhat_stage10_4_failure",
++    "mov r12, rax",
++    "mov eax, 72",
++    "mov rdi, r12",
++    "mov rsi, r13",
++    "int 0x80",
++    "cmp rax, 1",
++    "jne wovenhat_stage10_4_failure",
++    "cmp dword ptr [r13], -1",
++    "jne wovenhat_stage10_4_failure",
++    // Explicit block cancellation must detach the queue entry and stale the
++    // generation-tagged handle even if the worker is racing the request.
++    "mov eax, 69",
++    "mov rdi, -1",
++    "int 0x80",
++    "cmp rax, -1",
++    "je wovenhat_stage10_4_failure",
++    "mov r12, rax",
++    "mov eax, 67",
++    "mov rdi, r12",
++    "int 0x80",
++    "test rax, rax",
++    "jne wovenhat_stage10_4_failure",
++    "mov eax, 71",
++    "mov rdi, r12",
++    "mov rsi, r13",
++    "int 0x80",
++    "cmp rax, -1",
++    "jne wovenhat_stage10_4_failure",
++    // Leave one queued read uncollected. Process exit must reclaim both the
++    // block queue/bounce buffer and its generation-tagged generic handle.
++    "mov eax, 69",
++    "mov rdi, -1",
++    "int 0x80",
++    "cmp rax, -1",
++    "je wovenhat_stage10_4_failure",
++    "xor edi, edi",
++    "mov eax, 3",
++    "int 0x80",
++    "wovenhat_stage10_4_failure:",
++    "mov edi, 1",
++    "mov eax, 3",
++    "int 0x80",
++    "1:",
++    "jmp 1b",
++    "wovenhat_stage10_4_program_end:",
++    ".previous",
++);
++
++global_asm!(
+     ".section .rodata.wovenhat_exec_stub, \"a\"",
+     ".global wovenhat_exec_program_start",
+     ".global wovenhat_exec_program_end",
+@@ -1967,6 +2061,26 @@
+     "mov eax, 68",
+     "int 0x80",
+     "ret",
++    ".global wovenhat_sys_async_block_read",
++    "wovenhat_sys_async_block_read:",
++    "mov eax, 69",
++    "int 0x80",
++    "ret",
++    ".global wovenhat_sys_async_block_write",
++    "wovenhat_sys_async_block_write:",
++    "mov eax, 70",
++    "int 0x80",
++    "ret",
++    ".global wovenhat_sys_async_block_poll",
++    "wovenhat_sys_async_block_poll:",
++    "mov eax, 71",
++    "int 0x80",
++    "ret",
++    ".global wovenhat_sys_async_block_wait",
++    "wovenhat_sys_async_block_wait:",
++    "mov eax, 72",
++    "int 0x80",
++    "ret",
+     ".global wovenhat_sys_fork",
+     "wovenhat_sys_fork:",
+     "mov eax, 16",
+@@ -3325,6 +3439,8 @@
+ unsafe extern "C" {
+     static wovenhat_user_program_start: u8;
+     static wovenhat_user_program_end: u8;
++    static wovenhat_stage10_4_program_start: u8;
++    static wovenhat_stage10_4_program_end: u8;
+     static wovenhat_exec_program_start: u8;
+     static wovenhat_exec_program_end: u8;
+     static wovenhat_init_program_start: u8;
+@@ -3717,6 +3833,16 @@
+         .is_some_and(|elf| crate::vfs::create_read_only("/bin/selftest", &elf).is_ok())
+ }
+ 
++pub fn create_stage10_4_process() -> Option<UserProgram> {
++    let stub = unsafe {
++        let start = &wovenhat_stage10_4_program_start as *const u8;
++        let end = &wovenhat_stage10_4_program_end as *const u8;
++        core::slice::from_raw_parts(start, end.offset_from(start) as usize)
++    };
++    let elf = build_stub_elf(stub)?;
++    load_elf(&elf)
++}
++
+ pub fn create_exec_process() -> Option<UserProgram> {
+     let stub = unsafe {
+         let start = &wovenhat_exec_program_start as *const u8;
+--- a/kernel/src/main.rs
++++ b/kernel/src/main.rs
+@@ -1658,6 +1658,57 @@
+     serial::write_line(format_args!(
+         "[S10.3] userspace async completion ABI + cancellation/teardown: PASSED"
+     ));
++    let block_before = block_io::stats();
++    let async_before = async_op::stats();
++    let Some(stage10_4_program) = userspace::create_stage10_4_process() else {
++        serial::write_line(format_args!("[S10.4] userspace async block I/O image: FAILED"));
++        halt();
++    };
++    let stage10_4_caps = capability::CapabilitySet::only(capability::Capability::StorageIo);
++    let stage10_4_pid = match task::spawn_user_system_service(
++        "s10.4-async-block",
++        stage10_4_program,
++        stage10_4_caps,
++    ) {
++        Ok((pid, _, _)) => pid,
++        Err(_) => {
++            serial::write_line(format_args!("[S10.4] userspace async block I/O spawn: FAILED"));
++            halt();
++        }
++    };
++    let stage10_4_start = timer::ticks();
++    while !task::process_exited(stage10_4_pid) {
++        if timer::ticks().wrapping_sub(stage10_4_start) > 500 {
++            serial::write_line(format_args!("[S10.4] userspace async block I/O: TIMEOUT"));
++            halt();
++        }
++        x86_64::instructions::hlt();
++    }
++    if task::wait_process(stage10_4_pid.as_u64()) != Ok(0) {
++        serial::write_line(format_args!("[S10.4] userspace async block I/O exit: FAILED"));
++        halt();
++    }
++    let block_after = block_io::stats();
++    let async_after = async_op::stats();
++    if block_after.queued < block_before.queued + 4
++        || block_after.completed < block_before.completed + 2
++        || block_after.active != 0
++        || async_after.active != 0
++        || async_after.owner_reaped <= async_before.owner_reaped
++    {
++        serial::write_line(format_args!(
++            "[S10.4] userspace async block I/O: FAILED queued={} completed={} block_active={} async_active={} owner_reaped={}",
++            block_after.queued.wrapping_sub(block_before.queued),
++            block_after.completed.wrapping_sub(block_before.completed),
++            block_after.active,
++            async_after.active,
++            async_after.owner_reaped.wrapping_sub(async_before.owner_reaped),
++        ));
++        halt();
++    }
++    serial::write_line(format_args!(
++        "[S10.4] userspace async block read/write + bounce-buffer teardown: PASSED"
++    ));
+     if !syscall::user_identity_verified() {
+         console.println("USER UID/GID SYSCALLS: FAILED");
+         halt();
+--- /dev/null
++++ b/run-stage10-4-acceptance.ps1
+@@ -0,0 +1,23 @@
++$ErrorActionPreference = "Stop"
++Write-Host "=== WovenHat Stage 10.4 Userspace Async Block I/O Acceptance ==="
++Write-Host ""
++Write-Host "=== 1/2 Preserve the complete validated Stage 10.3 baseline ==="
++& powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\run-stage10-3-acceptance.ps1
++if ($LASTEXITCODE -ne 0) { throw "Stage 10.3 preservation acceptance failed with exit code $LASTEXITCODE" }
++
++Write-Host ""
++Write-Host "=== 2/2 Verify Stage 10.4 userspace async block I/O marker on 1/2/4 CPU production boots ==="
++foreach ($cpu in @(1,2,4)) {
++    $log = ".\target\memory-regression-$cpu-debug\serial.log"
++    if (!(Test-Path $log)) { throw "Missing $log" }
++    if (!(Select-String -Path $log -SimpleMatch "[S10.4] userspace async block read/write + bounce-buffer teardown: PASSED" -Quiet)) {
++        throw "Stage 10.4 marker missing for $cpu CPU(s): $log"
++    }
++    if (Select-String -Path $log -Pattern "KERNEL PANIC|\[S10\.4\].*FAILED|\[S10\.4\].*TIMEOUT" -Quiet) {
++        throw "Stage 10.4 failure marker, timeout or panic found for $cpu CPU(s): $log"
++    }
++    Write-Host "Stage 10.4 userspace async block I/O marker: PASS ($cpu CPU)"
++}
++Write-Host ""
++Write-Host "=== STAGE 10.4 ACCEPTANCE: PASS ==="
++Write-Host "Stage 10.3 preserved; least-privilege Ring-3 storage service submits real queued block reads/writes through kernel-owned 512-byte bounce buffers, waits event-driven, receives retry-safe 528-byte completion records, cancels safely, rejects stale handles, and reclaims abandoned queue/async state on exit across 1/2/4 CPU production boots."
+--- /dev/null
++++ b/RUN-STAGE10.4.ps1
+@@ -0,0 +1,7 @@
++$ErrorActionPreference = "Stop"
++Set-Location $PSScriptRoot
++Write-Host "=== WovenHat Stage 10.4 clean launcher ==="
++Write-Host "Working directory: $PWD"
++Write-Host "Running the complete Stage 10.4 acceptance chain..."
++& powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\run-stage10-4-acceptance.ps1
++if ($LASTEXITCODE -ne 0) { throw "Stage 10.4 acceptance failed with exit code $LASTEXITCODE" }
+--- /dev/null
++++ b/README-STAGE10.4.txt
+@@ -0,0 +1,94 @@
++WovenHat OS Stage 10.4 — Userspace Asynchronous Block I/O Foundation
++=====================================================================
++
++PURPOSE
++-------
++Stage 10.4 connects the validated Stage 10.3 Ring-3 async completion ABI to the
++real Stage 10.1/10.2 block worker. It deliberately does NOT give ordinary
++applications raw disk authority. Raw block submission is a privileged service
++surface protected by WovenGuard StorageIo.
++
++NEW RING-3 SYSCALLS
++-------------------
++69 AsyncBlockRead(lba)
++   -> generation-tagged owner-bound Block handle.
++
++70 AsyncBlockWrite(lba, user_sector_ptr)
++   -> copies exactly 512 bytes into a kernel bounce buffer BEFORE queueing and
++      returns a generation-tagged owner-bound Block handle.
++
++71 AsyncBlockPoll(handle, BlockCompletion*)
++   -> 0 while pending; 1 after successful copyout and consumption; -1 on error.
++
++72 AsyncBlockWait(handle, BlockCompletion*)
++   -> event-driven wait; 1 after successful copyout and consumption; -1 on error.
++
++BlockCompletion ABI is 528 bytes:
++  offset 0   i32 status (0 success, -1 device/bounds failure)
++  offset 4   u32 reserved
++  offset 8   u64 request id
++  offset 16  u8 sector[512]
++Read data is exposed only when the device operation succeeds. Write/failure
++payloads are zero-filled.
++
++SECURITY MODEL
++--------------
++* Ordinary SecurityDomain::User remains unchanged and does not receive StorageIo.
++* Stage 10.4 adds an explicit Ring-3 SystemService spawn boundary with a caller-
++  supplied capability set that must be a subset of the SystemService domain.
++* The acceptance service receives only StorageIo.
++* Generic AsyncCreate/Poll/Wait remain Service-class user operations. Hardware-
++  backed Block handles are minted only by dedicated block submission syscalls.
++* Every submit/collect operation rechecks WovenGuard Storage device authority.
++* Cancellation is owner-only and remains available even after policy tightening
++  so a process can always tear down authority it previously acquired.
++
++MEMORY/LIFETIME MODEL
++---------------------
++The block worker NEVER keeps a Ring-3 pointer. Reads and writes live in the
++existing bounded kernel request table using 512-byte kernel-owned bounce buffers.
++Writes copy from userspace before the request becomes visible to the worker.
++Reads are copied to Ring 3 only after completion. A failed copyout does not
++consume the queue entry or generic async slot, so the owner can retry safely.
++
++CANCELLATION / EXIT RACES
++-------------------------
++Requests now record their owning TaskId. Cancellation or process termination
++removes the matching queue entry before releasing the generation-tagged async
++slot. A worker that already copied an InProgress WorkItem may finish its hardware
++transaction, but Queue::finish validates both slot and request id, so it cannot
++write into a reused queue slot. Its later generic completion observes a stale
++handle and cannot complete a future occupant.
++
++ACCEPTANCE PROBE
++----------------
++A dedicated Ring-3 storage-service image (not the legacy userspace/SMP probes):
++1. queues a real asynchronous LBA-0 read and waits event-driven;
++2. confirms the consumed handle becomes stale;
++3. queues a write to impossible LBA -1, proving 512-byte copy-in + real worker
++   completion without modifying media (ATA rejects bounds before issuing write);
++4. submits and explicitly cancels a block request, then verifies stale rejection;
++5. abandons one queued read and exits, proving queue bounce-buffer + generic async
++   owner teardown;
++6. boot-side telemetry requires >=4 new queued requests, >=2 completed requests,
++   zero live block requests, zero live generic async handles and owner-reap growth.
++
++VALIDATION
++----------
++Run from the extracted source directory:
++
++powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\RUN-STAGE10.4.ps1
++
++The runner first executes the complete Stage 10.3 preservation chain, including
++build, clippy -D warnings, host tests, 1/2/4 CPU memory/SMP stress and network
++regression. It then requires the Stage 10.4 marker independently in all 1/2/4 CPU
++production serial logs.
++
++Expected final line:
++  === STAGE 10.4 ACCEPTANCE: PASS ===
++
++NEXT ARCHITECTURAL STEP
++-----------------------
++Stage 10.5 should build asynchronous VFS/file operations above this substrate so
++ordinary applications use file-descriptor authority and filesystem sandbox scope
++rather than raw StorageIo/block LBAs.
+--- /dev/null
++++ b/AUDIT-STAGE10.4-USERSPACE-ASYNC-BLOCK-IO.md
+@@ -0,0 +1,30 @@
++# Stage 10.4 Audit — Userspace Asynchronous Block I/O
++
++## Boundary introduced
++Stage 10.4 connects Ring-3 to the existing real block worker without exposing user
++virtual addresses to asynchronous worker context. The API is intentionally a
++privileged storage-service surface, not a general application raw-disk API.
++
++## Invariants
++- User-domain capability ceiling is unchanged; raw storage requires `StorageIo`.
++- Block handles are minted only by `AsyncBlockRead`/`AsyncBlockWrite`.
++- Every request has a TaskId owner and generation-tagged async handle.
++- The worker owns/copies a 512-byte kernel bounce buffer; it never retains a user pointer.
++- Completion copyout occurs before queue/handle consumption and is retry-safe.
++- Cancellation removes the queue association before invalidating the async handle.
++- Exit and forced termination remove owner queue entries before generic async owner reap.
++- Queue slot reuse is protected by request-id matching; late workers cannot attach to a new request.
++- The acceptance write targets LBA `u64::MAX`; ATA bounds validation rejects it before media I/O.
++
++## Security
++A new `spawn_user_system_service` path creates Ring-3 service tasks only when the
++requested capability set is within the SystemService domain ceiling. Stage 10.4's
++probe receives only `StorageIo`. Ordinary User-domain programs keep the existing
++userspace capability set and cannot call the raw block API successfully.
++
++## Acceptance evidence required
++The Stage 10.4 serial marker is emitted only after a dedicated Ring-3 service exits
++0 and telemetry proves at least four queued operations, at least two worker
++completions, zero residual block queue entries, zero generic async slots, and an
++owner-reap increment. The outer PowerShell acceptance then requires that marker on
++1, 2 and 4 CPU production boots after the full Stage 10.3 regression chain.

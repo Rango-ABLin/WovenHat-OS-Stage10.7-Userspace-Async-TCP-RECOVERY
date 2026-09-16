@@ -1,0 +1,36 @@
+name: kernel
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  release-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-10
+          targets: x86_64-unknown-none,x86_64-unknown-uefi
+          components: clippy,rust-src,llvm-tools-preview
+      - name: Install QEMU and OVMF
+        run: sudo apt-get update && sudo apt-get install --yes qemu-system-x86 ovmf
+      - name: Lint, host regressions, and 1/2/4-core boot matrix
+        run: |
+          ovmf=$(find /usr/share/OVMF -name 'OVMF_CODE*.fd' -print -quit)
+          test -n "$ovmf"
+          python3 scripts/test-release.py --qemu /usr/bin/qemu-system-x86_64 --firmware "$ovmf"
+      - name: Preserve validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-validation
+          path: |
+            target/release-validation/
+            target/memory-regression-*/serial.log
+            target/storage-regression-*/serial.log
+            target/network-regression-*/serial.log
+            target/network-regression-*/qemu.log

@@ -1,0 +1,4 @@
+Stage 10.6 preservation restored exactly to the last runtime-accepted Stage 10.6 UDP-AUTOBIND probe and host harness. Stage 10.7 TCP remains intact.
+
+Run:
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\RUN-STAGE10.7.ps1

@@ -1,0 +1,679 @@
+diff -ruN --exclude target --exclude .git /mnt/data/s106runtimefix/WovenHat-OS-Stage10.6-Userspace-Async-Networking/AUDIT-STAGE10.7-USERSPACE-ASYNC-TCP.md /mnt/data/stage107work/WovenHat-OS-Stage10.7-Userspace-Async-TCP/AUDIT-STAGE10.7-USERSPACE-ASYNC-TCP.md
+--- /mnt/data/s106runtimefix/WovenHat-OS-Stage10.6-Userspace-Async-Networking/AUDIT-STAGE10.7-USERSPACE-ASYNC-TCP.md	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/stage107work/WovenHat-OS-Stage10.7-Userspace-Async-TCP/AUDIT-STAGE10.7-USERSPACE-ASYNC-TCP.md	2026-09-14 11:37:29.604695711 +0000
+@@ -0,0 +1,38 @@
++# Stage 10.7 — Userspace Asynchronous TCP Audit
++
++## Goal
++Extend the accepted Stage 10.6 generation-pinned async socket foundation from
++UDP to TCP connection-state transitions without introducing polling in Ring 3.
++
++## Design
++- Syscall 81 `AsyncTcpConnect(socket, packed_endpoint)` allocates an owner-bound
++  `AsyncClass::Network` handle and pins the exact socket generation.
++- The async-network worker owns connect readiness progression. `network::poll()`
++  signals the worker after smoltcp progress; connect retries only while the TCP
++  socket is active but not yet send-capable.
++- TCP send distinguishes genuine connection closure from temporary TX
++  backpressure.
++- TCP receive returns `Ok(0)` after remote FIN once no buffered bytes remain,
++  giving userspace conventional EOF semantics.
++- Existing Stage 10.6 deferred close means descriptors can be closed while an
++  async TCP operation still references the socket; the object is removed after
++  its final async reference is released.
++- Send bytes are copied synchronously into a kernel buffer. Receive bytes stay
++  kernel-owned until retry-safe completion copyout. No Ring-3 pointer survives
++  an asynchronous operation.
++- `NetworkIo` remains required at submission and collection. Cancellation is
++  owner-permitted so policy tightening cannot prevent safe teardown.
++
++## Acceptance
++1. Preserve the complete accepted Stage 10.6 chain.
++2. On 1/2/4 CPUs, connect to a real host TCP server through QEMU user networking.
++3. Connection A proves async connect + async send + close-before-completion.
++4. Connection B proves async connect/send/receive and exact host-returned bytes.
++5. Host half-close/close proves async receive completes with zero-byte EOF.
++6. An unreachable endpoint proves deterministic cancellation and stale-handle
++   rejection.
++7. A second abandoned unreachable connect proves owner teardown reclaims both
++   the generic async operation and pinned socket reference.
++
++Stage 10.7 is closed only after `=== STAGE 10.7 ACCEPTANCE: PASS ===` on the
++user's QEMU environment.
+diff -ruN --exclude target --exclude .git /mnt/data/s106runtimefix/WovenHat-OS-Stage10.6-Userspace-Async-Networking/Cargo.toml /mnt/data/stage107work/WovenHat-OS-Stage10.7-Userspace-Async-TCP/Cargo.toml
+--- /mnt/data/s106runtimefix/WovenHat-OS-Stage10.6-Userspace-Async-Networking/Cargo.toml	2026-09-14 10:47:45.000000000 +0000
++++ /mnt/data/stage107work/WovenHat-OS-Stage10.7-Userspace-Async-TCP/Cargo.toml	2026-09-14 11:36:07.993986513 +0000
+@@ -9,6 +9,7 @@
+ stage10-4-test = ["qemu-test", "kernel/stage10-4-test"]
+ stage10-5-test = ["qemu-test", "kernel/stage10-5-test"]
+ stage10-6-test = ["qemu-test", "kernel/stage10-6-test"]
++stage10-7-test = ["qemu-test", "kernel/stage10-7-test"]
+ 
+ [profile.dev]
+ panic = "abort"
+diff -ruN --exclude target --exclude .git /mnt/data/s106runtimefix/WovenHat-OS-Stage10.6-Userspace-Async-Networking/README-STAGE10.7.txt /mnt/data/stage107work/WovenHat-OS-Stage10.7-Userspace-Async-TCP/README-STAGE10.7.txt
+--- /mnt/data/s106runtimefix/WovenHat-OS-Stage10.6-Userspace-Async-Networking/README-STAGE10.7.txt	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/stage107work/WovenHat-OS-Stage10.7-Userspace-Async-TCP/README-STAGE10.7.txt	2026-09-14 11:37:29.603645583 +0000
+@@ -0,0 +1,16 @@
++WovenHat OS Stage 10.7 — Userspace Asynchronous TCP
++
++Adds owner-bound asynchronous TCP connect to the Stage 10.6 async networking
++worker and hardens TCP send/receive readiness semantics. Ring-3 uses syscall 81
++(AsyncTcpConnect) followed by the existing async network send/receive/poll/wait
++ABI. In-flight operations pin generation-tagged sockets, so close/reuse cannot
++redirect work. TCP receive completes successfully with value=0 on remote EOF.
++
++Acceptance preserves the complete Stage 10.6 chain and then runs isolated real
++host<->guest TCP tests on 1/2/4 CPUs. The host server validates two 16-byte
++transmissions, returns a 16-byte payload on the second connection, then closes
++its write side so WovenHat must observe EOF. Separate unreachable connections
++exercise deterministic cancellation and owner teardown.
++
++Run:
++  powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\RUN-STAGE10.7.ps1
+diff -ruN --exclude target --exclude .git /mnt/data/s106runtimefix/WovenHat-OS-Stage10.6-Userspace-Async-Networking/RUN-STAGE10.7.ps1 /mnt/data/stage107work/WovenHat-OS-Stage10.7-Userspace-Async-TCP/RUN-STAGE10.7.ps1
+--- /mnt/data/s106runtimefix/WovenHat-OS-Stage10.6-Userspace-Async-Networking/RUN-STAGE10.7.ps1	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/stage107work/WovenHat-OS-Stage10.7-Userspace-Async-TCP/RUN-STAGE10.7.ps1	2026-09-14 11:37:29.602837399 +0000
+@@ -0,0 +1,3 @@
++$ErrorActionPreference = "Stop"
++& powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\run-stage10-7-acceptance.ps1
++if ($LASTEXITCODE -ne 0) { throw "Stage 10.7 acceptance failed with exit code $LASTEXITCODE" }
+diff -ruN --exclude target --exclude .git /mnt/data/s106runtimefix/WovenHat-OS-Stage10.6-Userspace-Async-Networking/kernel/Cargo.toml /mnt/data/stage107work/WovenHat-OS-Stage10.7-Userspace-Async-TCP/kernel/Cargo.toml
+--- /mnt/data/s106runtimefix/WovenHat-OS-Stage10.6-Userspace-Async-Networking/kernel/Cargo.toml	2026-09-14 10:47:45.000000000 +0000
++++ /mnt/data/stage107work/WovenHat-OS-Stage10.7-Userspace-Async-TCP/kernel/Cargo.toml	2026-09-14 11:36:07.994103338 +0000
+@@ -10,6 +10,7 @@
+ stage10-4-test = ["qemu-test"]
+ stage10-5-test = ["qemu-test"]
+ stage10-6-test = ["qemu-test"]
++stage10-7-test = ["qemu-test"]
+ 
+ [dependencies]
+ bootloader_api = "0.11.17"
+diff -ruN --exclude target --exclude .git /mnt/data/s106runtimefix/WovenHat-OS-Stage10.6-Userspace-Async-Networking/kernel/src/async_network.rs /mnt/data/stage107work/WovenHat-OS-Stage10.7-Userspace-Async-TCP/kernel/src/async_network.rs
+--- /mnt/data/s106runtimefix/WovenHat-OS-Stage10.6-Userspace-Async-Networking/kernel/src/async_network.rs	2026-09-14 10:58:24.709171778 +0000
++++ /mnt/data/stage107work/WovenHat-OS-Stage10.7-Userspace-Async-TCP/kernel/src/async_network.rs	2026-09-14 11:36:56.823224914 +0000
+@@ -8,6 +8,7 @@
+ 
+ use core::sync::atomic::{AtomicU64, Ordering};
+ use spin::Mutex;
++use smoltcp::wire::IpEndpoint;
+ 
+ use crate::{
+     async_op::{self, AsyncClass, Completion},
+@@ -17,7 +18,7 @@
+ };
+ 
+ #[derive(Clone, Copy, PartialEq, Eq)]
+-pub enum Operation { Send, Recv }
++pub enum Operation { Connect, Send, Recv }
+ #[derive(Clone, Copy, PartialEq, Eq)]
+ enum State { Pending, InProgress, Complete }
+ 
+@@ -28,6 +29,7 @@
+     operation: Operation,
+     socket: SocketToken,
+     length: usize,
++    endpoint: Option<IpEndpoint>,
+     data: [u8; MAX_IO_SIZE],
+     result: Result<usize, SocketError>,
+     state: State,
+@@ -136,7 +138,7 @@
+         count
+     }
+     fn has_pending(&self) -> bool { self.entries.iter().flatten().any(|r| r.state == State::Pending) }
+-    #[cfg(feature = "stage10-6-test")]
++    #[cfg(any(feature = "stage10-6-test", feature = "stage10-7-test"))]
+     fn active(&self) -> usize { self.entries.iter().filter(|e| e.is_some()).count() }
+ }
+ 
+@@ -155,7 +157,7 @@
+     pub data: [u8; MAX_IO_SIZE],
+ }
+ 
+-#[cfg(feature = "stage10-6-test")]
++#[cfg(any(feature = "stage10-6-test", feature = "stage10-7-test"))]
+ #[derive(Clone, Copy)]
+ pub struct Stats { pub submitted: u64, pub completed: u64, pub cancelled: u64, pub owner_reaped: u64, pub active: usize }
+ 
+@@ -167,7 +169,7 @@
+     }
+ }
+ 
+-fn submit(operation: Operation, descriptor: u64, data: [u8; MAX_IO_SIZE], length: usize) -> Result<async_op::Handle, ()> {
++fn submit(operation: Operation, descriptor: u64, endpoint: Option<IpEndpoint>, data: [u8; MAX_IO_SIZE], length: usize) -> Result<async_op::Handle, ()> {
+     if length > MAX_IO_SIZE || WORKER.lock().is_none() { return Err(()); }
+     let process = task::current_process_id();
+     let socket = network::pin_socket(process, descriptor).map_err(|_| ())?;
+@@ -179,7 +181,7 @@
+         Ok(handle) => handle,
+         Err(_) => { network::unpin_socket(socket); return Err(()); }
+     };
+-    let request = Request { id: 0, owner, operation, socket, length, data, result: Ok(0), state: State::Pending, completion: Some(completion) };
++    let request = Request { id: 0, owner, operation, socket, length, endpoint, data, result: Ok(0), state: State::Pending, completion: Some(completion) };
+     if !QUEUE.lock().push(request) {
+         network::unpin_socket(socket);
+         let _ = async_op::release_current(completion);
+@@ -194,12 +196,16 @@
+     if input.len() > MAX_IO_SIZE { return Err(()); }
+     let mut data = [0u8; MAX_IO_SIZE];
+     data[..input.len()].copy_from_slice(input);
+-    submit(Operation::Send, descriptor, data, input.len())
++    submit(Operation::Send, descriptor, None, data, input.len())
+ }
+ 
+ pub fn submit_recv(descriptor: u64, capacity: usize) -> Result<async_op::Handle, ()> {
+     if capacity > MAX_IO_SIZE { return Err(()); }
+-    submit(Operation::Recv, descriptor, [0u8; MAX_IO_SIZE], capacity)
++    submit(Operation::Recv, descriptor, None, [0u8; MAX_IO_SIZE], capacity)
++}
++
++pub fn submit_connect(descriptor: u64, endpoint: IpEndpoint) -> Result<async_op::Handle, ()> {
++    submit(Operation::Connect, descriptor, Some(endpoint), [0u8; MAX_IO_SIZE], 0)
+ }
+ 
+ pub fn peek_result(handle: async_op::Handle) -> Option<UserResult> {
+@@ -217,7 +223,7 @@
+     count
+ }
+ 
+-#[cfg(feature = "stage10-6-test")]
++#[cfg(any(feature = "stage10-6-test", feature = "stage10-7-test"))]
+ pub fn stats() -> Stats {
+     let queue = QUEUE.lock();
+     Stats {
+@@ -245,10 +251,26 @@
+     }
+ }
+ 
++fn finish_invalid(work: Work, data: [u8; MAX_IO_SIZE]) -> bool {
++    let plain: Result<usize, SocketError> = Err(SocketError::Address);
++    let handle = QUEUE.lock().finish(work.slot, work.request.id, plain, data);
++    COMPLETED.fetch_add(1, Ordering::Relaxed);
++    if let Some(handle) = handle {
++        let _ = async_op::complete(handle, Completion::new(-1, 0));
++    }
++    true
++}
++
+ fn process_one() -> bool {
+     let Some(work) = QUEUE.lock().take_pending() else { return false; };
+     let mut data = work.request.data;
+     let result = match work.request.operation {
++        Operation::Connect => {
++            let Some(endpoint) = work.request.endpoint else {
++                return finish_invalid(work, data);
++            };
++            network::socket_connect_pinned(work.request.socket, endpoint).map(|()| (0, None))
++        }
+         Operation::Send => network::socket_send_pinned(work.request.socket, &data[..work.request.length]).map(|n| (n, None)),
+         Operation::Recv => network::socket_recv_pinned(work.request.socket, &mut data[..work.request.length]),
+     };
+diff -ruN --exclude target --exclude .git /mnt/data/s106runtimefix/WovenHat-OS-Stage10.6-Userspace-Async-Networking/kernel/src/main.rs /mnt/data/stage107work/WovenHat-OS-Stage10.7-Userspace-Async-TCP/kernel/src/main.rs
+--- /mnt/data/s106runtimefix/WovenHat-OS-Stage10.6-Userspace-Async-Networking/kernel/src/main.rs	2026-09-14 10:49:25.000000000 +0000
++++ /mnt/data/stage107work/WovenHat-OS-Stage10.7-Userspace-Async-TCP/kernel/src/main.rs	2026-09-14 11:36:07.995530892 +0000
+@@ -1889,6 +1889,79 @@
+         ));
+         qemu_test_exit_success();
+     }
++    #[cfg(feature = "stage10-7-test")]
++    {
++        if network::init().is_err() {
++            serial::write_line(format_args!("[S10.7] virtio-net + smoltcp init: FAILED"));
++            qemu_test_exit_failure();
++        }
++        if !async_network::start_worker() {
++            serial::write_line(format_args!("[S10.7] async network worker start: FAILED"));
++            qemu_test_exit_failure();
++        }
++        let async_before = async_op::stats();
++        let net_before = async_network::stats();
++        let sockets_before = network::stats().user_sockets;
++        let Some(program) = userspace::create_stage10_7_process() else {
++            serial::write_line(format_args!("[S10.7] userspace async TCP image: FAILED"));
++            qemu_test_exit_failure();
++        };
++        let pid = match task::spawn_user_process("s10.7-async-tcp", program) {
++            Ok((pid, _)) => pid,
++            Err(_) => {
++                serial::write_line(format_args!("[S10.7] userspace async TCP spawn: FAILED"));
++                qemu_test_exit_failure();
++            }
++        };
++        serial::write_line(format_args!("[S10.7] async TCP host target 10.0.2.2:18080"));
++        let start = timer::ticks();
++        while !task::process_exited(pid) {
++            network::poll();
++            if timer::ticks().wrapping_sub(start) > 1_500 {
++                serial::write_line(format_args!("[S10.7] userspace async TCP I/O: TIMEOUT"));
++                qemu_test_exit_failure();
++            }
++            x86_64::instructions::hlt();
++        }
++        if task::wait_process(pid.as_u64()) != Ok(0) {
++            serial::write_line(format_args!("[S10.7] userspace async TCP exit: FAILED"));
++            qemu_test_exit_failure();
++        }
++        let cleanup_start = timer::ticks();
++        while async_network::stats().active != 0 {
++            network::poll();
++            if timer::ticks().wrapping_sub(cleanup_start) > 200 {
++                serial::write_line(format_args!("[S10.7] async TCP teardown drain: TIMEOUT"));
++                qemu_test_exit_failure();
++            }
++            task::yield_now();
++        }
++        let net_after = async_network::stats();
++        let async_after = async_op::stats();
++        let sockets_after = network::stats().user_sockets;
++        if net_after.submitted < net_before.submitted + 8
++            || net_after.completed < net_before.completed + 6
++            || net_after.cancelled <= net_before.cancelled
++            || net_after.owner_reaped <= net_before.owner_reaped
++            || net_after.active != 0
++            || async_after.active != 0
++            || async_after.owner_reaped <= async_before.owner_reaped
++            || sockets_after != sockets_before
++        {
++            serial::write_line(format_args!("[S10.7] userspace async TCP: FAILED submitted={} completed={} cancelled={} net_reaped={} net_active={} async_active={} generic_reaped={} sockets_before={} sockets_after={}",
++                net_after.submitted.wrapping_sub(net_before.submitted),
++                net_after.completed.wrapping_sub(net_before.completed),
++                net_after.cancelled.wrapping_sub(net_before.cancelled),
++                net_after.owner_reaped.wrapping_sub(net_before.owner_reaped),
++                net_after.active,
++                async_after.active,
++                async_after.owner_reaped.wrapping_sub(async_before.owner_reaped),
++                sockets_before, sockets_after));
++            qemu_test_exit_failure();
++        }
++        serial::write_line(format_args!("[S10.7] userspace async TCP connect/send/recv + EOF/pinning/cancel/teardown: PASSED"));
++        qemu_test_exit_success();
++    }
+     if !syscall::user_identity_verified() {
+         console.println("USER UID/GID SYSCALLS: FAILED");
+         halt();
+diff -ruN --exclude target --exclude .git /mnt/data/s106runtimefix/WovenHat-OS-Stage10.6-Userspace-Async-Networking/kernel/src/network.rs /mnt/data/stage107work/WovenHat-OS-Stage10.7-Userspace-Async-TCP/kernel/src/network.rs
+--- /mnt/data/s106runtimefix/WovenHat-OS-Stage10.6-Userspace-Async-Networking/kernel/src/network.rs	2026-09-14 11:15:16.718716095 +0000
++++ /mnt/data/stage107work/WovenHat-OS-Stage10.7-Userspace-Async-TCP/kernel/src/network.rs	2026-09-14 11:36:07.994331421 +0000
+@@ -710,6 +710,31 @@
+     }
+ }
+ 
++
++pub fn socket_connect_pinned(token: SocketToken, endpoint: IpEndpoint) -> Result<(), SocketError> {
++    if endpoint.port == 0 { return Err(SocketError::Address); }
++    let Some(runtime) = RUNTIME.get() else { return Err(SocketError::Offline); };
++    let mut runtime = runtime.lock();
++    let entry = find_token(&runtime, token)?;
++    if entry.kind != SocketKind::Tcp { return Err(SocketError::WrongKind); }
++
++    if let Some(peer) = entry.peer {
++        if peer != endpoint { return Err(SocketError::Address); }
++    } else {
++        let local_port = next_ephemeral(&mut runtime);
++        let Runtime { iface, sockets, user, .. } = &mut *runtime;
++        sockets.get_mut::<tcp::Socket>(entry.handle)
++            .connect(iface.context(), endpoint, local_port)
++            .map_err(|_| SocketError::Address)?;
++        if let Some(socket) = user[token.slot as usize].as_mut() { socket.peer = Some(endpoint); }
++    }
++
++    let socket = runtime.sockets.get::<tcp::Socket>(entry.handle);
++    if socket.may_send() { return Ok(()); }
++    if socket.is_active() { return Err(SocketError::WouldBlock); }
++    Err(SocketError::NotConnected)
++}
++
+ pub fn socket_send_pinned(token: SocketToken, data: &[u8]) -> Result<usize, SocketError> {
+     let Some(runtime) = RUNTIME.get() else { return Err(SocketError::Offline); };
+     let mut runtime = runtime.lock();
+@@ -726,8 +751,19 @@
+                 .map(|()| data.len())
+                 .map_err(|_| SocketError::WouldBlock)
+         }
+-        SocketKind::Tcp => runtime.sockets.get_mut::<tcp::Socket>(entry.handle)
+-            .send_slice(data).map_err(|_| SocketError::WouldBlock),
++        SocketKind::Tcp => {
++            let socket = runtime.sockets.get_mut::<tcp::Socket>(entry.handle);
++            if !socket.is_active() {
++                return Err(SocketError::NotConnected);
++            }
++            if !socket.may_send() {
++                return Err(SocketError::NotConnected);
++            }
++            if !socket.can_send() {
++                return Err(SocketError::WouldBlock);
++            }
++            socket.send_slice(data).map_err(|_| SocketError::WouldBlock)
++        }
+     }
+ }
+ 
+@@ -742,8 +778,16 @@
+             if let Some(socket) = runtime.user[token.slot as usize].as_mut() { socket.peer = Some(endpoint); }
+             Ok((len, Some(endpoint)))
+         }
+-        SocketKind::Tcp => runtime.sockets.get_mut::<tcp::Socket>(entry.handle)
+-            .recv_slice(out).map(|len| (len, entry.peer)).map_err(|_| SocketError::WouldBlock),
++        SocketKind::Tcp => {
++            let socket = runtime.sockets.get_mut::<tcp::Socket>(entry.handle);
++            if socket.can_recv() {
++                return socket.recv_slice(out).map(|len| (len, entry.peer)).map_err(|_| SocketError::WouldBlock);
++            }
++            if !socket.may_recv() {
++                return Ok((0, entry.peer));
++            }
++            Err(SocketError::WouldBlock)
++        }
+     }
+ }
+ 
+diff -ruN --exclude target --exclude .git /mnt/data/s106runtimefix/WovenHat-OS-Stage10.6-Userspace-Async-Networking/kernel/src/syscall.rs /mnt/data/stage107work/WovenHat-OS-Stage10.7-Userspace-Async-TCP/kernel/src/syscall.rs
+--- /mnt/data/s106runtimefix/WovenHat-OS-Stage10.6-Userspace-Async-Networking/kernel/src/syscall.rs	2026-09-14 10:48:10.000000000 +0000
++++ /mnt/data/stage107work/WovenHat-OS-Stage10.7-Userspace-Async-TCP/kernel/src/syscall.rs	2026-09-14 11:36:07.994686895 +0000
+@@ -246,6 +246,8 @@
+     AsyncNetPoll = 79,
+     /// Network handle, user Completion*, user data* -> event wait, 1 copied/consumed
+     AsyncNetWait = 80,
++    /// TCP socket, packed IPv4 endpoint -> generation-tagged Network connect handle
++    AsyncTcpConnect = 81,
+ }
+ 
+ pub fn entry_address() -> u64 {
+@@ -1658,6 +1660,13 @@
+     finish_async_file(handle, user_completion, user_data, true)
+ }
+ 
++
++fn sys_async_tcp_connect(socket: u64, packed: u64) -> u64 {
++    if !crate::task::authorize_current_device(crate::wovenguard::DeviceClass::Network) { return SYSCALL_ERROR; }
++    let Ok(endpoint) = crate::network::endpoint_from_packed(packed) else { return SYSCALL_ERROR; };
++    crate::async_network::submit_connect(socket, endpoint).map_or(SYSCALL_ERROR, |h| h.to_raw())
++}
++
+ fn sys_async_net_send(socket: u64, user_buffer: u64, length: u64) -> u64 {
+     if !crate::task::authorize_current_device(crate::wovenguard::DeviceClass::Network) { return SYSCALL_ERROR; }
+     let Ok(length)=usize::try_from(length) else { return SYSCALL_ERROR; };
+@@ -1826,6 +1835,7 @@
+         value if value == Number::AsyncNetRecv as u64 => sys_async_net_recv(arg0, arg1),
+         value if value == Number::AsyncNetPoll as u64 => sys_async_net_poll(arg0, arg1, arg2),
+         value if value == Number::AsyncNetWait as u64 => sys_async_net_wait(arg0, arg1, arg2),
++        value if value == Number::AsyncTcpConnect as u64 => sys_async_tcp_connect(arg0, arg1),
+         _ => u64::MAX,
+     };
+ 
+diff -ruN --exclude target --exclude .git /mnt/data/s106runtimefix/WovenHat-OS-Stage10.6-Userspace-Async-Networking/kernel/src/userspace.rs /mnt/data/stage107work/WovenHat-OS-Stage10.7-Userspace-Async-TCP/kernel/src/userspace.rs
+--- /mnt/data/s106runtimefix/WovenHat-OS-Stage10.6-Userspace-Async-Networking/kernel/src/userspace.rs	2026-09-14 10:48:54.000000000 +0000
++++ /mnt/data/stage107work/WovenHat-OS-Stage10.7-Userspace-Async-TCP/kernel/src/userspace.rs	2026-09-14 11:36:56.823974370 +0000
+@@ -618,6 +618,56 @@
+     ".previous",
+ );
+ 
++
++global_asm!(
++    ".section .rodata.wovenhat_stage10_7_stub, \"a\"",
++    ".global wovenhat_stage10_7_program_start",
++    ".global wovenhat_stage10_7_program_end",
++    "wovenhat_stage10_7_program_start:",
++    // Scratch: completion r14, TX r15, RX rbx. Host endpoint 10.0.2.2:18080.
++    "lea r14, [rsp - 160]",
++    "lea r15, [rsp - 192]",
++    "lea rbx, [rsp - 224]",
++    "mov rax, 0x5441484e45564f57",
++    "mov [r15], rax",
++    "mov rax, 0x2158542d5043542d",
++    "mov [r15 + 8], rax",
++    // Connection A: async connect, then submit send and close descriptor before completion.
++    "mov eax, 37", "mov edi, 2", "int 0x80", "cmp rax, -1", "je wovenhat_stage10_7_failure", "mov r12, rax",
++    "mov eax, 81", "mov rdi, r12", "mov rsi, 0x000046a00a000202", "int 0x80", "cmp rax, -1", "je wovenhat_stage10_7_failure", "mov r13, rax",
++    "mov eax, 80", "mov rdi, r13", "mov rsi, r14", "xor edx, edx", "int 0x80", "cmp rax, 1", "jne wovenhat_stage10_7_failure", "cmp dword ptr [r14], 0", "jne wovenhat_stage10_7_failure",
++    "mov eax, 77", "mov rdi, r12", "mov rsi, r15", "mov edx, 16", "int 0x80", "cmp rax, -1", "je wovenhat_stage10_7_failure", "mov r13, rax",
++    "mov eax, 42", "mov rdi, r12", "int 0x80", "test rax, rax", "jne wovenhat_stage10_7_failure",
++    "mov eax, 80", "mov rdi, r13", "mov rsi, r14", "xor edx, edx", "int 0x80", "cmp rax, 1", "jne wovenhat_stage10_7_failure", "cmp dword ptr [r14], 0", "jne wovenhat_stage10_7_failure", "cmp qword ptr [r14 + 8], 16", "jne wovenhat_stage10_7_failure",
++    // Connection B: connect, send request, receive host payload, then observe remote EOF (value 0).
++    "mov eax, 37", "mov edi, 2", "int 0x80", "cmp rax, -1", "je wovenhat_stage10_7_failure", "mov r12, rax",
++    "mov eax, 81", "mov rdi, r12", "mov rsi, 0x000046a00a000202", "int 0x80", "cmp rax, -1", "je wovenhat_stage10_7_failure", "mov r13, rax",
++    "mov eax, 80", "mov rdi, r13", "mov rsi, r14", "xor edx, edx", "int 0x80", "cmp rax, 1", "jne wovenhat_stage10_7_failure", "cmp dword ptr [r14], 0", "jne wovenhat_stage10_7_failure",
++    "mov eax, 77", "mov rdi, r12", "mov rsi, r15", "mov edx, 16", "int 0x80", "cmp rax, -1", "je wovenhat_stage10_7_failure", "mov r13, rax",
++    "mov eax, 80", "mov rdi, r13", "mov rsi, r14", "xor edx, edx", "int 0x80", "cmp rax, 1", "jne wovenhat_stage10_7_failure", "cmp dword ptr [r14], 0", "jne wovenhat_stage10_7_failure",
++    "mov eax, 78", "mov rdi, r12", "mov esi, 16", "int 0x80", "cmp rax, -1", "je wovenhat_stage10_7_failure", "mov r13, rax",
++    "mov eax, 80", "mov rdi, r13", "mov rsi, r14", "mov rdx, rbx", "int 0x80", "cmp rax, 1", "jne wovenhat_stage10_7_failure", "cmp dword ptr [r14], 0", "jne wovenhat_stage10_7_failure", "cmp qword ptr [r14 + 8], 16", "jne wovenhat_stage10_7_failure",
++    "mov rax, 0x5441484e45564f57", "cmp [rbx], rax", "jne wovenhat_stage10_7_failure",
++    "mov rax, 0x2158522d5043542d", "cmp [rbx + 8], rax", "jne wovenhat_stage10_7_failure",
++    // EOF receive remains pinned after close and must complete successfully with zero bytes.
++    "mov eax, 78", "mov rdi, r12", "mov esi, 16", "int 0x80", "cmp rax, -1", "je wovenhat_stage10_7_failure", "mov r13, rax",
++    "mov eax, 42", "mov rdi, r12", "int 0x80", "test rax, rax", "jne wovenhat_stage10_7_failure",
++    "mov eax, 80", "mov rdi, r13", "mov rsi, r14", "mov rdx, rbx", "int 0x80", "cmp rax, 1", "jne wovenhat_stage10_7_failure", "cmp dword ptr [r14], 0", "jne wovenhat_stage10_7_failure", "cmp qword ptr [r14 + 8], 0", "jne wovenhat_stage10_7_failure",
++    // Cancellation of an async connect; stale handle must be rejected.
++    "mov eax, 37", "mov edi, 2", "int 0x80", "cmp rax, -1", "je wovenhat_stage10_7_failure", "mov r12, rax",
++    "mov eax, 81", "mov rdi, r12", "mov rsi, 0x000046a10a0002fe", "int 0x80", "cmp rax, -1", "je wovenhat_stage10_7_failure", "mov r13, rax",
++    "mov eax, 67", "mov rdi, r13", "int 0x80", "test rax, rax", "jne wovenhat_stage10_7_failure",
++    "mov eax, 42", "mov rdi, r12", "int 0x80",
++    "mov eax, 79", "mov rdi, r13", "mov rsi, r14", "xor edx, edx", "int 0x80", "cmp rax, -1", "jne wovenhat_stage10_7_failure",
++    // Abandon one connect while descriptor is closing; owner teardown must reclaim both layers.
++    "mov eax, 37", "mov edi, 2", "int 0x80", "cmp rax, -1", "je wovenhat_stage10_7_failure", "mov r12, rax",
++    "mov eax, 81", "mov rdi, r12", "mov rsi, 0x000046a10a0002fe", "int 0x80", "cmp rax, -1", "je wovenhat_stage10_7_failure",
++    "mov eax, 42", "mov rdi, r12", "int 0x80",
++    "xor edi, edi", "mov eax, 3", "int 0x80",
++    "wovenhat_stage10_7_failure:", "mov edi, 1", "mov eax, 3", "int 0x80", "1:", "jmp 1b",
++    "wovenhat_stage10_7_program_end:", ".previous",
++);
++
+ global_asm!(
+     ".section .rodata.wovenhat_exec_stub, \"a\"",
+     ".global wovenhat_exec_program_start",
+@@ -3784,6 +3834,10 @@
+     static wovenhat_stage10_6_program_start: u8;
+     #[cfg(feature = "stage10-6-test")]
+     static wovenhat_stage10_6_program_end: u8;
++    #[cfg(feature = "stage10-7-test")]
++    static wovenhat_stage10_7_program_start: u8;
++    #[cfg(feature = "stage10-7-test")]
++    static wovenhat_stage10_7_program_end: u8;
+     static wovenhat_exec_program_start: u8;
+     static wovenhat_exec_program_end: u8;
+     static wovenhat_init_program_start: u8;
+@@ -4206,6 +4260,17 @@
+         core::slice::from_raw_parts(start, end.offset_from(start) as usize)
+     };
+     let elf = build_stub_elf(stub)?;
++    load_elf(&elf)
++}
++
++#[cfg(feature = "stage10-7-test")]
++pub fn create_stage10_7_process() -> Option<UserProgram> {
++    let stub = unsafe {
++        let start = &wovenhat_stage10_7_program_start as *const u8;
++        let end = &wovenhat_stage10_7_program_end as *const u8;
++        core::slice::from_raw_parts(start, end.offset_from(start) as usize)
++    };
++    let elf = build_stub_elf(stub)?;
+     load_elf(&elf)
+ }
+ 
+diff -ruN --exclude target --exclude .git /mnt/data/s106runtimefix/WovenHat-OS-Stage10.6-Userspace-Async-Networking/run-stage10-7-acceptance.ps1 /mnt/data/stage107work/WovenHat-OS-Stage10.7-Userspace-Async-TCP/run-stage10-7-acceptance.ps1
+--- /mnt/data/s106runtimefix/WovenHat-OS-Stage10.6-Userspace-Async-Networking/run-stage10-7-acceptance.ps1	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/stage107work/WovenHat-OS-Stage10.7-Userspace-Async-TCP/run-stage10-7-acceptance.ps1	2026-09-14 11:37:29.602031603 +0000
+@@ -0,0 +1,16 @@
++$ErrorActionPreference = "Stop"
++Write-Host "=== WovenHat Stage 10.7 Userspace Async TCP Acceptance ==="
++Write-Host ""
++Write-Host "=== 1/2 Preserve complete validated Stage 10.6 baseline ==="
++& powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\run-stage10-6-acceptance.ps1
++if ($LASTEXITCODE -ne 0) { throw "Stage 10.6 preservation acceptance failed with exit code $LASTEXITCODE" }
++Write-Host ""
++Write-Host "=== 2/2 Isolated Stage 10.7 Ring-3 async TCP boots: 1/2/4 CPUs ==="
++foreach ($cpu in 1,2,4) {
++    python .\scripts\test-stage10-7-tcp.py --cpus $cpu
++    if ($LASTEXITCODE -ne 0) { throw "Stage 10.7 isolated TCP boot failed on $cpu CPU(s)" }
++    Write-Host "Stage 10.7 userspace async TCP marker: PASS ($cpu CPU)"
++}
++Write-Host ""
++Write-Host "=== STAGE 10.7 ACCEPTANCE: PASS ==="
++Write-Host "Stage 10.6 preserved; ordinary Ring-3 applications now use asynchronous TCP connect/send/receive with generation-pinned sockets, readiness-driven retries, remote EOF completion, deferred close, cancellation, retry-safe copyout, and deterministic teardown on 1/2/4 CPUs."
+Binary files /mnt/data/s106runtimefix/WovenHat-OS-Stage10.6-Userspace-Async-Networking/scripts/__pycache__/test-stage10-7-tcp.cpython-313.pyc and /mnt/data/stage107work/WovenHat-OS-Stage10.7-Userspace-Async-TCP/scripts/__pycache__/test-stage10-7-tcp.cpython-313.pyc differ
+diff -ruN --exclude target --exclude .git /mnt/data/s106runtimefix/WovenHat-OS-Stage10.6-Userspace-Async-Networking/scripts/test-stage10-7-tcp.py /mnt/data/stage107work/WovenHat-OS-Stage10.7-Userspace-Async-TCP/scripts/test-stage10-7-tcp.py
+--- /mnt/data/s106runtimefix/WovenHat-OS-Stage10.6-Userspace-Async-Networking/scripts/test-stage10-7-tcp.py	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/stage107work/WovenHat-OS-Stage10.7-Userspace-Async-TCP/scripts/test-stage10-7-tcp.py	2026-09-14 11:37:29.601146583 +0000
+@@ -0,0 +1,162 @@
++"""Run the isolated Stage 10.7 Ring-3 asynchronous TCP acceptance boot."""
++import argparse
++import os
++from pathlib import Path
++import shutil
++import socket
++import subprocess
++import sys
++import threading
++import time
++
++HOST_PORT = 18080
++TX = b"WOVENHAT-TCP-TX!"
++RX = b"WOVENHAT-TCP-RX!"
++
++
++def recv_exact(conn, count):
++    data = bytearray()
++    while len(data) < count:
++        chunk = conn.recv(count - len(data))
++        if not chunk:
++            break
++        data += chunk
++    return bytes(data)
++
++
++def serve(stop, errors):
++    try:
++        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
++            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
++            server.bind(("127.0.0.1", HOST_PORT))
++            server.listen(8)
++            server.settimeout(0.2)
++            completed = 0
++            while not stop.is_set() and completed < 2:
++                try:
++                    conn, _ = server.accept()
++                except socket.timeout:
++                    continue
++                with conn:
++                    conn.settimeout(5)
++                    payload = recv_exact(conn, len(TX))
++                    if payload != TX:
++                        raise RuntimeError(f"unexpected guest TCP payload: {payload!r}")
++                    completed += 1
++                    if completed == 2:
++                        conn.sendall(RX)
++                        try:
++                            conn.shutdown(socket.SHUT_WR)
++                        except OSError:
++                            pass
++            if completed < 2 and not stop.is_set():
++                raise RuntimeError("guest did not complete two Stage 10.7 TCP connections")
++    except Exception as exc:
++        errors.append(exc)
++        stop.set()
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('--qemu', default=shutil.which('qemu-system-x86_64') or r'C:\Program Files\qemu\qemu-system-x86_64.exe')
++    parser.add_argument('--firmware', type=Path)
++    parser.add_argument('--cpus', type=int, choices=(1, 2, 4), default=2)
++    parser.add_argument('--timeout', type=float, default=180)
++    parser.add_argument('--release', action='store_true')
++    args = parser.parse_args()
++
++    root = Path(__file__).resolve().parents[1]
++    qemu = Path(args.qemu)
++    firmware = args.firmware or qemu.parent / 'share' / 'edk2-x86_64-code.fd'
++    if not qemu.is_file() or not firmware.is_file():
++        parser.error('Set --qemu and --firmware to existing QEMU and OVMF files.')
++
++    build = ['cargo', 'run', '--quiet']
++    if args.release:
++        build.append('--release')
++    build += ['--features', 'stage10-7-test', '--', '--print-image']
++    image = subprocess.check_output(build, cwd=root, text=True).strip()
++
++    mode = 'release' if args.release else 'debug'
++    out = root / 'target' / f'stage10-7-regression-{args.cpus}-{mode}'
++    out.mkdir(parents=True, exist_ok=True)
++    serial = out / 'serial.log'
++    serial.write_text('')
++    qemu_log = out / 'qemu.log'
++
++    stop = threading.Event()
++    server_errors = []
++    thread = threading.Thread(target=serve, args=(stop, server_errors), daemon=True)
++    thread.start()
++    time.sleep(0.05)
++    if server_errors:
++        print(server_errors[0], file=sys.stderr)
++        return 1
++
++    command = [
++        str(qemu), '-machine', 'q35', '-m', '256M', '-smp', str(args.cpus),
++        '-display', 'none', '-serial', f'file:{serial}', '-no-reboot',
++        '-device', 'isa-debug-exit,iobase=0xf4,iosize=0x04',
++        '-drive', f'if=pflash,format=raw,readonly=on,file={firmware}',
++        '-drive', f'if=none,id=boot,format=raw,readonly=on,file={image}',
++        '-device', 'virtio-blk-pci,drive=boot,bootindex=1',
++        '-device', 'virtio-net-pci,netdev=net0,disable-modern=on',
++        '-netdev', 'user,id=net0',
++    ]
++    flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
++    deadline = time.monotonic() + args.timeout
++    ready_marker = '[S10.7] async TCP host target 10.0.2.2:18080'
++    pass_marker = '[S10.7] userspace async TCP connect/send/recv + EOF/pinning/cancel/teardown: PASSED'
++
++    with qemu_log.open('w') as errors:
++        process = subprocess.Popen(command, cwd=root, stdout=errors, stderr=errors, creationflags=flags)
++        try:
++            while time.monotonic() < deadline:
++                log = serial.read_text(errors='replace')
++                if pass_marker in log:
++                    break
++                if '[S10.7]' in log and ('FAILED' in log or 'TIMEOUT' in log):
++                    raise RuntimeError('Kernel reported a Stage 10.7 failure')
++                if server_errors:
++                    raise server_errors[0]
++                if process.poll() is not None:
++                    break
++                time.sleep(0.02)
++            remaining = max(1.0, deadline - time.monotonic())
++            result = process.wait(timeout=remaining)
++        except Exception as error:
++            if process.poll() is None:
++                process.kill()
++                process.wait(timeout=5)
++            print(error, file=sys.stderr)
++            print(serial.read_text(errors='replace')[-14000:], file=sys.stderr)
++            print(qemu_log.read_text(errors='replace')[-4000:], file=sys.stderr)
++            stop.set(); thread.join(timeout=2)
++            return 1
++        finally:
++            stop.set()
++            if process.poll() is None:
++                process.kill(); process.wait(timeout=5)
++    thread.join(timeout=2)
++
++    log = serial.read_text(errors='replace')
++    required = [
++        f'[SMP] online={args.cpus} expected={args.cpus}',
++        '[S10.3] userspace async completion ABI + cancellation/teardown: PASSED',
++        ready_marker,
++        pass_marker,
++    ]
++    if result != 33 or server_errors or any(marker not in log for marker in required):
++        if server_errors:
++            print(server_errors[0], file=sys.stderr)
++        print(log[-14000:], file=sys.stderr)
++        print(qemu_log.read_text(errors='replace')[-4000:], file=sys.stderr)
++        return 1
++    print(f'QEMU Stage 10.7 async-TCP suite: PASS ({args.cpus} CPU, exit 33)')
++    print('Host TCP exchange: PASS (connect + 2x TX + RX + FIN/EOF)')
++    print('Serial log:', serial)
++    return 0
++
++
++if __name__ == '__main__':
++    raise SystemExit(main())

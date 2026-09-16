@@ -1,0 +1,31 @@
+[package]
+name = "wovenhat-kernel"
+version = "0.8.0"
+edition = "2021"
+
+[features]
+qemu-test = []
+network-test = ["qemu-test"]
+legacy-pic-test = ["qemu-test"]
+stage10-4-test = ["qemu-test"]
+stage10-5-test = ["qemu-test"]
+stage10-6-test = ["qemu-test"]
+stage10-7-test = ["qemu-test"]
+
+[dependencies]
+bootloader_api = "0.11.17"
+x86_64 = "0.15.5"
+spin = "0.10"
+
+smoltcp = { version = "0.14", default-features = false, features = [
+    "alloc",
+    "medium-ethernet",
+    "proto-ipv4",
+    "socket-icmp",
+    "socket-udp",
+    "socket-tcp",
+    "socket-dhcpv4",
+    "socket-dns",
+] }
+[lints.rust]
+warnings = "deny"

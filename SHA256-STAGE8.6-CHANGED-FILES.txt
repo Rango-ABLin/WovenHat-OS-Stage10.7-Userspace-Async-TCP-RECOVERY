@@ -1,0 +1,6 @@
+b787bcc43f4fb4ad2be86ec61144f9976ba72d9d61ea698fbfa942c80405b99a  kernel/src/config.rs
+a01d311a9e513471ba1202a6e8bb3d378ce7d318a24a426be7cec1bcf5b1f838  kernel/src/ipc.rs
+4d1092e2f257d9a5f1dff6245b4ff5cb4ef4f04005c3f583d97b7e3bb5fc9e5b  kernel/src/main.rs
+2baa2c16cf167aa3df722eb2d5296fa82efdd81a26c84ce1807060826cd0361b  run-stage8-6-acceptance.ps1
+c1f5473ccd85f9b99b934d8a6e69c7ae1923430cc74b1c4881b3847d66e8d43d  README-STAGE8.6.txt
+6c4f2fb47ea22664f6eb2d9a702c6a1c2c18087af539a7ffc84c37c0b7622737  AUDIT-STAGE8.6-SERVICE-DISCOVERY.md

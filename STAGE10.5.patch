@@ -1,0 +1,3773 @@
+diff -ruN /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/AUDIT-STAGE10.5-USERSPACE-ASYNC-VFS-FILE-IO.md /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/AUDIT-STAGE10.5-USERSPACE-ASYNC-VFS-FILE-IO.md
+--- /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/AUDIT-STAGE10.5-USERSPACE-ASYNC-VFS-FILE-IO.md	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/AUDIT-STAGE10.5-USERSPACE-ASYNC-VFS-FILE-IO.md	2026-09-14 10:22:38.438248961 +0000
+@@ -0,0 +1,19 @@
++# Stage 10.5 Audit — Userspace Asynchronous VFS/File I/O
++
++## Security boundary
++Stage 10.5 does not grant `StorageIo` to ordinary applications. File requests are authorized through the existing `FileRead` / `FileWrite` capabilities and WovenGuard file-scope policy.
++
++## Stable object identity
++Submission resolves the process fd once and clones the underlying refcounted `OpenFileId`. The request therefore survives `close(fd)` and cannot be redirected if the same descriptor number is reused. The acceptance probe closes the descriptor immediately after both write and read submission and requires the correct file contents to be produced.
++
++## Pointer lifetime
++No userspace pointer is retained. Write bytes are copied into a bounded kernel request buffer before queue publication. Reads stay in a kernel buffer until the owner collects the completed operation. Completion/data copyout occurs before queue/handle consumption, preserving retry safety.
++
++## Offset semantics
++The first API is intentionally positional. `vfs::read_at` and new `vfs::write_at` avoid races on the shared open-file seek position and make concurrent operations deterministic.
++
++## Cancellation and teardown
++Pending or completed cancellation releases the pinned file immediately. If the worker already owns a copied request, cancellation/owner teardown detaches the generic completion but leaves the queue slot and VFS reference alive until the worker finishes; the worker then releases the reference without signalling a stale async handle.
++
++## SMP validation
++The Stage 10.5 probe runs only under `stage10-5-test`, after the complete Stage 10.4 acceptance is preserved. Dedicated 1/2/4 CPU boots validate read/write, fd pinning, stale-handle rejection, cancellation, owner teardown, and final request-table drain.
+diff -ruN /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/Cargo.toml /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/Cargo.toml
+--- /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/Cargo.toml	2026-09-14 08:52:20.000000000 +0000
++++ /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/Cargo.toml	2026-09-14 10:19:58.598613729 +0000
+@@ -7,6 +7,7 @@
+ network-test = ["qemu-test", "kernel/network-test"]
+ legacy-pic-test = ["qemu-test", "kernel/legacy-pic-test"]
+ stage10-4-test = ["qemu-test", "kernel/stage10-4-test"]
++stage10-5-test = ["qemu-test", "kernel/stage10-5-test"]
+ 
+ [profile.dev]
+ panic = "abort"
+diff -ruN /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/README-STAGE10.5.txt /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/README-STAGE10.5.txt
+--- /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/README-STAGE10.5.txt	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/README-STAGE10.5.txt	2026-09-14 10:22:38.437452460 +0000
+@@ -0,0 +1,25 @@
++WovenHat OS Stage 10.5 - Userspace Asynchronous VFS/File I/O
++
++This stage lifts the asynchronous substrate from privileged raw block access to ordinary User-domain files.
++
++New syscalls:
++  73 AsyncFileRead(fd, AsyncFileRequest*)
++  74 AsyncFileWrite(fd, AsyncFileRequest*)
++  75 AsyncFilePoll(handle, Completion*, data*)
++  76 AsyncFileWait(handle, Completion*, data*)
++
++AsyncFileRequest is three u64 fields: offset, buffer, length. Write payloads are copied into kernel-owned memory at submission. Read destinations are supplied only at collection, so no raw Ring-3 pointer survives an async boundary.
++
++Correctness/security properties:
++- AsyncClass::File uses generation-tagged owner-bound handles.
++- Submission rechecks FileRead/FileWrite plus WovenGuard filesystem scope.
++- The exact refcounted OpenFileId is cloned/pinned; fd close/reuse cannot redirect in-flight I/O.
++- Operations are positional and do not mutate shared fd offsets.
++- Completion collection rechecks current WovenGuard scope authority.
++- Completion is copied before consumption; bad user pointers are retry-safe.
++- Cancellation does not require retained authority and is safe against an in-progress worker.
++- Process teardown reclaims pending/complete requests and detaches in-progress work safely.
++- Ordinary User capability sets are unchanged; raw StorageIo remains privileged.
++
++Validation:
++  powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\RUN-STAGE10.5.ps1
+diff -ruN /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/RUN-STAGE10.5.ps1 /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/RUN-STAGE10.5.ps1
+--- /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/RUN-STAGE10.5.ps1	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/RUN-STAGE10.5.ps1	2026-09-14 10:22:38.436552253 +0000
+@@ -0,0 +1,3 @@
++$ErrorActionPreference = 'Stop'
++powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\run-stage10-5-acceptance.ps1
++if ($LASTEXITCODE -ne 0) { throw "Stage 10.5 acceptance failed with exit code $LASTEXITCODE" }
+diff -ruN /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/STAGE10.5.patch /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/STAGE10.5.patch
+--- /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/STAGE10.5.patch	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/STAGE10.5.patch	2026-09-14 10:24:57.350337188 +0000
+@@ -0,0 +1,70 @@
++diff -ruN /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/AUDIT-STAGE10.5-USERSPACE-ASYNC-VFS-FILE-IO.md /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/AUDIT-STAGE10.5-USERSPACE-ASYNC-VFS-FILE-IO.md
++--- /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/AUDIT-STAGE10.5-USERSPACE-ASYNC-VFS-FILE-IO.md	1970-01-01 00:00:00.000000000 +0000
+++++ /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/AUDIT-STAGE10.5-USERSPACE-ASYNC-VFS-FILE-IO.md	2026-09-14 10:22:38.438248961 +0000
++@@ -0,0 +1,19 @@
+++# Stage 10.5 Audit — Userspace Asynchronous VFS/File I/O
+++
+++## Security boundary
+++Stage 10.5 does not grant `StorageIo` to ordinary applications. File requests are authorized through the existing `FileRead` / `FileWrite` capabilities and WovenGuard file-scope policy.
+++
+++## Stable object identity
+++Submission resolves the process fd once and clones the underlying refcounted `OpenFileId`. The request therefore survives `close(fd)` and cannot be redirected if the same descriptor number is reused. The acceptance probe closes the descriptor immediately after both write and read submission and requires the correct file contents to be produced.
+++
+++## Pointer lifetime
+++No userspace pointer is retained. Write bytes are copied into a bounded kernel request buffer before queue publication. Reads stay in a kernel buffer until the owner collects the completed operation. Completion/data copyout occurs before queue/handle consumption, preserving retry safety.
+++
+++## Offset semantics
+++The first API is intentionally positional. `vfs::read_at` and new `vfs::write_at` avoid races on the shared open-file seek position and make concurrent operations deterministic.
+++
+++## Cancellation and teardown
+++Pending or completed cancellation releases the pinned file immediately. If the worker already owns a copied request, cancellation/owner teardown detaches the generic completion but leaves the queue slot and VFS reference alive until the worker finishes; the worker then releases the reference without signalling a stale async handle.
+++
+++## SMP validation
+++The Stage 10.5 probe runs only under `stage10-5-test`, after the complete Stage 10.4 acceptance is preserved. Dedicated 1/2/4 CPU boots validate read/write, fd pinning, stale-handle rejection, cancellation, owner teardown, and final request-table drain.
++diff -ruN /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/Cargo.toml /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/Cargo.toml
++--- /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/Cargo.toml	2026-09-14 08:52:20.000000000 +0000
+++++ /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/Cargo.toml	2026-09-14 10:19:58.598613729 +0000
++@@ -7,6 +7,7 @@
++ network-test = ["qemu-test", "kernel/network-test"]
++ legacy-pic-test = ["qemu-test", "kernel/legacy-pic-test"]
++ stage10-4-test = ["qemu-test", "kernel/stage10-4-test"]
+++stage10-5-test = ["qemu-test", "kernel/stage10-5-test"]
++ 
++ [profile.dev]
++ panic = "abort"
++diff -ruN /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/README-STAGE10.5.txt /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/README-STAGE10.5.txt
++--- /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/README-STAGE10.5.txt	1970-01-01 00:00:00.000000000 +0000
+++++ /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/README-STAGE10.5.txt	2026-09-14 10:22:38.437452460 +0000
++@@ -0,0 +1,25 @@
+++WovenHat OS Stage 10.5 - Userspace Asynchronous VFS/File I/O
+++
+++This stage lifts the asynchronous substrate from privileged raw block access to ordinary User-domain files.
+++
+++New syscalls:
+++  73 AsyncFileRead(fd, AsyncFileRequest*)
+++  74 AsyncFileWrite(fd, AsyncFileRequest*)
+++  75 AsyncFilePoll(handle, Completion*, data*)
+++  76 AsyncFileWait(handle, Completion*, data*)
+++
+++AsyncFileRequest is three u64 fields: offset, buffer, length. Write payloads are copied into kernel-owned memory at submission. Read destinations are supplied only at collection, so no raw Ring-3 pointer survives an async boundary.
+++
+++Correctness/security properties:
+++- AsyncClass::File uses generation-tagged owner-bound handles.
+++- Submission rechecks FileRead/FileWrite plus WovenGuard filesystem scope.
+++- The exact refcounted OpenFileId is cloned/pinned; fd close/reuse cannot redirect in-flight I/O.
+++- Operations are positional and do not mutate shared fd offsets.
+++- Completion collection rechecks current WovenGuard scope authority.
+++- Completion is copied before consumption; bad user pointers are retry-safe.
+++- Cancellation does not require retained authority and is safe against an in-progress worker.
+++- Process teardown reclaims pending/complete requests and detaches in-progress work safely.
+++- Ordinary User capability sets are unchanged; raw StorageIo remains privileged.
+++
+++Validation:
+++  powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\RUN-STAGE10.5.ps1
++diff -ruN /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/RUN-STAGE10.5.ps1 /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/RUN-STAGE10.5.ps1
++--- /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/RUN-STAGE10.5.ps1	1970-01-01 00:00:00.000000000 +0000
+++++ /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/RUN-STAGE10.5.ps1	2026-09-14 10:22:38.436552253 +0000
++@@ -0,0 +1,3 @@
+++$ErrorActionPreference = 'Stop'
+++powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\run-stage10-5-acceptance.ps1
+++if ($LASTEXITCODE -ne 0) { throw "Stage 10.5 acceptance failed with exit code $LASTEXITCODE" }
+diff -ruN /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/Cargo.toml /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/Cargo.toml
+--- /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/Cargo.toml	2026-09-14 08:52:20.000000000 +0000
++++ /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/Cargo.toml	2026-09-14 10:19:58.598701250 +0000
+@@ -8,6 +8,7 @@
+ network-test = ["qemu-test"]
+ legacy-pic-test = ["qemu-test"]
+ stage10-4-test = ["qemu-test"]
++stage10-5-test = ["qemu-test"]
+ 
+ [dependencies]
+ bootloader_api = "0.11.17"
+diff -ruN /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/async_file.rs /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/async_file.rs
+--- /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/async_file.rs	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/async_file.rs	2026-09-14 10:24:44.622881158 +0000
+@@ -0,0 +1,218 @@
++//! Stage 10.5 asynchronous VFS/file I/O for ordinary Ring-3 applications.
++//!
++//! Submission pins the exact refcounted VFS open-file description, copies all
++//! write payloads into kernel memory, and stores no Ring-3 pointer. Reads and
++//! writes are positional, so concurrent operations never mutate/share the fd
++//! seek offset. Cancellation and owner teardown safely handle a worker that has
++//! already copied an in-progress request: that request becomes detached from
++//! its async handle and the worker releases the final pinned VFS reference.
++
++use core::sync::atomic::{AtomicU64, Ordering};
++use spin::Mutex;
++
++use crate::{
++    async_op::{self, AsyncClass, Completion},
++    config::{MAX_ASYNC_FILE_REQUESTS, MAX_IO_SIZE},
++    task::{self, TaskId, TaskPriority},
++    vfs,
++    wovenguard::FileScope,
++};
++
++#[derive(Clone, Copy, PartialEq, Eq)]
++pub enum Operation { Read, Write }
++#[derive(Clone, Copy, PartialEq, Eq)]
++enum State { Pending, InProgress, Complete }
++
++#[derive(Clone, Copy)]
++struct Request {
++    id: u64,
++    owner: TaskId,
++    operation: Operation,
++    file: vfs::OpenFileId,
++    scope: FileScope,
++    under_mnt: bool,
++    offset: usize,
++    length: usize,
++    data: [u8; MAX_IO_SIZE],
++    result: Result<usize, vfs::Error>,
++    state: State,
++    completion: Option<async_op::Handle>,
++}
++
++#[derive(Clone, Copy)]
++struct Work { slot: usize, request: Request }
++
++#[derive(Clone, Copy)]
++struct Queue {
++    entries: [Option<Request>; MAX_ASYNC_FILE_REQUESTS],
++    next_id: u64,
++}
++impl Queue {
++    const fn new() -> Self { Self { entries: [const { None }; MAX_ASYNC_FILE_REQUESTS], next_id: 1 } }
++    fn push(&mut self, mut request: Request) -> bool {
++        let Some(slot) = self.entries.iter_mut().find(|e| e.is_none()) else { return false; };
++        request.id = self.next_id;
++        self.next_id = self.next_id.wrapping_add(1).max(1);
++        *slot = Some(request);
++        true
++    }
++    fn take_pending(&mut self) -> Option<Work> {
++        for (slot, entry) in self.entries.iter_mut().enumerate() {
++            let Some(request) = entry.as_mut() else { continue; };
++            if request.state == State::Pending {
++                request.state = State::InProgress;
++                return Some(Work { slot, request: *request });
++            }
++        }
++        None
++    }
++    fn finish(&mut self, slot: usize, id: u64, result: Result<usize, vfs::Error>, data: [u8; MAX_IO_SIZE]) -> Option<async_op::Handle> {
++        let (completion, file) = {
++            let Some(Some(request)) = self.entries.get_mut(slot) else { return None; };
++            if request.id != id || request.state != State::InProgress { return None; }
++            request.result = result;
++            request.data = data;
++            if request.completion.is_some() {
++                request.state = State::Complete;
++            }
++            (request.completion, request.file)
++        };
++        if completion.is_none() {
++            self.entries[slot] = None;
++            let _ = vfs::close_open_file(file);
++        }
++        completion
++    }
++    fn find_complete(&self, handle: async_op::Handle) -> Option<Request> {
++        self.entries.iter().flatten().copied().find(|r| r.completion == Some(handle) && r.state == State::Complete)
++    }
++    fn consume(&mut self, handle: async_op::Handle) -> bool {
++        for entry in &mut self.entries {
++            let Some(request) = entry.as_ref() else {
++                continue;
++            };
++            if request.completion == Some(handle) && request.state == State::Complete {
++                let file = request.file;
++                *entry = None;
++                let _ = vfs::close_open_file(file);
++                return true;
++            }
++        }
++        false
++    }
++    fn cancel(&mut self, handle: async_op::Handle) -> bool {
++        for entry in &mut self.entries {
++            let Some(request) = entry.as_mut() else { continue; };
++            if request.completion != Some(handle) { continue; }
++            if request.state == State::InProgress {
++                request.completion = None;
++            } else {
++                let file = request.file;
++                *entry = None;
++                let _ = vfs::close_open_file(file);
++            }
++            return true;
++        }
++        false
++    }
++    fn release_owner(&mut self, owner: TaskId) -> usize {
++        let mut count = 0;
++        for entry in &mut self.entries {
++            let Some(request) = entry.as_mut() else { continue; };
++            if request.owner != owner { continue; }
++            count += 1;
++            if request.state == State::InProgress {
++                request.completion = None;
++            } else {
++                let file = request.file;
++                *entry = None;
++                let _ = vfs::close_open_file(file);
++            }
++        }
++        count
++    }
++    fn active(&self) -> usize { self.entries.iter().filter(|e| e.is_some()).count() }
++}
++
++static QUEUE: Mutex<Queue> = Mutex::new(Queue::new());
++static WORKER: Mutex<Option<TaskId>> = Mutex::new(None);
++static SUBMITTED: AtomicU64 = AtomicU64::new(0);
++static COMPLETED: AtomicU64 = AtomicU64::new(0);
++static CANCELLED: AtomicU64 = AtomicU64::new(0);
++static OWNER_REAPED: AtomicU64 = AtomicU64::new(0);
++
++#[derive(Clone, Copy)]
++pub struct UserResult {
++    pub operation: Operation,
++    pub scope: FileScope,
++    pub result: Result<usize, vfs::Error>,
++    pub length: usize,
++    pub data: [u8; MAX_IO_SIZE],
++}
++#[derive(Clone, Copy)]
++pub struct Stats { pub submitted: u64, pub completed: u64, pub cancelled: u64, pub owner_reaped: u64, pub active: usize }
++
++pub fn start_worker() -> bool {
++    if WORKER.lock().is_some() { return true; }
++    match task::spawn_with_priority("async-file", worker_task, TaskPriority::NORMAL) {
++        Ok(id) => { *WORKER.lock() = Some(id); true }, Err(_) => false,
++    }
++}
++
++fn submit(operation: Operation, descriptor: u64, offset: usize, data: [u8; MAX_IO_SIZE], length: usize) -> Result<async_op::Handle, ()> {
++    if length > MAX_IO_SIZE || WORKER.lock().is_none() { return Err(()); }
++    let write = operation == Operation::Write;
++    let (file, scope, under_mnt) = task::pin_current_file_for_async(descriptor, write).map_err(|_| ())?;
++    let owner = match task::current_task_id_if_running() {
++        Some(owner) => owner,
++        None => { let _ = vfs::close_open_file(file); return Err(()); }
++    };
++    let completion = match async_op::allocate_current(AsyncClass::File) {
++        Ok(h) => h,
++        Err(_) => { let _ = vfs::close_open_file(file); return Err(()); }
++    };
++    let request = Request { id: 0, owner, operation, file, scope, under_mnt, offset, length, data, result: Ok(0), state: State::Pending, completion: Some(completion) };
++    if !QUEUE.lock().push(request) {
++        let _ = vfs::close_open_file(file);
++        let _ = async_op::release_current(completion);
++        return Err(());
++    }
++    SUBMITTED.fetch_add(1, Ordering::Relaxed);
++    if let Some(worker) = *WORKER.lock() { let _ = task::signal_event(worker); }
++    Ok(completion)
++}
++
++pub fn submit_read(descriptor: u64, offset: usize, length: usize) -> Result<async_op::Handle, ()> {
++    submit(Operation::Read, descriptor, offset, [0; MAX_IO_SIZE], length)
++}
++pub fn submit_write(descriptor: u64, offset: usize, input: &[u8]) -> Result<async_op::Handle, ()> {
++    if input.len() > MAX_IO_SIZE { return Err(()); }
++    let mut data = [0; MAX_IO_SIZE]; data[..input.len()].copy_from_slice(input);
++    submit(Operation::Write, descriptor, offset, data, input.len())
++}
++pub fn peek_result(handle: async_op::Handle) -> Option<UserResult> {
++    QUEUE.lock().find_complete(handle).map(|r| UserResult { operation: r.operation, scope: r.scope, result: r.result, length: r.length, data: r.data })
++}
++pub fn consume(handle: async_op::Handle) -> bool { QUEUE.lock().consume(handle) }
++pub fn cancel(handle: async_op::Handle) -> bool { let ok=QUEUE.lock().cancel(handle); if ok { CANCELLED.fetch_add(1, Ordering::Relaxed); } ok }
++pub fn release_owner(owner: TaskId) -> usize { let n=QUEUE.lock().release_owner(owner); OWNER_REAPED.fetch_add(n as u64, Ordering::Relaxed); n }
++pub fn stats() -> Stats { let q=QUEUE.lock(); Stats { submitted: SUBMITTED.load(Ordering::Acquire), completed: COMPLETED.load(Ordering::Acquire), cancelled: CANCELLED.load(Ordering::Acquire), owner_reaped: OWNER_REAPED.load(Ordering::Acquire), active: q.active() } }
++
++fn worker_task() -> ! { loop { while process_one() {} task::wait_for_event(); } }
++fn process_one() -> bool {
++    let Some(work)=QUEUE.lock().take_pending() else { return false; };
++    let mut data=work.request.data;
++    let result=match work.request.operation {
++        Operation::Read => vfs::read_at(work.request.file, work.request.offset, &mut data[..work.request.length]),
++        Operation::Write => vfs::write_at(work.request.file, work.request.offset, &data[..work.request.length]),
++    };
++    if result.is_ok() && work.request.operation == Operation::Write && work.request.under_mnt { crate::storage::mark_mnt_dirty(); }
++    let handle=QUEUE.lock().finish(work.slot, work.request.id, result, data);
++    COMPLETED.fetch_add(1, Ordering::Relaxed);
++    if let Some(handle)=handle {
++        let status=if result.is_ok(){0}else{-1};
++        let value=result.unwrap_or(0) as u64;
++        let _=async_op::complete(handle, Completion::new(status, value));
++    }
++    true
++}
+diff -ruN /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/async_op.rs /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/async_op.rs
+--- /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/async_op.rs	2026-09-14 08:52:20.000000000 +0000
++++ /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/async_op.rs	2026-09-14 10:20:21.116411977 +0000
+@@ -27,6 +27,7 @@
+     Network = 1,
+     Device = 2,
+     Service = 3,
++    File = 4,
+ }
+ 
+ impl AsyncClass {
+@@ -36,6 +37,7 @@
+             1 => Some(Self::Network),
+             2 => Some(Self::Device),
+             3 => Some(Self::Service),
++            4 => Some(Self::File),
+             _ => None,
+         }
+     }
+@@ -414,6 +416,7 @@
+         AsyncClass::Network,
+         AsyncClass::Device,
+         AsyncClass::Service,
++        AsyncClass::File,
+     ];
+ 
+     let mut first_stale = None;
+@@ -454,8 +457,8 @@
+     }
+ 
+     let after = stats();
+-    after.allocated >= before.allocated + 5
+-        && after.completed >= before.completed + 4
++    after.allocated >= before.allocated + 6
++        && after.completed >= before.completed + 5
+         && after.released >= before.released + 5
+         && after.cancelled > before.cancelled
+         && after.stale_rejections >= before.stale_rejections + 2
+diff -ruN /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/config.rs /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/config.rs
+--- /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/config.rs	2026-09-14 08:52:20.000000000 +0000
++++ /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/config.rs	2026-09-14 10:19:58.597185956 +0000
+@@ -96,6 +96,8 @@
+ /// The table is allocation-free and shared by storage, networking, device,
+ /// and service producers as those subsystems migrate onto the common API.
+ pub const MAX_ASYNC_OPERATIONS: usize = 32;
++/// Bounded Stage 10.5 asynchronous file request table.
++pub const MAX_ASYNC_FILE_REQUESTS: usize = 16;
+ 
+ /// Swap slots for evicted private mapped pages.
+ /// Slots prefer configured disk backing and fall back to kernel RAM.
+diff -ruN /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/main.rs /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/main.rs
+--- /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/main.rs	2026-09-14 10:00:45.000000000 +0000
++++ /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/main.rs	2026-09-14 10:24:14.325537397 +0000
+@@ -8,6 +8,7 @@
+ 
+ mod ata;
+ mod async_op;
++mod async_file;
+ mod audit;
+ mod benchmark;
+ mod block;
+@@ -286,6 +287,10 @@
+             console.println("BLOCK I/O WORKER: START FAILED");
+             halt();
+         }
++        if !async_file::start_worker() {
++            console.println("ASYNC FILE WORKER: START FAILED");
++            halt();
++        }
+         if !block_io::async_completion_self_test() {
+             console.println("BLOCK I/O COMPLETION: FAILED");
+             halt();
+@@ -1718,6 +1723,89 @@
+         // process/device activity.
+         qemu_test_exit_success();
+     }
++    #[cfg(feature = "stage10-5-test")]
++    {
++        if !async_file::start_worker() {
++            serial::write_line(format_args!("[S10.5] async file worker start: FAILED"));
++            qemu_test_exit_failure();
++        }
++        let async_before = async_op::stats();
++        let file_before = async_file::stats();
++        if vfs::write_file("/tmp/s10.5", &[0u8; 32]).is_err() {
++            serial::write_line(format_args!("[S10.5] acceptance file creation: FAILED"));
++            qemu_test_exit_failure();
++        }
++        let Some(program) = userspace::create_stage10_5_process() else {
++            serial::write_line(format_args!("[S10.5] userspace async file image: FAILED"));
++            qemu_test_exit_failure();
++        };
++        let pid = match task::spawn_user_process("s10.5-async-file", program) {
++            Ok((pid, _)) => pid,
++            Err(_) => {
++                serial::write_line(format_args!("[S10.5] userspace async file spawn: FAILED"));
++                qemu_test_exit_failure();
++            }
++        };
++        let start = timer::ticks();
++        while !task::process_exited(pid) {
++            if timer::ticks().wrapping_sub(start) > 500 {
++                serial::write_line(format_args!("[S10.5] userspace async file I/O: TIMEOUT"));
++                qemu_test_exit_failure();
++            }
++            x86_64::instructions::hlt();
++        }
++        if task::wait_process(pid.as_u64()) != Ok(0) {
++            serial::write_line(format_args!("[S10.5] userspace async file exit: FAILED"));
++            qemu_test_exit_failure();
++        }
++        // Cancellation/exit may race a worker already holding a copied Work.
++        // Wait only for deterministic kernel cleanup, not for userspace work.
++        let cleanup_start = timer::ticks();
++        while async_file::stats().active != 0 {
++            if timer::ticks().wrapping_sub(cleanup_start) > 100 {
++                serial::write_line(format_args!("[S10.5] async file teardown drain: TIMEOUT"));
++                qemu_test_exit_failure();
++            }
++            task::yield_now();
++        }
++        let file_after = async_file::stats();
++        let async_after = async_op::stats();
++        let mut verify = [0u8; 16];
++        let verified_bytes = vfs::open("/tmp/s10.5")
++            .and_then(|id| {
++                let result = vfs::read_at(id, 0, &mut verify);
++                let _ = vfs::close_open_file(id);
++                result
++            })
++            .is_ok_and(|count| count == 16)
++            && verify == *b"WOVENHAT-ASYNC!!";
++        let _ = vfs::remove("/tmp/s10.5");
++        if file_after.submitted < file_before.submitted + 4
++            || file_after.completed < file_before.completed + 2
++            || file_after.cancelled <= file_before.cancelled
++            || file_after.owner_reaped <= file_before.owner_reaped
++            || file_after.active != 0
++            || async_after.active != 0
++            || async_after.owner_reaped <= async_before.owner_reaped
++            || !verified_bytes
++        {
++            serial::write_line(format_args!(
++                "[S10.5] userspace async VFS I/O: FAILED submitted={} completed={} cancelled={} file_reaped={} async_active={} generic_reaped={} bytes_ok={}",
++                file_after.submitted.wrapping_sub(file_before.submitted),
++                file_after.completed.wrapping_sub(file_before.completed),
++                file_after.cancelled.wrapping_sub(file_before.cancelled),
++                file_after.owner_reaped.wrapping_sub(file_before.owner_reaped),
++                async_after.active,
++                async_after.owner_reaped.wrapping_sub(async_before.owner_reaped),
++                verified_bytes,
++            ));
++            qemu_test_exit_failure();
++        }
++        serial::write_line(format_args!(
++            "[S10.5] userspace async VFS read/write + fd pinning/cancel/teardown: PASSED"
++        ));
++        qemu_test_exit_success();
++    }
+     if !syscall::user_identity_verified() {
+         console.println("USER UID/GID SYSCALLS: FAILED");
+         halt();
+diff -ruN /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/syscall.rs /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/syscall.rs
+--- /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/syscall.rs	2026-09-14 08:52:20.000000000 +0000
++++ /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/syscall.rs	2026-09-14 10:23:19.844818240 +0000
+@@ -230,6 +230,14 @@
+     AsyncBlockPoll = 71,
+     /// Block handle, user BlockCompletion* -> blocks event-driven, 1 copied/consumed
+     AsyncBlockWait = 72,
++    /// fd, user AsyncFileRequest* -> positional read handle
++    AsyncFileRead = 73,
++    /// fd, user AsyncFileRequest* -> positional write handle; payload copied at submit
++    AsyncFileWrite = 74,
++    /// File handle, user Completion*, user data* -> 0 pending, 1 copied/consumed
++    AsyncFilePoll = 75,
++    /// File handle, user Completion*, user data* -> event wait, 1 copied/consumed
++    AsyncFileWait = 76,
+ }
+ 
+ pub fn entry_address() -> u64 {
+@@ -1353,6 +1361,9 @@
+         crate::async_op::AsyncClass::Service => {
+             crate::task::current_has(crate::capability::Capability::Ipc)
+         }
++        // File operations are created only through the dedicated Stage 10.5
++        // submission syscalls, which authorize the exact descriptor/scope.
++        crate::async_op::AsyncClass::File => false,
+     }
+ }
+ 
+@@ -1453,6 +1464,8 @@
+     // Block requests additionally detach their kernel bounce-buffer queue slot.
+     if class == crate::async_op::AsyncClass::Block {
+         let _ = crate::block_io::cancel_user_request(handle);
++    } else if class == crate::async_op::AsyncClass::File {
++        let _ = crate::async_file::cancel(handle);
+     }
+     match crate::async_op::cancel_current(handle) {
+         Ok(()) => {
+@@ -1572,6 +1585,69 @@
+     finish_async_block(handle, user_result, true)
+ }
+ 
++#[repr(C)]
++#[derive(Clone, Copy)]
++struct AsyncFileRequest { offset: u64, buffer: u64, length: u64 }
++
++fn copy_async_file_request(user_request: u64) -> Result<AsyncFileRequest, ()> {
++    let mut bytes=[0u8; 24];
++    crate::paging::copy_from_current_user(user_request, &mut bytes).map_err(|_| ())?;
++    Ok(AsyncFileRequest {
++        offset: u64::from_ne_bytes(bytes[0..8].try_into().map_err(|_| ())?),
++        buffer: u64::from_ne_bytes(bytes[8..16].try_into().map_err(|_| ())?),
++        length: u64::from_ne_bytes(bytes[16..24].try_into().map_err(|_| ())?),
++    })
++}
++fn sys_async_file_read(descriptor: u64, user_request: u64) -> u64 {
++    let Ok(request)=copy_async_file_request(user_request) else { return SYSCALL_ERROR; };
++    let Ok(offset)=usize::try_from(request.offset) else { return SYSCALL_ERROR; };
++    let Ok(length)=usize::try_from(request.length) else { return SYSCALL_ERROR; };
++    if length > MAX_IO_SIZE { return SYSCALL_ERROR; }
++    crate::async_file::submit_read(descriptor, offset, length).map_or(SYSCALL_ERROR, |h| h.to_raw())
++}
++fn sys_async_file_write(descriptor: u64, user_request: u64) -> u64 {
++    let Ok(request)=copy_async_file_request(user_request) else { return SYSCALL_ERROR; };
++    let Ok(offset)=usize::try_from(request.offset) else { return SYSCALL_ERROR; };
++    let Ok(length)=usize::try_from(request.length) else { return SYSCALL_ERROR; };
++    if length > MAX_IO_SIZE { return SYSCALL_ERROR; }
++    let mut data=[0u8; MAX_IO_SIZE];
++    if crate::paging::copy_from_current_user(request.buffer, &mut data[..length]).is_err() { return SYSCALL_ERROR; }
++    crate::async_file::submit_write(descriptor, offset, &data[..length]).map_or(SYSCALL_ERROR, |h| h.to_raw())
++}
++fn copy_file_completion(user_completion: u64, completion: crate::async_op::Completion) -> Result<(), ()> {
++    let mut bytes=[0u8;16];
++    bytes[0..4].copy_from_slice(&completion.status.to_ne_bytes());
++    bytes[4..8].copy_from_slice(&completion.reserved.to_ne_bytes());
++    bytes[8..16].copy_from_slice(&completion.value.to_ne_bytes());
++    crate::paging::copy_to_current_user(user_completion, &bytes).map_err(|_| ())
++}
++fn finish_async_file(handle: crate::async_op::Handle, user_completion: u64, user_data: u64, wait: bool) -> u64 {
++    if crate::async_op::class_current(handle) != Ok(crate::async_op::AsyncClass::File) { return SYSCALL_ERROR; }
++    let completion=if wait {
++        match crate::async_op::wait_ready(handle) { Ok(c)=>c, Err(_)=>return SYSCALL_ERROR }
++    } else {
++        match crate::async_op::peek_current(handle) { Ok(Some(c))=>c, Ok(None)=>return 0, Err(_)=>return SYSCALL_ERROR }
++    };
++    let Some(result)=crate::async_file::peek_result(handle) else { return SYSCALL_ERROR; };
++    let write=result.operation == crate::async_file::Operation::Write;
++    if !crate::task::authorize_current_file_scope(result.scope, write) { return SYSCALL_ERROR; }
++    if copy_file_completion(user_completion, completion).is_err() { return SYSCALL_ERROR; }
++    if !write && result.result.is_ok() {
++        let count=result.result.unwrap_or(0).min(result.length);
++        if crate::paging::copy_to_current_user(user_data, &result.data[..count]).is_err() { return SYSCALL_ERROR; }
++    }
++    if !crate::async_file::consume(handle) || crate::async_op::release_current(handle).is_err() { return SYSCALL_ERROR; }
++    1
++}
++fn sys_async_file_poll(raw_handle: u64, user_completion: u64, user_data: u64) -> u64 {
++    let Ok(handle)=async_handle(raw_handle) else { return SYSCALL_ERROR; };
++    finish_async_file(handle, user_completion, user_data, false)
++}
++fn sys_async_file_wait(raw_handle: u64, user_completion: u64, user_data: u64) -> u64 {
++    let Ok(handle)=async_handle(raw_handle) else { return SYSCALL_ERROR; };
++    finish_async_file(handle, user_completion, user_data, true)
++}
++
+ #[unsafe(no_mangle)]
+ pub extern "C" fn wovenhat_syscall_dispatch(
+     number: u64,
+@@ -1688,6 +1764,10 @@
+         value if value == Number::AsyncBlockWrite as u64 => sys_async_block_write(arg0, arg1),
+         value if value == Number::AsyncBlockPoll as u64 => sys_async_block_poll(arg0, arg1),
+         value if value == Number::AsyncBlockWait as u64 => sys_async_block_wait(arg0, arg1),
++        value if value == Number::AsyncFileRead as u64 => sys_async_file_read(arg0, arg1),
++        value if value == Number::AsyncFileWrite as u64 => sys_async_file_write(arg0, arg1),
++        value if value == Number::AsyncFilePoll as u64 => sys_async_file_poll(arg0, arg1, arg2),
++        value if value == Number::AsyncFileWait as u64 => sys_async_file_wait(arg0, arg1, arg2),
+         _ => u64::MAX,
+     };
+ 
+diff -ruN /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/task.rs /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/task.rs
+--- /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/task.rs	2026-09-14 09:41:24.000000000 +0000
++++ /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/task.rs	2026-09-14 10:23:19.845131561 +0000
+@@ -2185,6 +2185,7 @@
+         // Stage 10.3: an exiting owner must not strand generic async slots.
+         // Producers racing this teardown are serialized by async_op::TABLE;
+         // a late completion sees a stale generation-tagged handle.
++        crate::async_file::release_owner(task_id);
+         crate::block_io::release_owner(task_id);
+         crate::async_op::release_owner(task_id);
+ 
+@@ -2675,6 +2676,56 @@
+         .is_some_and(Option::is_some)
+ }
+ 
++/// Pin the exact open-file description behind a userspace descriptor for an
++/// asynchronous request. The returned OpenFileId owns an extra VFS reference,
++/// so closing/reusing the numeric fd cannot redirect an in-flight operation.
++pub fn pin_current_file_for_async(
++    descriptor: u64,
++    write: bool,
++) -> Result<(vfs::OpenFileId, wovenguard::FileScope, bool), FileError> {
++    let descriptor = usize::try_from(descriptor).map_err(|_| FileError::BadDescriptor)?;
++    let task_id = current_task_id();
++    let processes = process_table_lock();
++    let process = processes
++        .iter()
++        .flatten()
++        .find(|process| process.task_id == task_id)
++        .ok_or(FileError::NoProcess)?;
++    let fd = process
++        .files
++        .get(descriptor)
++        .copied()
++        .flatten()
++        .ok_or(FileError::BadDescriptor)?;
++    let FdKind::File { id, scope } = fd else {
++        return Err(FileError::BadDescriptor);
++    };
++    drop(processes);
++    if !current_file_access_allowed(
++        if write { Capability::FileWrite } else { Capability::FileRead },
++        scope,
++        write,
++    ) {
++        return Err(FileError::PermissionDenied);
++    }
++    let under_mnt = vfs::open_file_path_starts_with(id, "/mnt/").unwrap_or(false);
++    if under_mnt && !crate::storage::mnt_mounted() {
++        return Err(FileError::NotFound);
++    }
++    let pinned = vfs::clone_open_file(id).map_err(|_| FileError::TooManyFiles)?;
++    Ok((pinned, scope, under_mnt))
++}
++
++/// Re-check the caller's current WovenGuard file authority when collecting an
++/// async result. Cancellation itself intentionally does not require this check.
++pub fn authorize_current_file_scope(scope: wovenguard::FileScope, write: bool) -> bool {
++    current_file_access_allowed(
++        if write { Capability::FileWrite } else { Capability::FileRead },
++        scope,
++        write,
++    )
++}
++
+ pub fn read_current(descriptor: u64, buffer: &mut [u8]) -> Result<usize, FileError> {
+     let descriptor = usize::try_from(descriptor).map_err(|_| FileError::BadDescriptor)?;
+     let task_id = current_task_id();
+@@ -4330,6 +4381,7 @@
+ fn complete_process_termination(task_id: TaskId, signal: u8) {
+     // Remote/scheduler-driven termination bypasses exit_current_process(), so
+     // it needs the same Stage 10.3 async-owner reclamation guarantee.
++    crate::async_file::release_owner(task_id);
+     crate::block_io::release_owner(task_id);
+     crate::async_op::release_owner(task_id);
+     let mut processes = process_table_lock();
+diff -ruN /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/userspace.rs /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/userspace.rs
+--- /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/userspace.rs	2026-09-14 08:53:36.000000000 +0000
++++ /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/userspace.rs	2026-09-14 10:21:39.733073445 +0000
+@@ -285,6 +285,168 @@
+     ".previous",
+ );
+ 
++
++global_asm!(
++    ".section .rodata.wovenhat_stage10_5_stub, \"a\"",
++    ".global wovenhat_stage10_5_program_start",
++    ".global wovenhat_stage10_5_program_end",
++    "wovenhat_stage10_5_program_start:",
++    // Stack scratch: request at r13 (24 bytes), completion at r14 (16),
++    // write source at r15 (16), read destination at rbx (16).
++    "lea r13, [rsp - 128]",
++    "lea r14, [rsp - 160]",
++    "lea r15, [rsp - 192]",
++    "lea rbx, [rsp - 224]",
++    "mov rax, 0x5441484e45564f57", // WOVENHAT
++    "mov [r15], rax",
++    "mov rax, 0x2121434e5953412d", // -ASYNC!!
++    "mov [r15 + 8], rax",
++    // Open ordinary User-domain file.
++    "mov eax, 2",
++    "lea rdi, [rip + wovenhat_stage10_5_path]",
++    "mov esi, 10",
++    "int 0x80",
++    "cmp rax, -1",
++    "je wovenhat_stage10_5_failure",
++    "mov r12, rax",
++    // request { offset=0, buffer=r15, length=16 }
++    "mov qword ptr [r13], 0",
++    "mov [r13 + 8], r15",
++    "mov qword ptr [r13 + 16], 16",
++    "mov eax, 74",
++    "mov rdi, r12",
++    "mov rsi, r13",
++    "int 0x80",
++    "cmp rax, -1",
++    "je wovenhat_stage10_5_failure",
++    "mov rbp, rax",
++    // Close immediately: request must survive through its pinned OpenFileId.
++    "mov eax, 6",
++    "mov rdi, r12",
++    "int 0x80",
++    "test rax, rax",
++    "jne wovenhat_stage10_5_failure",
++    "mov eax, 76",
++    "mov rdi, rbp",
++    "mov rsi, r14",
++    "xor edx, edx",
++    "int 0x80",
++    "cmp rax, 1",
++    "jne wovenhat_stage10_5_failure",
++    "cmp dword ptr [r14], 0",
++    "jne wovenhat_stage10_5_failure",
++    "cmp qword ptr [r14 + 8], 16",
++    "jne wovenhat_stage10_5_failure",
++    // Consumed handles must be stale.
++    "mov eax, 75",
++    "mov rdi, rbp",
++    "mov rsi, r14",
++    "mov rdx, rbx",
++    "int 0x80",
++    "cmp rax, -1",
++    "jne wovenhat_stage10_5_failure",
++    // Reopen and positional async-read the bytes just written.
++    "mov eax, 2",
++    "lea rdi, [rip + wovenhat_stage10_5_path]",
++    "mov esi, 10",
++    "int 0x80",
++    "cmp rax, -1",
++    "je wovenhat_stage10_5_failure",
++    "mov r12, rax",
++    "mov qword ptr [r13], 0",
++    "mov qword ptr [r13 + 8], 0",
++    "mov qword ptr [r13 + 16], 16",
++    "mov eax, 73",
++    "mov rdi, r12",
++    "mov rsi, r13",
++    "int 0x80",
++    "cmp rax, -1",
++    "je wovenhat_stage10_5_failure",
++    "mov rbp, rax",
++    "mov eax, 6",
++    "mov rdi, r12",
++    "int 0x80",
++    "test rax, rax",
++    "jne wovenhat_stage10_5_failure",
++    "mov eax, 76",
++    "mov rdi, rbp",
++    "mov rsi, r14",
++    "mov rdx, rbx",
++    "int 0x80",
++    "cmp rax, 1",
++    "jne wovenhat_stage10_5_failure",
++    "cmp dword ptr [r14], 0",
++    "jne wovenhat_stage10_5_failure",
++    "cmp qword ptr [r14 + 8], 16",
++    "jne wovenhat_stage10_5_failure",
++    "mov rax, 0x5441484e45564f57",
++    "cmp [rbx], rax",
++    "jne wovenhat_stage10_5_failure",
++    "mov rax, 0x2121434e5953412d",
++    "cmp [rbx + 8], rax",
++    "jne wovenhat_stage10_5_failure",
++    // Explicit cancellation: queue object and generic handle must detach.
++    "mov eax, 2",
++    "lea rdi, [rip + wovenhat_stage10_5_path]",
++    "mov esi, 10",
++    "int 0x80",
++    "cmp rax, -1",
++    "je wovenhat_stage10_5_failure",
++    "mov r12, rax",
++    "mov eax, 73",
++    "mov rdi, r12",
++    "mov rsi, r13",
++    "int 0x80",
++    "cmp rax, -1",
++    "je wovenhat_stage10_5_failure",
++    "mov rbp, rax",
++    "mov eax, 67",
++    "mov rdi, rbp",
++    "int 0x80",
++    "test rax, rax",
++    "jne wovenhat_stage10_5_failure",
++    "mov eax, 6",
++    "mov rdi, r12",
++    "int 0x80",
++    "mov eax, 75",
++    "mov rdi, rbp",
++    "mov rsi, r14",
++    "mov rdx, rbx",
++    "int 0x80",
++    "cmp rax, -1",
++    "jne wovenhat_stage10_5_failure",
++    // Abandon a fourth request; process teardown owns its cleanup.
++    "mov eax, 2",
++    "lea rdi, [rip + wovenhat_stage10_5_path]",
++    "mov esi, 10",
++    "int 0x80",
++    "cmp rax, -1",
++    "je wovenhat_stage10_5_failure",
++    "mov r12, rax",
++    "mov eax, 73",
++    "mov rdi, r12",
++    "mov rsi, r13",
++    "int 0x80",
++    "cmp rax, -1",
++    "je wovenhat_stage10_5_failure",
++    "mov eax, 6",
++    "mov rdi, r12",
++    "int 0x80",
++    "xor edi, edi",
++    "mov eax, 3",
++    "int 0x80",
++    "wovenhat_stage10_5_failure:",
++    "mov edi, 1",
++    "mov eax, 3",
++    "int 0x80",
++    "1:",
++    "jmp 1b",
++    "wovenhat_stage10_5_path:",
++    ".ascii \"/tmp/s10.5\"",
++    "wovenhat_stage10_5_program_end:",
++    ".previous",
++);
++
+ global_asm!(
+     ".section .rodata.wovenhat_exec_stub, \"a\"",
+     ".global wovenhat_exec_program_start",
+@@ -3443,6 +3605,10 @@
+     static wovenhat_stage10_4_program_start: u8;
+     #[cfg(feature = "stage10-4-test")]
+     static wovenhat_stage10_4_program_end: u8;
++    #[cfg(feature = "stage10-5-test")]
++    static wovenhat_stage10_5_program_start: u8;
++    #[cfg(feature = "stage10-5-test")]
++    static wovenhat_stage10_5_program_end: u8;
+     static wovenhat_exec_program_start: u8;
+     static wovenhat_exec_program_end: u8;
+     static wovenhat_init_program_start: u8;
+@@ -3843,6 +4009,17 @@
+         core::slice::from_raw_parts(start, end.offset_from(start) as usize)
+     };
+     let elf = build_stub_elf(stub)?;
++    load_elf(&elf)
++}
++
++#[cfg(feature = "stage10-5-test")]
++pub fn create_stage10_5_process() -> Option<UserProgram> {
++    let stub = unsafe {
++        let start = &wovenhat_stage10_5_program_start as *const u8;
++        let end = &wovenhat_stage10_5_program_end as *const u8;
++        core::slice::from_raw_parts(start, end.offset_from(start) as usize)
++    };
++    let elf = build_stub_elf(stub)?;
+     load_elf(&elf)
+ }
+ 
+diff -ruN /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/vfs.rs /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/vfs.rs
+--- /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/vfs.rs	2026-09-14 08:52:20.000000000 +0000
++++ /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/kernel/src/vfs.rs	2026-09-14 10:20:21.116592628 +0000
+@@ -1,1365 +1,1403 @@
+-use spin::Mutex;
+-
+-use crate::config::{
+-    MAX_OPEN_FILES, MAX_PATH_SIZE as PATH_CAPACITY, MAX_VFS_NODES as MAX_NODES, VFS_NODE_CAPACITY,
+-};
+-
+-pub const NODE_CAPACITY: usize = VFS_NODE_CAPACITY;
+-
+-/// Maximum bytes returned for a single directory entry name (excluding NUL).
+-pub const MAX_DIR_NAME: usize = 64;
+-
+-#[derive(Clone, Copy, PartialEq, Eq)]
+-pub enum NodeKind {
+-    File,
+-    Directory,
+-}
+-
+-#[derive(Clone, Copy)]
+-struct DiskPath {
+-    bytes: [u8; PATH_CAPACITY],
+-    length: usize,
+-}
+-impl DiskPath {
+-    fn as_str(&self) -> &str {
+-        core::str::from_utf8(&self.bytes[..self.length]).unwrap_or("")
+-    }
+-}
+-
+-#[derive(Clone, Copy)]
+-struct Node {
+-    path: [u8; PATH_CAPACITY],
+-    path_length: usize,
+-    data: [u8; NODE_CAPACITY],
+-    backing: Option<DiskPath>,
+-    length: usize,
+-    writable: bool,
+-    kind: NodeKind,
+-    occupied: bool,
+-}
+-
+-impl Node {
+-    const fn empty() -> Self {
+-        Self {
+-            path: [0; PATH_CAPACITY],
+-            path_length: 0,
+-            data: [0; NODE_CAPACITY],
+-            backing: None,
+-            length: 0,
+-            writable: false,
+-            kind: NodeKind::File,
+-            occupied: false,
+-        }
+-    }
+-
+-    const fn with_data(path: &[u8], data: &[u8], writable: bool) -> Self {
+-        let mut node = Self::empty();
+-        let mut index = 0;
+-        while index < path.len() {
+-            node.path[index] = path[index];
+-            index += 1;
+-        }
+-        index = 0;
+-        while index < data.len() {
+-            node.data[index] = data[index];
+-            index += 1;
+-        }
+-        node.path_length = path.len();
+-        node.length = data.len();
+-        node.writable = writable;
+-        node.kind = NodeKind::File;
+-        node.occupied = true;
+-        node
+-    }
+-
+-    const fn directory(path: &[u8]) -> Self {
+-        let mut node = Self::empty();
+-        let mut index = 0;
+-        while index < path.len() {
+-            node.path[index] = path[index];
+-            index += 1;
+-        }
+-        node.path_length = path.len();
+-        node.kind = NodeKind::Directory;
+-        node.writable = true;
+-        node.occupied = true;
+-        node
+-    }
+-
+-    fn matches(&self, path: &str) -> bool {
+-        self.occupied && &self.path[..self.path_length] == path.as_bytes()
+-    }
+-
+-    fn path_str(&self) -> &str {
+-        core::str::from_utf8(&self.path[..self.path_length]).unwrap_or("")
+-    }
+-}
+-
+-/// Metadata returned by `stat`.
+-#[derive(Clone, Copy)]
+-pub struct Stat {
+-    pub kind: NodeKind,
+-    pub size: usize,
+-    pub writable: bool,
+-}
+-
+-/// One directory entry returned by `readdir`.
+-#[derive(Clone, Copy)]
+-pub struct DirEntry {
+-    pub name: [u8; MAX_DIR_NAME],
+-    pub name_length: usize,
+-    pub kind: NodeKind,
+-}
+-
+-impl DirEntry {
+-    pub fn name_str(&self) -> &str {
+-        core::str::from_utf8(&self.name[..self.name_length]).unwrap_or("")
+-    }
+-}
+-
+-struct Registry {
+-    versions: [u64; MAX_NODES],
+-    generations: [u64; MAX_NODES],
+-    nodes: [Node; MAX_NODES],
+-}
+-
+-impl Registry {
+-    const fn boot() -> Self {
+-        let mut nodes = [Node::empty(); MAX_NODES];
+-        // Directories first so path walking can find parents.
+-        nodes[0] = Node::directory(b"/");
+-        nodes[1] = Node::directory(b"/etc");
+-        nodes[2] = Node::directory(b"/tmp");
+-        nodes[3] = Node::directory(b"/mnt");
+-        nodes[4] = Node::directory(b"/bin");
+-        nodes[5] = Node::with_data(b"/etc/motd", b"Welcome to WovenHat OS.\n", false);
+-        nodes[6] = Node::with_data(b"/etc/version", b"WovenHat kernel 0.8.0 Multicore Foundation\n", false);
+-        nodes[7] = Node::with_data(b"/tmp/vfs-self-test", b"", true);
+-        Self {
+-            nodes,
+-            versions: [0; MAX_NODES],
+-            generations: [0; MAX_NODES],
+-        }
+-    }
+-
+-    const fn empty() -> Self {
+-        Self {
+-            nodes: [Node::empty(); MAX_NODES],
+-            versions: [0; MAX_NODES],
+-            generations: [0; MAX_NODES],
+-        }
+-    }
+-
+-    fn insert(&mut self, path: &str, data: &[u8], writable: bool) -> Result<usize, Error> {
+-        validate_absolute_path(path)?;
+-        if data.len() > NODE_CAPACITY {
+-            return Err(Error::Full);
+-        }
+-        if self.nodes.iter().any(|node| node.matches(path)) {
+-            return Err(Error::AlreadyExists);
+-        }
+-        // Parent directory must exist (except for root itself).
+-        if path != "/" {
+-            let parent = parent_path(path).ok_or(Error::InvalidPath)?;
+-            if !self
+-                .nodes
+-                .iter()
+-                .any(|n| n.matches(parent) && n.kind == NodeKind::Directory)
+-            {
+-                return Err(Error::NotFound);
+-            }
+-        }
+-        let index = self
+-            .nodes
+-            .iter()
+-            .position(|node| !node.occupied)
+-            .ok_or(Error::Full)?;
+-        let node = &mut self.nodes[index];
+-        node.path[..path.len()].copy_from_slice(path.as_bytes());
+-        node.path_length = path.len();
+-        node.data[..data.len()].copy_from_slice(data);
+-        node.length = data.len();
+-        node.writable = writable;
+-        node.kind = NodeKind::File;
+-        node.occupied = true;
+-        Ok(index)
+-    }
+-
+-    fn mkdir(&mut self, path: &str) -> Result<usize, Error> {
+-        validate_absolute_path(path)?;
+-        if path == "/" {
+-            return Err(Error::AlreadyExists);
+-        }
+-        if self.nodes.iter().any(|node| node.matches(path)) {
+-            return Err(Error::AlreadyExists);
+-        }
+-        let parent = parent_path(path).ok_or(Error::InvalidPath)?;
+-        if !self
+-            .nodes
+-            .iter()
+-            .any(|n| n.matches(parent) && n.kind == NodeKind::Directory)
+-        {
+-            return Err(Error::NotFound);
+-        }
+-        let index = self
+-            .nodes
+-            .iter()
+-            .position(|node| !node.occupied)
+-            .ok_or(Error::Full)?;
+-        let node = &mut self.nodes[index];
+-        *node = Node::directory(path.as_bytes());
+-        // directory() copies from a slice; path may be longer than what const fn saw.
+-        node.path[..path.len()].copy_from_slice(path.as_bytes());
+-        node.path_length = path.len();
+-        Ok(index)
+-    }
+-
+-    fn count(&self) -> usize {
+-        self.nodes
+-            .iter()
+-            .filter(|node| node.occupied && node.path_length != 0)
+-            .count()
+-    }
+-
+-    fn removable_index(&self, path: &str) -> Result<usize, Error> {
+-        validate_absolute_path(path)?;
+-        if path == "/" {
+-            return Err(Error::ReadOnly);
+-        }
+-        let index = self
+-            .nodes
+-            .iter()
+-            .position(|node| node.matches(path))
+-            .ok_or(Error::NotFound)?;
+-        let node = &self.nodes[index];
+-        // Refuse to remove non-empty directories.
+-        if node.kind == NodeKind::Directory {
+-            let dir_path = node.path_str();
+-            for other in self.nodes.iter().filter(|n| n.occupied) {
+-                if immediate_child_name(dir_path, other.path_str()).is_some() {
+-                    return Err(Error::NotEmpty);
+-                }
+-            }
+-        }
+-        Ok(index)
+-    }
+-
+-    fn can_remove(&self, path: &str) -> Result<(), Error> {
+-        self.removable_index(path).map(|_| ())
+-    }
+-
+-    fn remove(&mut self, path: &str) -> Result<(), Error> {
+-        let index = self.removable_index(path)?;
+-        self.generations[index] = self.generations[index].checked_add(1).ok_or(Error::Full)?;
+-        let node = &mut self.nodes[index];
+-        node.occupied = false;
+-        node.path_length = 0;
+-        node.length = 0;
+-        node.backing = None;
+-        node.writable = false;
+-        node.data.fill(0);
+-        node.path.fill(0);
+-        Ok(())
+-    }
+-
+-    fn validate_rename(&self, old: &str, new: &str) -> Result<(), Error> {
+-        validate_absolute_path(old)?;
+-        validate_absolute_path(new)?;
+-        if old == "/" || new == "/" {
+-            return Err(Error::ReadOnly);
+-        }
+-        let index = self
+-            .nodes
+-            .iter()
+-            .position(|n| n.matches(old))
+-            .ok_or(Error::NotFound)?;
+-        if old == new {
+-            return Ok(());
+-        }
+-        if self.nodes.iter().any(|n| n.matches(new)) {
+-            return Err(Error::AlreadyExists);
+-        }
+-        if descendant_suffix(old, new).is_some() {
+-            return Err(Error::InvalidPath);
+-        }
+-        let parent = parent_path(new).ok_or(Error::InvalidPath)?;
+-        if !self
+-            .nodes
+-            .iter()
+-            .any(|n| n.matches(parent) && n.kind == NodeKind::Directory)
+-        {
+-            return Err(Error::NotFound);
+-        }
+-        let directory = self.nodes[index].kind == NodeKind::Directory;
+-        // Preflight every resulting path before changing any node. Keep node indices
+-        // stable so existing open-file descriptions continue to reference their data.
+-        for node in self.nodes.iter().filter(|n| n.occupied) {
+-            if directory {
+-                if let Some(suffix) = descendant_suffix(old, node.path_str()) {
+-                    if new.len() + suffix.len() > PATH_CAPACITY {
+-                        return Err(Error::InvalidPath);
+-                    }
+-                }
+-            }
+-            if let Some(backing) = node.backing {
+-                if directory {
+-                    if let Some(suffix) = descendant_suffix(old, backing.as_str()) {
+-                        if new.len() + suffix.len() > PATH_CAPACITY {
+-                            return Err(Error::InvalidPath);
+-                        }
+-                    }
+-                } else if backing.as_str() == old && new.len() > PATH_CAPACITY {
+-                    return Err(Error::InvalidPath);
+-                }
+-            }
+-        }
+-        Ok(())
+-    }
+-
+-    fn rename(&mut self, old: &str, new: &str) -> Result<(), Error> {
+-        self.validate_rename(old, new)?;
+-        if old == new {
+-            return Ok(());
+-        }
+-        let index = self
+-            .nodes
+-            .iter()
+-            .position(|n| n.matches(old))
+-            .ok_or(Error::NotFound)?;
+-        let directory = self.nodes[index].kind == NodeKind::Directory;
+-        for node in self.nodes.iter_mut().filter(|n| n.occupied) {
+-            let suffix_start = if node.matches(old)
+-                || (directory && descendant_suffix(old, node.path_str()).is_some())
+-            {
+-                Some(old.len())
+-            } else {
+-                None
+-            };
+-            if let Some(start) = suffix_start {
+-                let suffix_len = node.path_length - start;
+-                node.path.copy_within(start..node.path_length, new.len());
+-                node.path[..new.len()].copy_from_slice(new.as_bytes());
+-                node.path_length = new.len() + suffix_len;
+-                node.path[node.path_length..].fill(0);
+-            }
+-
+-            let backing_suffix_start = node.backing.as_ref().and_then(|backing| {
+-                let backing_path = backing.as_str();
+-                if backing_path == old
+-                    || (directory && descendant_suffix(old, backing_path).is_some())
+-                {
+-                    Some(old.len())
+-                } else {
+-                    None
+-                }
+-            });
+-            if let (Some(backing), Some(start)) = (node.backing.as_mut(), backing_suffix_start) {
+-                let suffix_len = backing.length - start;
+-                backing.bytes.copy_within(start..backing.length, new.len());
+-                backing.bytes[..new.len()].copy_from_slice(new.as_bytes());
+-                backing.length = new.len() + suffix_len;
+-                backing.bytes[backing.length..].fill(0);
+-            }
+-        }
+-        Ok(())
+-    }
+-
+-    fn write_file(&mut self, path: &str, data: &[u8]) -> Result<(), Error> {
+-        validate_absolute_path(path)?;
+-        if data.len() > NODE_CAPACITY {
+-            return Err(Error::Full);
+-        }
+-        if let Some(index) = self.nodes.iter().position(|n| n.matches(path)) {
+-            let node = &mut self.nodes[index];
+-            if node.kind != NodeKind::File {
+-                return Err(Error::AlreadyExists);
+-            }
+-            if !node.writable {
+-                return Err(Error::ReadOnly);
+-            }
+-            node.backing = None;
+-            node.data.fill(0);
+-            node.data[..data.len()].copy_from_slice(data);
+-            node.length = data.len();
+-            self.versions[index] = self.versions[index].wrapping_add(1);
+-            crate::file_frames::replace(index, self.generations[index], data);
+-            return Ok(());
+-        }
+-        // Create new writable file (parent must exist).
+-        self.insert(path, data, true).map(|_| ())
+-    }
+-
+-    fn stat(&self, path: &str) -> Result<Stat, Error> {
+-        validate_absolute_path(path)?;
+-        let node = self
+-            .nodes
+-            .iter()
+-            .find(|node| node.matches(path))
+-            .ok_or(Error::NotFound)?;
+-        Ok(Stat {
+-            kind: node.kind,
+-            size: node.length,
+-            writable: node.writable,
+-        })
+-    }
+-
+-    /// Return the `index`-th direct child of `dir_path` (0-based).
+-    fn readdir(&self, dir_path: &str, index: usize) -> Result<DirEntry, Error> {
+-        validate_absolute_path(dir_path)?;
+-        let dir = self
+-            .nodes
+-            .iter()
+-            .find(|node| node.matches(dir_path) && node.kind == NodeKind::Directory)
+-            .ok_or(Error::NotFound)?;
+-        let dir_path = dir.path_str();
+-
+-        let mut seen = 0usize;
+-        for node in self.nodes.iter().filter(|n| n.occupied) {
+-            let child_path = node.path_str();
+-            let Some(name) = immediate_child_name(dir_path, child_path) else {
+-                continue;
+-            };
+-            if seen == index {
+-                let mut entry = DirEntry {
+-                    name: [0; MAX_DIR_NAME],
+-                    name_length: 0,
+-                    kind: node.kind,
+-                };
+-                let len = core::cmp::min(name.len(), MAX_DIR_NAME);
+-                entry.name[..len].copy_from_slice(name.as_bytes());
+-                entry.name_length = len;
+-                return Ok(entry);
+-            }
+-            seen += 1;
+-        }
+-        Err(Error::NotFound)
+-    }
+-}
+-
+-fn validate_absolute_path(path: &str) -> Result<(), Error> {
+-    if path.is_empty() || !path.starts_with('/') || path.len() > PATH_CAPACITY {
+-        return Err(Error::InvalidPath);
+-    }
+-    if path.as_bytes().contains(&0) {
+-        return Err(Error::InvalidPath);
+-    }
+-    // The VFS accepts canonical absolute paths. Shell/task resolvers handle
+-    // relative paths and dot components before entering this layer. Limit each
+-    // component to the directory-entry ABI so names are never truncated.
+-    if path != "/"
+-        && path[1..]
+-            .split('/')
+-            .any(|part| part.is_empty() || part == "." || part == ".." || part.len() > MAX_DIR_NAME)
+-    {
+-        return Err(Error::InvalidPath);
+-    }
+-    Ok(())
+-}
+-
+-/// Return the slash-prefixed suffix only at a directory boundary.
+-fn descendant_suffix<'a>(directory: &str, path: &'a str) -> Option<&'a str> {
+-    path.strip_prefix(directory)
+-        .filter(|suffix| suffix.starts_with('/'))
+-}
+-
+-fn parent_path(path: &str) -> Option<&str> {
+-    if path == "/" {
+-        return None;
+-    }
+-    let trimmed = path.trim_end_matches('/');
+-    match trimmed.rfind('/') {
+-        Some(0) => Some("/"),
+-        Some(pos) => Some(&trimmed[..pos]),
+-        None => None,
+-    }
+-}
+-
+-/// If `child` is an immediate child of `dir`, return the final path component.
+-fn immediate_child_name<'a>(dir: &str, child: &'a str) -> Option<&'a str> {
+-    if child == dir {
+-        return None;
+-    }
+-    if dir == "/" {
+-        if !child.starts_with('/') || child.len() < 2 {
+-            return None;
+-        }
+-        let rest = &child[1..];
+-        if rest.contains('/') {
+-            return None;
+-        }
+-        return Some(rest);
+-    }
+-    if !child.starts_with(dir) {
+-        return None;
+-    }
+-    let rest = &child[dir.len()..];
+-    if !rest.starts_with('/') {
+-        return None;
+-    }
+-    let name = &rest[1..];
+-    if name.is_empty() || name.contains('/') {
+-        return None;
+-    }
+-    Some(name)
+-}
+-
+-static REGISTRY: Mutex<Registry> = Mutex::new(Registry::boot());
+-
+-/// Handle to a shared open-file description.
+-///
+-/// Process file-descriptor tables store these IDs. Multiple descriptors
+-/// (including across fork) can refer to the same description so that the
+-/// file offset is shared, matching POSIX semantics.
+-#[derive(Clone, Copy, PartialEq, Eq)]
+-pub struct OpenFileId(usize);
+-
+-struct OpenFileDescription {
+-    node: usize,
+-    generation: u64,
+-    offset: usize,
+-    refcount: u32,
+-    occupied: bool,
+-}
+-
+-impl OpenFileDescription {
+-    const fn empty() -> Self {
+-        Self {
+-            node: 0,
+-            generation: 0,
+-            offset: 0,
+-            refcount: 0,
+-            occupied: false,
+-        }
+-    }
+-}
+-
+-struct OpenFileTable {
+-    entries: [OpenFileDescription; MAX_OPEN_FILES],
+-}
+-
+-impl OpenFileTable {
+-    const fn empty() -> Self {
+-        Self {
+-            entries: [const { OpenFileDescription::empty() }; MAX_OPEN_FILES],
+-        }
+-    }
+-
+-    fn alloc(&mut self, node: usize, generation: u64) -> Result<OpenFileId, Error> {
+-        let slot = self
+-            .entries
+-            .iter()
+-            .position(|entry| !entry.occupied)
+-            .ok_or(Error::Full)?;
+-        self.entries[slot] = OpenFileDescription {
+-            node,
+-            generation,
+-            offset: 0,
+-            refcount: 1,
+-            occupied: true,
+-        };
+-        Ok(OpenFileId(slot))
+-    }
+-
+-    fn get_mut(&mut self, id: OpenFileId) -> Result<&mut OpenFileDescription, Error> {
+-        self.entries
+-            .get_mut(id.0)
+-            .filter(|entry| entry.occupied && entry.refcount > 0)
+-            .ok_or(Error::InvalidDescriptor)
+-    }
+-
+-    fn clone_id(&mut self, id: OpenFileId) -> Result<OpenFileId, Error> {
+-        let entry = self.get_mut(id)?;
+-        entry.refcount = entry.refcount.checked_add(1).ok_or(Error::Full)?;
+-        Ok(id)
+-    }
+-
+-    fn drop_id(&mut self, id: OpenFileId) -> Result<(), Error> {
+-        let entry = self
+-            .entries
+-            .get_mut(id.0)
+-            .filter(|entry| entry.occupied)
+-            .ok_or(Error::InvalidDescriptor)?;
+-        if entry.refcount == 0 {
+-            return Err(Error::InvalidDescriptor);
+-        }
+-        entry.refcount -= 1;
+-        if entry.refcount == 0 {
+-            *entry = OpenFileDescription::empty();
+-        }
+-        Ok(())
+-    }
+-
+-    fn live_count(&self) -> usize {
+-        self.entries.iter().filter(|entry| entry.occupied).count()
+-    }
+-}
+-
+-static OPEN_FILES: Mutex<OpenFileTable> = Mutex::new(OpenFileTable::empty());
+-
+-/// Backwards-compatible alias used by older call sites during the transition.
+-/// Prefer `OpenFileId` for new code.
+-#[allow(dead_code)]
+-pub type OpenFile = OpenFileId;
+-
+-#[derive(Clone, Copy, PartialEq, Eq)]
+-pub enum Error {
+-    NotFound,
+-    InvalidDescriptor,
+-    InvalidPath,
+-    AlreadyExists,
+-    ReadOnly,
+-    Full,
+-    NotEmpty,
+-    Io,
+-}
+-
+-pub fn create_read_only(path: &str, data: &[u8]) -> Result<(), Error> {
+-    REGISTRY.lock().insert(path, data, false).map(|_| ())
+-}
+-
+-/// Import disk metadata without copying the file payload into VFS RAM storage.
+-pub fn create_disk_file(path: &str, length: usize) -> Result<(), Error> {
+-    create_disk_file_with_writable(path, length, false)
+-}
+-
+-/// Import disk metadata and set whether the VFS copy may be edited before
+-/// persistence. The payload stays lazy until first read or partial write.
+-pub fn create_disk_file_with_writable(
+-    path: &str,
+-    length: usize,
+-    writable: bool,
+-) -> Result<(), Error> {
+-    if length > NODE_CAPACITY {
+-        return Err(Error::Full);
+-    }
+-    let mut registry = REGISTRY.lock();
+-    let index = registry.insert(path, &[], writable)?;
+-    let mut backing = DiskPath {
+-        bytes: [0; PATH_CAPACITY],
+-        length: path.len(),
+-    };
+-    backing.bytes[..path.len()].copy_from_slice(path.as_bytes());
+-    registry.nodes[index].backing = Some(backing);
+-    registry.nodes[index].length = length;
+-    Ok(())
+-}
+-
+-/// Create or overwrite a writable file.
+-pub fn write_file(path: &str, data: &[u8]) -> Result<(), Error> {
+-    REGISTRY.lock().write_file(path, data)
+-}
+-
+-/// Validate removal without mutating the registry.
+-pub fn can_remove(path: &str) -> Result<(), Error> {
+-    REGISTRY.lock().can_remove(path)
+-}
+-
+-/// Preserve disk-backed bytes for an open file before its directory entry is
+-/// removed from the mounted disk. This keeps POSIX-style unlink semantics for
+-/// open descriptors even when the backing FAT32 name is about to disappear.
+-pub fn prepare_remove(path: &str) -> Result<(), Error> {
+-    validate_absolute_path(path)?;
+-    let files = OPEN_FILES.lock();
+-    let mut registry = REGISTRY.lock();
+-    let index = registry
+-        .nodes
+-        .iter()
+-        .position(|node| node.matches(path))
+-        .ok_or(Error::NotFound)?;
+-    registry.can_remove(path)?;
+-    if registry.nodes[index].kind == NodeKind::File
+-        && files
+-            .entries
+-            .iter()
+-            .any(|entry| entry.occupied && entry.node == index)
+-    {
+-        materialize_disk_node(&mut registry.nodes[index])?;
+-    }
+-    Ok(())
+-}
+-
+-/// Remove a file or empty directory.
+-pub fn remove(path: &str) -> Result<(), Error> {
+-    validate_absolute_path(path)?;
+-    let files = OPEN_FILES.lock();
+-    let mut registry = REGISTRY.lock();
+-    let index = registry
+-        .nodes
+-        .iter()
+-        .position(|node| node.matches(path))
+-        .ok_or(Error::NotFound)?;
+-    if registry.nodes[index].kind == NodeKind::File
+-        && files
+-            .entries
+-            .iter()
+-            .any(|entry| entry.occupied && entry.node == index)
+-    {
+-        // FAT32 backing is path-based. Preserve its bytes before releasing the
+-        // name so persisting a replacement cannot redirect an older open inode.
+-        materialize_disk_node(&mut registry.nodes[index])?;
+-        // An unnamed occupied node remains addressable through its open references.
+-        registry.nodes[index].path_length = 0;
+-        registry.nodes[index].path.fill(0);
+-        Ok(())
+-    } else {
+-        registry.remove(path)
+-    }
+-}
+-
+-pub fn can_rename(old: &str, new: &str) -> Result<(), Error> {
+-    REGISTRY.lock().validate_rename(old, new)
+-}
+-
+-pub fn rename(old: &str, new: &str) -> Result<(), Error> {
+-    REGISTRY.lock().rename(old, new)
+-}
+-
+-/// Create a directory. Parent must already exist.
+-pub fn mkdir(path: &str) -> Result<(), Error> {
+-    REGISTRY.lock().mkdir(path).map(|_| ())
+-}
+-
+-/// Query metadata for a path.
+-pub fn stat(path: &str) -> Result<Stat, Error> {
+-    REGISTRY.lock().stat(path)
+-}
+-
+-/// Read the `index`-th entry of a directory (0-based). Returns `NotFound` when exhausted.
+-pub fn readdir(path: &str, index: usize) -> Result<DirEntry, Error> {
+-    REGISTRY.lock().readdir(path, index)
+-}
+-
+-/// Open a **file** path and return a new open-file description (refcount = 1).
+-/// Directories cannot be opened for read/write; use `readdir` / `stat` instead.
+-pub fn open(path: &str) -> Result<OpenFileId, Error> {
+-    validate_absolute_path(path)?;
+-    let mut open_files = OPEN_FILES.lock();
+-    let registry = REGISTRY.lock();
+-    let node = registry
+-        .nodes
+-        .iter()
+-        .position(|node| node.matches(path) && node.kind == NodeKind::File)
+-        .ok_or(Error::NotFound)?;
+-    let generation = registry.generations[node];
+-    drop(registry);
+-    open_files.alloc(node, generation)
+-}
+-
+-/// Increase the reference count of an existing open-file description.
+-/// Used by fork (and future dup) so parent and child share the offset.
+-pub fn clone_open_file(id: OpenFileId) -> Result<OpenFileId, Error> {
+-    OPEN_FILES.lock().clone_id(id)
+-}
+-
+-/// Decrease the reference count. Frees the description when it reaches zero.
+-pub fn close_open_file(id: OpenFileId) -> Result<(), Error> {
+-    let mut files = OPEN_FILES.lock();
+-    let node = files.get_mut(id)?.node;
+-    files.drop_id(id)?;
+-    if !files
+-        .entries
+-        .iter()
+-        .any(|entry| entry.occupied && entry.node == node)
+-    {
+-        let mut registry = REGISTRY.lock();
+-        if registry.nodes[node].occupied && registry.nodes[node].path_length == 0 {
+-            registry.generations[node] = registry.generations[node]
+-                .checked_add(1)
+-                .ok_or(Error::Full)?;
+-            registry.nodes[node].occupied = false;
+-            registry.nodes[node].length = 0;
+-            registry.nodes[node].backing = None;
+-            registry.nodes[node].data.fill(0);
+-        }
+-    }
+-    Ok(())
+-}
+-
+-/// Capture node identity so a lazy fault cannot read a reused VFS slot.
+-pub fn file_identity(id: OpenFileId) -> Result<(usize, u64, u64), Error> {
+-    let mut table = OPEN_FILES.lock();
+-    let entry = table.get_mut(id)?;
+-    let registry = REGISTRY.lock();
+-    if !registry.nodes[entry.node].occupied || registry.generations[entry.node] != entry.generation
+-    {
+-        return Err(Error::InvalidDescriptor);
+-    }
+-    Ok((entry.node, entry.generation, registry.versions[entry.node]))
+-}
+-fn materialize_disk_node(node: &mut Node) -> Result<(), Error> {
+-    if let Some(backing) = node.backing {
+-        let count = crate::task::file_fault_io(|| {
+-            crate::storage::read_disk_file(backing.as_str(), 0, &mut node.data[..node.length])
+-        })
+-        .map_err(|_| Error::Io)?;
+-        if count != node.length {
+-            return Err(Error::Io);
+-        }
+-        node.backing = None;
+-    }
+-    Ok(())
+-}
+-/// Writable shared disk mappings keep a RAM inode image for bounded writeback.
+-/// The capability check is performed by the syscall before reaching this API.
+-pub fn prepare_shared_file(id: OpenFileId) -> Result<(), Error> {
+-    let mut table = OPEN_FILES.lock();
+-    let entry = table.get_mut(id)?;
+-    let mut registry = REGISTRY.lock();
+-    let node = &mut registry.nodes[entry.node];
+-    if !node.occupied {
+-        return Err(Error::InvalidDescriptor);
+-    }
+-    if !node.writable {
+-        if node.backing.is_none() {
+-            return Err(Error::ReadOnly);
+-        }
+-        materialize_disk_node(node)?;
+-        node.writable = true;
+-    }
+-    Ok(())
+-}
+-pub fn write_mapping_at(id: OpenFileId, offset: usize, bytes: &[u8]) -> Result<(), Error> {
+-    let mut table = OPEN_FILES.lock();
+-    let entry = table.get_mut(id)?;
+-    let mut registry = REGISTRY.lock();
+-    let node = &mut registry.nodes[entry.node];
+-    if !node.occupied || !node.writable {
+-        return Err(Error::ReadOnly);
+-    }
+-    if offset
+-        .checked_add(bytes.len())
+-        .is_none_or(|end| end > node.length)
+-    {
+-        return Err(Error::Full);
+-    }
+-    node.data[offset..offset + bytes.len()].copy_from_slice(bytes);
+-    registry.versions[entry.node] = registry.versions[entry.node].wrapping_add(1);
+-    crate::file_frames::update(entry.node, entry.generation, offset, bytes);
+-    Ok(())
+-}
+-pub fn persist_mapping(id: OpenFileId) -> Result<(), Error> {
+-    let mut path = [0; PATH_CAPACITY];
+-    let length = {
+-        let mut files = OPEN_FILES.lock();
+-        let entry = files.get_mut(id)?;
+-        let registry = REGISTRY.lock();
+-        let node = &registry.nodes[entry.node];
+-        path[..node.path_length].copy_from_slice(&node.path[..node.path_length]);
+-        node.path_length
+-    };
+-    let path = core::str::from_utf8(&path[..length]).map_err(|_| Error::InvalidPath)?;
+-    if path.starts_with("/mnt/") {
+-        crate::storage::persist_path(path).map_err(|_| Error::Io)?;
+-    }
+-    Ok(())
+-}
+-
+-pub fn file_generation(id: OpenFileId) -> Result<u64, Error> {
+-    let mut table = OPEN_FILES.lock();
+-    let entry = table.get_mut(id)?;
+-    let registry = REGISTRY.lock();
+-    if !registry.nodes[entry.node].occupied || registry.generations[entry.node] != entry.generation
+-    {
+-        return Err(Error::InvalidDescriptor);
+-    }
+-    Ok(entry.generation)
+-}
+-pub fn read_mapping_at(
+-    id: OpenFileId,
+-    generation: u64,
+-    offset: usize,
+-    buffer: &mut [u8],
+-) -> Result<usize, Error> {
+-    read_from(id, Some(offset), buffer, Some(generation))
+-}
+-
+-pub fn file_size(id: OpenFileId) -> Result<usize, Error> {
+-    let mut table = OPEN_FILES.lock();
+-    let index = table.get_mut(id)?.node;
+-    REGISTRY
+-        .lock()
+-        .nodes
+-        .get(index)
+-        .filter(|node| node.occupied && node.kind == NodeKind::File)
+-        .map(|node| node.length)
+-        .ok_or(Error::InvalidDescriptor)
+-}
+-
+-pub fn open_file_path_starts_with(id: OpenFileId, prefix: &str) -> Result<bool, Error> {
+-    let mut table = OPEN_FILES.lock();
+-    let entry = table.get_mut(id)?;
+-    let registry = REGISTRY.lock();
+-    let node = registry
+-        .nodes
+-        .get(entry.node)
+-        .filter(|node| node.occupied)
+-        .ok_or(Error::InvalidDescriptor)?;
+-    Ok(node.path_str().starts_with(prefix))
+-}
+-/// Positional reads do not alter the shared open-file offset.
+-pub fn read_at(id: OpenFileId, offset: usize, buffer: &mut [u8]) -> Result<usize, Error> {
+-    read_from(id, Some(offset), buffer, None)
+-}
+-
+-pub fn read(id: OpenFileId, buffer: &mut [u8]) -> Result<usize, Error> {
+-    read_from(id, None, buffer, None)
+-}
+-
+-fn read_from(
+-    id: OpenFileId,
+-    position: Option<usize>,
+-    buffer: &mut [u8],
+-    generation: Option<u64>,
+-) -> Result<usize, Error> {
+-    let mut table = OPEN_FILES.lock();
+-    let entry = table.get_mut(id)?;
+-    let node_index = entry.node;
+-    let offset = position.unwrap_or(entry.offset);
+-
+-    let registry = REGISTRY.lock();
+-    if generation.is_some_and(|value| registry.generations[node_index] != value) {
+-        return Err(Error::InvalidDescriptor);
+-    }
+-    let node = registry
+-        .nodes
+-        .get(node_index)
+-        .filter(|node| node.occupied)
+-        .ok_or(Error::InvalidDescriptor)?;
+-    if offset > node.length {
+-        return Err(Error::InvalidDescriptor);
+-    }
+-    let count = core::cmp::min(node.length - offset, buffer.len());
+-    if let Some(backing) = node.backing {
+-        drop(registry);
+-        let read = crate::storage::read_disk_file(backing.as_str(), offset, &mut buffer[..count])
+-            .map_err(|_| Error::Io)?;
+-        if read != count {
+-            return Err(Error::Io);
+-        }
+-    } else {
+-        buffer[..count].copy_from_slice(&node.data[offset..offset + count]);
+-        drop(registry);
+-    }
+-
+-    crate::file_frames::overlay(node_index, entry.generation, offset, &mut buffer[..count]);
+-    let entry = table.get_mut(id)?;
+-    if position.is_none() {
+-        entry.offset = offset + count;
+-    }
+-    Ok(count)
+-}
+-
+-pub fn read_all(path: &str, buffer: &mut [u8]) -> Result<usize, Error> {
+-    let file = open(path)?;
+-    let result = (|| {
+-        let size = file_size(file)?;
+-        if size > buffer.len() {
+-            return Err(Error::Full);
+-        }
+-        read_at(file, 0, &mut buffer[..size])
+-    })();
+-    let _ = close_open_file(file);
+-    result
+-}
+-
+-pub fn seek(id: OpenFileId, offset: usize) -> Result<usize, Error> {
+-    let mut table = OPEN_FILES.lock();
+-    let entry = table.get_mut(id)?;
+-    let registry = REGISTRY.lock();
+-    let node = registry
+-        .nodes
+-        .get(entry.node)
+-        .filter(|n| n.occupied)
+-        .ok_or(Error::NotFound)?;
+-    let max = node.length;
+-    drop(registry);
+-    // Allow seek to end (offset == length) for append; not past EOF beyond length for simplicity.
+-    let pos = core::cmp::min(offset, max);
+-    entry.offset = pos;
+-    Ok(pos)
+-}
+-
+-pub fn write(id: OpenFileId, buffer: &[u8]) -> Result<usize, Error> {
+-    let mut table = OPEN_FILES.lock();
+-    let entry = table.get_mut(id)?;
+-    let node_index = entry.node;
+-    let offset = entry.offset;
+-
+-    let mut registry = REGISTRY.lock();
+-    let node = registry
+-        .nodes
+-        .get_mut(node_index)
+-        .filter(|node| node.occupied)
+-        .ok_or(Error::InvalidDescriptor)?;
+-    if !node.writable {
+-        return Err(Error::ReadOnly);
+-    }
+-    materialize_disk_node(node)?;
+-    if offset > node.length {
+-        return Err(Error::InvalidDescriptor);
+-    }
+-    let count = core::cmp::min(buffer.len(), NODE_CAPACITY - offset);
+-    node.data[offset..offset + count].copy_from_slice(&buffer[..count]);
+-    let new_offset = offset + count;
+-    node.length = core::cmp::max(node.length, new_offset);
+-    let short_write = count < buffer.len();
+-    registry.versions[node_index] = registry.versions[node_index].wrapping_add(1);
+-    crate::file_frames::update(node_index, entry.generation, offset, &buffer[..count]);
+-    drop(registry);
+-
+-    let entry = table.get_mut(id)?;
+-    entry.offset = new_offset;
+-    if short_write {
+-        return Err(Error::Full);
+-    }
+-    Ok(count)
+-}
+-
+-/// Invoke `f` for every occupied file node whose path starts with `prefix`.
+-/// Directories are skipped. Intended for storage layer discovery under `/mnt`.
+-pub fn for_each_file_with_prefix<F>(prefix: &str, mut f: F)
+-where
+-    F: FnMut(&str),
+-{
+-    let registry = REGISTRY.lock();
+-    for node in registry.nodes.iter() {
+-        if !node.occupied || node.kind != NodeKind::File {
+-            continue;
+-        }
+-        let path = node.path_str();
+-        if path.starts_with(prefix) {
+-            f(path);
+-        }
+-    }
+-}
+-
+-pub fn node_count() -> usize {
+-    REGISTRY.lock().count()
+-}
+-
+-pub fn open_file_description_count() -> usize {
+-    OPEN_FILES.lock().live_count()
+-}
+-
+-pub fn self_test() -> bool {
+-    // The registry exceeds the 1 MiB boot stack. Reserve scratch storage
+-    // statically and reset one node at a time so repeated self-tests are safe.
+-    static SCRATCH: Mutex<Registry> = Mutex::new(Registry::empty());
+-    let mut scratch = SCRATCH.lock();
+-    for node in &mut scratch.nodes {
+-        *node = Node::empty();
+-    }
+-    // Parent directories required before inserting files.
+-    let root_ok = scratch.mkdir("/").is_err(); // root cannot be created via mkdir on empty
+-    scratch.nodes[0] = Node::directory(b"/");
+-    let mnt_ok = scratch.mkdir("/mnt") == Ok(1);
+-    let inserted = scratch.insert("/mnt/test.txt", b"mounted", false).is_ok();
+-    let duplicate = scratch.insert("/mnt/test.txt", b"again", false) == Err(Error::AlreadyExists);
+-    let invalid_path = scratch.insert("relative", b"bad", false) == Err(Error::InvalidPath);
+-    let no_parent = scratch.insert("/missing/file", b"x", false) == Err(Error::NotFound);
+-
+-    let path_semantics = path_semantics_self_test(&mut scratch);
+-    let disk_write_semantics = disk_write_semantics_self_test();
+-    let backing_rename_semantics = backing_rename_semantics_self_test();
+-
+-    // Directory listing on the live registry.
+-    let root_stat = matches!(
+-        stat("/"),
+-        Ok(Stat {
+-            kind: NodeKind::Directory,
+-            ..
+-        })
+-    );
+-    let etc_stat = matches!(
+-        stat("/etc"),
+-        Ok(Stat {
+-            kind: NodeKind::Directory,
+-            ..
+-        })
+-    );
+-    let file_stat = matches!(
+-        stat("/etc/motd"),
+-        Ok(Stat {
+-            kind: NodeKind::File,
+-            size: 24,
+-            writable: false,
+-        })
+-    );
+-
+-    // / should contain at least etc and tmp.
+-    let mut found_etc = false;
+-    let mut found_tmp = false;
+-    let mut index = 0;
+-    while let Ok(entry) = readdir("/", index) {
+-        if entry.name_str() == "etc" {
+-            found_etc = true;
+-        }
+-        if entry.name_str() == "tmp" {
+-            found_tmp = true;
+-        }
+-        index += 1;
+-        if index > 16 {
+-            break;
+-        }
+-    }
+-    let readdir_ok = found_etc && found_tmp;
+-
+-    let Ok(writer) = open("/tmp/vfs-self-test") else {
+-        return false;
+-    };
+-    let payload = b"wovenhat-vfs";
+-    if write(writer, payload) != Ok(payload.len()) {
+-        let _ = close_open_file(writer);
+-        return false;
+-    }
+-
+-    // Shared offset: cloning the description must observe the advanced offset.
+-    let Ok(shared) = clone_open_file(writer) else {
+-        let _ = close_open_file(writer);
+-        return false;
+-    };
+-    let mut probe = [0; 4];
+-    let shared_offset_advanced = read(shared, &mut probe) == Ok(0);
+-
+-    // Independent open starts at offset 0 again.
+-    let Ok(reader) = open("/tmp/vfs-self-test") else {
+-        let _ = close_open_file(shared);
+-        let _ = close_open_file(writer);
+-        return false;
+-    };
+-    let mut buffer = [0; 12];
+-    let round_trip = read(reader, &mut buffer) == Ok(payload.len()) && buffer == *payload;
+-
+-    let Ok(protected) = open("/etc/motd") else {
+-        let _ = close_open_file(reader);
+-        let _ = close_open_file(shared);
+-        let _ = close_open_file(writer);
+-        return false;
+-    };
+-    let mut complete = [0; 32];
+-    let read_only_ok = write(protected, b"x") == Err(Error::ReadOnly)
+-        && read_all("/etc/motd", &mut complete) == Ok(24)
+-        && &complete[..24] == b"Welcome to WovenHat OS.\n";
+-
+-    // Directories cannot be opened as files.
+-    let dir_open_rejected = open("/etc").is_err();
+-
+-    // A descriptor opened before a directory move still reads the same file.
+-    let moved = rename("/tmp", "/vfs-moved").is_ok();
+-    let handle_survives = moved
+-        && seek(reader, 0) == Ok(0)
+-        && read(reader, &mut buffer) == Ok(payload.len())
+-        && buffer == *payload
+-        && stat("/tmp/vfs-self-test").is_err()
+-        && stat("/vfs-moved/vfs-self-test").is_ok();
+-    let restored = moved && rename("/vfs-moved", "/tmp").is_ok();
+-
+-    let _ = close_open_file(protected);
+-    let _ = close_open_file(reader);
+-    let _ = close_open_file(shared);
+-    let _ = close_open_file(writer);
+-
+-    // After closing all clones the description table should release the slots.
+-    let cleaned = open_file_description_count() == 0;
+-
+-    // Boot registry: /, /etc, /tmp, motd, version, vfs-self-test
+-    let boot_nodes = node_count() == 8;
+-
+-    root_ok
+-        && mnt_ok
+-        && inserted
+-        && duplicate
+-        && invalid_path
+-        && no_parent
+-        && path_semantics
+-        && disk_write_semantics
+-        && backing_rename_semantics
+-        && root_stat
+-        && etc_stat
+-        && file_stat
+-        && readdir_ok
+-        && shared_offset_advanced
+-        && round_trip
+-        && read_only_ok
+-        && dir_open_rejected
+-        && handle_survives
+-        && restored
+-        && cleaned
+-        && boot_nodes
+-}
+-
+-fn backing_rename_semantics_self_test() -> bool {
+-    static SCRATCH: Mutex<Registry> = Mutex::new(Registry::empty());
+-    let mut fs = SCRATCH.lock();
+-    for node in &mut fs.nodes {
+-        *node = Node::empty();
+-    }
+-    fs.nodes[0] = Node::directory(b"/");
+-    if fs.mkdir("/mnt").is_err()
+-        || fs.mkdir("/mnt/docs").is_err()
+-        || fs.insert("/mnt/docs/a.txt", &[], true).is_err()
+-    {
+-        return false;
+-    }
+-    let Some(index) = fs
+-        .nodes
+-        .iter()
+-        .position(|node| node.matches("/mnt/docs/a.txt"))
+-    else {
+-        return false;
+-    };
+-    set_scratch_backing(&mut fs.nodes[index], "/mnt/docs/a.txt", 7);
+-    fs.rename("/mnt/docs", "/mnt/archive").is_ok()
+-        && fs.nodes[index].matches("/mnt/archive/a.txt")
+-        && fs.nodes[index]
+-            .backing
+-            .is_some_and(|backing| backing.as_str() == "/mnt/archive/a.txt")
+-}
+-
+-fn disk_write_semantics_self_test() -> bool {
+-    static SCRATCH: Mutex<Registry> = Mutex::new(Registry::empty());
+-    let mut fs = SCRATCH.lock();
+-    for node in &mut fs.nodes {
+-        *node = Node::empty();
+-    }
+-    fs.nodes[0] = Node::directory(b"/");
+-    if fs.mkdir("/mnt").is_err() {
+-        return false;
+-    }
+-
+-    let Ok(ro_index) = fs.insert("/mnt/ro.txt", &[], false) else {
+-        return false;
+-    };
+-    set_scratch_backing(&mut fs.nodes[ro_index], "/mnt/ro.txt", 5);
+-    let ro_protected = fs.write_file("/mnt/ro.txt", b"new") == Err(Error::ReadOnly)
+-        && fs.nodes[ro_index].backing.is_some()
+-        && fs.nodes[ro_index].length == 5;
+-
+-    let Ok(rw_index) = fs.insert("/mnt/rw.txt", &[], true) else {
+-        return false;
+-    };
+-    set_scratch_backing(&mut fs.nodes[rw_index], "/mnt/rw.txt", 5);
+-    let rw_overwritten = fs.write_file("/mnt/rw.txt", b"new").is_ok()
+-        && fs.nodes[rw_index].backing.is_none()
+-        && fs.nodes[rw_index].length == 3
+-        && &fs.nodes[rw_index].data[..3] == b"new";
+-
+-    ro_protected && rw_overwritten
+-}
+-
+-fn set_scratch_backing(node: &mut Node, path: &str, length: usize) {
+-    let mut backing = DiskPath {
+-        bytes: [0; PATH_CAPACITY],
+-        length: path.len(),
+-    };
+-    backing.bytes[..path.len()].copy_from_slice(path.as_bytes());
+-    node.backing = Some(backing);
+-    node.length = length;
+-}
+-
+-/// Exercise path semantics on the statically allocated scratch registry.
+-fn path_semantics_self_test(fs: &mut Registry) -> bool {
+-    for path in [
+-        "",
+-        "relative",
+-        "//home",
+-        "/home/",
+-        "/home//x",
+-        "/home/./x",
+-        "/home/../x",
+-        "/nul\0x",
+-    ] {
+-        if fs.mkdir(path) != Err(Error::InvalidPath)
+-            || fs.remove(path) != Err(Error::InvalidPath)
+-            || !matches!(fs.stat(path), Err(Error::InvalidPath))
+-            || !matches!(fs.readdir(path, 0), Err(Error::InvalidPath))
+-            || fs.rename(path, "/valid") != Err(Error::InvalidPath)
+-            || fs.rename("/mnt", path) != Err(Error::InvalidPath)
+-            || fs.write_file(path, b"x") != Err(Error::InvalidPath)
+-            || open(path) != Err(Error::InvalidPath)
+-            || read_all(path, &mut [0; 1]) != Err(Error::InvalidPath)
+-        {
+-            return false;
+-        }
+-    }
+-    for path in [
+-        "/home",
+-        "/home/anthony",
+-        "/home/anthony/docs",
+-        "/home/anthony2",
+-    ] {
+-        if fs.mkdir(path).is_err() {
+-            return false;
+-        }
+-    }
+-    let Ok(file_index) = fs.insert("/home/anthony/docs/a.txt", b"payload", true) else {
+-        return false;
+-    };
+-    let count = fs.count();
+-    if fs.remove("/home/anthony") != Err(Error::NotEmpty)
+-        || fs.rename("/home/anthony", "/missing/user") != Err(Error::NotFound)
+-        || fs.rename("/home/anthony", "/mnt/test.txt/user") != Err(Error::NotFound)
+-        || fs.rename("/home/anthony", "/home/anthony/docs/user") != Err(Error::InvalidPath)
+-        || fs.rename("/home/anthony", "/home/anthony2") != Err(Error::AlreadyExists)
+-        || fs.rename("/", "/root") != Err(Error::ReadOnly)
+-        || fs.rename("/home", "/") != Err(Error::ReadOnly)
+-        || fs.rename("/missing", "/missing") != Err(Error::NotFound)
+-        || fs.rename("/home/anthony", "/home/anthony").is_err()
+-        || !fs.nodes[file_index].matches("/home/anthony/docs/a.txt")
+-        || fs.count() != count
+-    {
+-        return false;
+-    }
+-    if fs.rename("/home/anthony", "/home/user").is_err()
+-        || fs.stat("/home/anthony").is_ok()
+-        || fs.stat("/home/anthony/docs").is_ok()
+-        || fs.stat("/home/anthony/docs/a.txt").is_ok()
+-        || fs.stat("/home/user").is_err()
+-        || fs.stat("/home/user/docs").is_err()
+-        || fs.stat("/home/anthony2").is_err()
+-        || !fs.nodes[file_index].matches("/home/user/docs/a.txt")
+-        || &fs.nodes[file_index].data[..7] != b"payload"
+-        || !fs.nodes[file_index].writable
+-        || fs.count() != count
+-        || !matches!(fs.readdir("/home/user", 0), Ok(entry) if entry.name_str() == "docs")
+-        || !matches!(fs.readdir("/home/user/docs", 0), Ok(entry) if entry.name_str() == "a.txt")
+-    {
+-        return false;
+-    }
+-    // Destination itself fits, but its descendants would exceed path capacity.
+-    let parent = alloc::format!("/{}", "p".repeat(60));
+-    let destination = alloc::format!("{}/{}", parent, "d".repeat(60));
+-    if fs.mkdir(&parent).is_err()
+-        || fs.rename("/home/user", &destination) != Err(Error::InvalidPath)
+-        || fs.stat(&destination).is_ok()
+-        || fs.stat("/home/user/docs").is_err()
+-        || !fs.nodes[file_index].matches("/home/user/docs/a.txt")
+-    {
+-        return false;
+-    }
+-    // Exactly PATH_CAPACITY bytes is valid for both insertion and rename.
+-    let parent = alloc::format!("/{}", "p".repeat(63));
+-    let boundary = alloc::format!("{}/{}", parent, "a".repeat(63));
+-    let renamed = alloc::format!("{}/{}", parent, "b".repeat(63));
+-    let oversized = alloc::format!("{}/{}", parent, "c".repeat(64));
+-    let long_component = alloc::format!("/{}", "x".repeat(MAX_DIR_NAME + 1));
+-    if fs.mkdir(&parent).is_err()
+-        || fs.mkdir(&boundary).is_err()
+-        || fs.rename(&boundary, &renamed).is_err()
+-        || fs.mkdir(&oversized) != Err(Error::InvalidPath)
+-        || fs.mkdir(&long_component) != Err(Error::InvalidPath)
+-        || fs.rename(&renamed, &oversized) != Err(Error::InvalidPath)
+-        || fs.stat(&renamed).is_err()
+-    {
+-        return false;
+-    }
+-    // Move to another parent, then shorten the prefix, retaining file identity.
+-    fs.rename("/home/user/docs", "/mnt/docs").is_ok()
+-        && fs.rename("/mnt/docs/a.txt", "/mnt/docs/b.txt").is_ok()
+-        && fs.rename("/mnt/docs", "/d").is_ok()
+-        && fs.nodes[file_index].matches("/d/b.txt")
+-        && fs.remove("/d") == Err(Error::NotEmpty)
+-        && fs.remove("/d/b.txt").is_ok()
+-        && fs.remove("/d").is_ok()
+-        && fs.remove("/home/user").is_ok()
+-}
++use spin::Mutex;
++
++use crate::config::{
++    MAX_OPEN_FILES, MAX_PATH_SIZE as PATH_CAPACITY, MAX_VFS_NODES as MAX_NODES, VFS_NODE_CAPACITY,
++};
++
++pub const NODE_CAPACITY: usize = VFS_NODE_CAPACITY;
++
++/// Maximum bytes returned for a single directory entry name (excluding NUL).
++pub const MAX_DIR_NAME: usize = 64;
++
++#[derive(Clone, Copy, PartialEq, Eq)]
++pub enum NodeKind {
++    File,
++    Directory,
++}
++
++#[derive(Clone, Copy)]
++struct DiskPath {
++    bytes: [u8; PATH_CAPACITY],
++    length: usize,
++}
++impl DiskPath {
++    fn as_str(&self) -> &str {
++        core::str::from_utf8(&self.bytes[..self.length]).unwrap_or("")
++    }
++}
++
++#[derive(Clone, Copy)]
++struct Node {
++    path: [u8; PATH_CAPACITY],
++    path_length: usize,
++    data: [u8; NODE_CAPACITY],
++    backing: Option<DiskPath>,
++    length: usize,
++    writable: bool,
++    kind: NodeKind,
++    occupied: bool,
++}
++
++impl Node {
++    const fn empty() -> Self {
++        Self {
++            path: [0; PATH_CAPACITY],
++            path_length: 0,
++            data: [0; NODE_CAPACITY],
++            backing: None,
++            length: 0,
++            writable: false,
++            kind: NodeKind::File,
++            occupied: false,
++        }
++    }
++
++    const fn with_data(path: &[u8], data: &[u8], writable: bool) -> Self {
++        let mut node = Self::empty();
++        let mut index = 0;
++        while index < path.len() {
++            node.path[index] = path[index];
++            index += 1;
++        }
++        index = 0;
++        while index < data.len() {
++            node.data[index] = data[index];
++            index += 1;
++        }
++        node.path_length = path.len();
++        node.length = data.len();
++        node.writable = writable;
++        node.kind = NodeKind::File;
++        node.occupied = true;
++        node
++    }
++
++    const fn directory(path: &[u8]) -> Self {
++        let mut node = Self::empty();
++        let mut index = 0;
++        while index < path.len() {
++            node.path[index] = path[index];
++            index += 1;
++        }
++        node.path_length = path.len();
++        node.kind = NodeKind::Directory;
++        node.writable = true;
++        node.occupied = true;
++        node
++    }
++
++    fn matches(&self, path: &str) -> bool {
++        self.occupied && &self.path[..self.path_length] == path.as_bytes()
++    }
++
++    fn path_str(&self) -> &str {
++        core::str::from_utf8(&self.path[..self.path_length]).unwrap_or("")
++    }
++}
++
++/// Metadata returned by `stat`.
++#[derive(Clone, Copy)]
++pub struct Stat {
++    pub kind: NodeKind,
++    pub size: usize,
++    pub writable: bool,
++}
++
++/// One directory entry returned by `readdir`.
++#[derive(Clone, Copy)]
++pub struct DirEntry {
++    pub name: [u8; MAX_DIR_NAME],
++    pub name_length: usize,
++    pub kind: NodeKind,
++}
++
++impl DirEntry {
++    pub fn name_str(&self) -> &str {
++        core::str::from_utf8(&self.name[..self.name_length]).unwrap_or("")
++    }
++}
++
++struct Registry {
++    versions: [u64; MAX_NODES],
++    generations: [u64; MAX_NODES],
++    nodes: [Node; MAX_NODES],
++}
++
++impl Registry {
++    const fn boot() -> Self {
++        let mut nodes = [Node::empty(); MAX_NODES];
++        // Directories first so path walking can find parents.
++        nodes[0] = Node::directory(b"/");
++        nodes[1] = Node::directory(b"/etc");
++        nodes[2] = Node::directory(b"/tmp");
++        nodes[3] = Node::directory(b"/mnt");
++        nodes[4] = Node::directory(b"/bin");
++        nodes[5] = Node::with_data(b"/etc/motd", b"Welcome to WovenHat OS.\n", false);
++        nodes[6] = Node::with_data(b"/etc/version", b"WovenHat kernel 0.8.0 Multicore Foundation\n", false);
++        nodes[7] = Node::with_data(b"/tmp/vfs-self-test", b"", true);
++        Self {
++            nodes,
++            versions: [0; MAX_NODES],
++            generations: [0; MAX_NODES],
++        }
++    }
++
++    const fn empty() -> Self {
++        Self {
++            nodes: [Node::empty(); MAX_NODES],
++            versions: [0; MAX_NODES],
++            generations: [0; MAX_NODES],
++        }
++    }
++
++    fn insert(&mut self, path: &str, data: &[u8], writable: bool) -> Result<usize, Error> {
++        validate_absolute_path(path)?;
++        if data.len() > NODE_CAPACITY {
++            return Err(Error::Full);
++        }
++        if self.nodes.iter().any(|node| node.matches(path)) {
++            return Err(Error::AlreadyExists);
++        }
++        // Parent directory must exist (except for root itself).
++        if path != "/" {
++            let parent = parent_path(path).ok_or(Error::InvalidPath)?;
++            if !self
++                .nodes
++                .iter()
++                .any(|n| n.matches(parent) && n.kind == NodeKind::Directory)
++            {
++                return Err(Error::NotFound);
++            }
++        }
++        let index = self
++            .nodes
++            .iter()
++            .position(|node| !node.occupied)
++            .ok_or(Error::Full)?;
++        let node = &mut self.nodes[index];
++        node.path[..path.len()].copy_from_slice(path.as_bytes());
++        node.path_length = path.len();
++        node.data[..data.len()].copy_from_slice(data);
++        node.length = data.len();
++        node.writable = writable;
++        node.kind = NodeKind::File;
++        node.occupied = true;
++        Ok(index)
++    }
++
++    fn mkdir(&mut self, path: &str) -> Result<usize, Error> {
++        validate_absolute_path(path)?;
++        if path == "/" {
++            return Err(Error::AlreadyExists);
++        }
++        if self.nodes.iter().any(|node| node.matches(path)) {
++            return Err(Error::AlreadyExists);
++        }
++        let parent = parent_path(path).ok_or(Error::InvalidPath)?;
++        if !self
++            .nodes
++            .iter()
++            .any(|n| n.matches(parent) && n.kind == NodeKind::Directory)
++        {
++            return Err(Error::NotFound);
++        }
++        let index = self
++            .nodes
++            .iter()
++            .position(|node| !node.occupied)
++            .ok_or(Error::Full)?;
++        let node = &mut self.nodes[index];
++        *node = Node::directory(path.as_bytes());
++        // directory() copies from a slice; path may be longer than what const fn saw.
++        node.path[..path.len()].copy_from_slice(path.as_bytes());
++        node.path_length = path.len();
++        Ok(index)
++    }
++
++    fn count(&self) -> usize {
++        self.nodes
++            .iter()
++            .filter(|node| node.occupied && node.path_length != 0)
++            .count()
++    }
++
++    fn removable_index(&self, path: &str) -> Result<usize, Error> {
++        validate_absolute_path(path)?;
++        if path == "/" {
++            return Err(Error::ReadOnly);
++        }
++        let index = self
++            .nodes
++            .iter()
++            .position(|node| node.matches(path))
++            .ok_or(Error::NotFound)?;
++        let node = &self.nodes[index];
++        // Refuse to remove non-empty directories.
++        if node.kind == NodeKind::Directory {
++            let dir_path = node.path_str();
++            for other in self.nodes.iter().filter(|n| n.occupied) {
++                if immediate_child_name(dir_path, other.path_str()).is_some() {
++                    return Err(Error::NotEmpty);
++                }
++            }
++        }
++        Ok(index)
++    }
++
++    fn can_remove(&self, path: &str) -> Result<(), Error> {
++        self.removable_index(path).map(|_| ())
++    }
++
++    fn remove(&mut self, path: &str) -> Result<(), Error> {
++        let index = self.removable_index(path)?;
++        self.generations[index] = self.generations[index].checked_add(1).ok_or(Error::Full)?;
++        let node = &mut self.nodes[index];
++        node.occupied = false;
++        node.path_length = 0;
++        node.length = 0;
++        node.backing = None;
++        node.writable = false;
++        node.data.fill(0);
++        node.path.fill(0);
++        Ok(())
++    }
++
++    fn validate_rename(&self, old: &str, new: &str) -> Result<(), Error> {
++        validate_absolute_path(old)?;
++        validate_absolute_path(new)?;
++        if old == "/" || new == "/" {
++            return Err(Error::ReadOnly);
++        }
++        let index = self
++            .nodes
++            .iter()
++            .position(|n| n.matches(old))
++            .ok_or(Error::NotFound)?;
++        if old == new {
++            return Ok(());
++        }
++        if self.nodes.iter().any(|n| n.matches(new)) {
++            return Err(Error::AlreadyExists);
++        }
++        if descendant_suffix(old, new).is_some() {
++            return Err(Error::InvalidPath);
++        }
++        let parent = parent_path(new).ok_or(Error::InvalidPath)?;
++        if !self
++            .nodes
++            .iter()
++            .any(|n| n.matches(parent) && n.kind == NodeKind::Directory)
++        {
++            return Err(Error::NotFound);
++        }
++        let directory = self.nodes[index].kind == NodeKind::Directory;
++        // Preflight every resulting path before changing any node. Keep node indices
++        // stable so existing open-file descriptions continue to reference their data.
++        for node in self.nodes.iter().filter(|n| n.occupied) {
++            if directory {
++                if let Some(suffix) = descendant_suffix(old, node.path_str()) {
++                    if new.len() + suffix.len() > PATH_CAPACITY {
++                        return Err(Error::InvalidPath);
++                    }
++                }
++            }
++            if let Some(backing) = node.backing {
++                if directory {
++                    if let Some(suffix) = descendant_suffix(old, backing.as_str()) {
++                        if new.len() + suffix.len() > PATH_CAPACITY {
++                            return Err(Error::InvalidPath);
++                        }
++                    }
++                } else if backing.as_str() == old && new.len() > PATH_CAPACITY {
++                    return Err(Error::InvalidPath);
++                }
++            }
++        }
++        Ok(())
++    }
++
++    fn rename(&mut self, old: &str, new: &str) -> Result<(), Error> {
++        self.validate_rename(old, new)?;
++        if old == new {
++            return Ok(());
++        }
++        let index = self
++            .nodes
++            .iter()
++            .position(|n| n.matches(old))
++            .ok_or(Error::NotFound)?;
++        let directory = self.nodes[index].kind == NodeKind::Directory;
++        for node in self.nodes.iter_mut().filter(|n| n.occupied) {
++            let suffix_start = if node.matches(old)
++                || (directory && descendant_suffix(old, node.path_str()).is_some())
++            {
++                Some(old.len())
++            } else {
++                None
++            };
++            if let Some(start) = suffix_start {
++                let suffix_len = node.path_length - start;
++                node.path.copy_within(start..node.path_length, new.len());
++                node.path[..new.len()].copy_from_slice(new.as_bytes());
++                node.path_length = new.len() + suffix_len;
++                node.path[node.path_length..].fill(0);
++            }
++
++            let backing_suffix_start = node.backing.as_ref().and_then(|backing| {
++                let backing_path = backing.as_str();
++                if backing_path == old
++                    || (directory && descendant_suffix(old, backing_path).is_some())
++                {
++                    Some(old.len())
++                } else {
++                    None
++                }
++            });
++            if let (Some(backing), Some(start)) = (node.backing.as_mut(), backing_suffix_start) {
++                let suffix_len = backing.length - start;
++                backing.bytes.copy_within(start..backing.length, new.len());
++                backing.bytes[..new.len()].copy_from_slice(new.as_bytes());
++                backing.length = new.len() + suffix_len;
++                backing.bytes[backing.length..].fill(0);
++            }
++        }
++        Ok(())
++    }
++
++    fn write_file(&mut self, path: &str, data: &[u8]) -> Result<(), Error> {
++        validate_absolute_path(path)?;
++        if data.len() > NODE_CAPACITY {
++            return Err(Error::Full);
++        }
++        if let Some(index) = self.nodes.iter().position(|n| n.matches(path)) {
++            let node = &mut self.nodes[index];
++            if node.kind != NodeKind::File {
++                return Err(Error::AlreadyExists);
++            }
++            if !node.writable {
++                return Err(Error::ReadOnly);
++            }
++            node.backing = None;
++            node.data.fill(0);
++            node.data[..data.len()].copy_from_slice(data);
++            node.length = data.len();
++            self.versions[index] = self.versions[index].wrapping_add(1);
++            crate::file_frames::replace(index, self.generations[index], data);
++            return Ok(());
++        }
++        // Create new writable file (parent must exist).
++        self.insert(path, data, true).map(|_| ())
++    }
++
++    fn stat(&self, path: &str) -> Result<Stat, Error> {
++        validate_absolute_path(path)?;
++        let node = self
++            .nodes
++            .iter()
++            .find(|node| node.matches(path))
++            .ok_or(Error::NotFound)?;
++        Ok(Stat {
++            kind: node.kind,
++            size: node.length,
++            writable: node.writable,
++        })
++    }
++
++    /// Return the `index`-th direct child of `dir_path` (0-based).
++    fn readdir(&self, dir_path: &str, index: usize) -> Result<DirEntry, Error> {
++        validate_absolute_path(dir_path)?;
++        let dir = self
++            .nodes
++            .iter()
++            .find(|node| node.matches(dir_path) && node.kind == NodeKind::Directory)
++            .ok_or(Error::NotFound)?;
++        let dir_path = dir.path_str();
++
++        let mut seen = 0usize;
++        for node in self.nodes.iter().filter(|n| n.occupied) {
++            let child_path = node.path_str();
++            let Some(name) = immediate_child_name(dir_path, child_path) else {
++                continue;
++            };
++            if seen == index {
++                let mut entry = DirEntry {
++                    name: [0; MAX_DIR_NAME],
++                    name_length: 0,
++                    kind: node.kind,
++                };
++                let len = core::cmp::min(name.len(), MAX_DIR_NAME);
++                entry.name[..len].copy_from_slice(name.as_bytes());
++                entry.name_length = len;
++                return Ok(entry);
++            }
++            seen += 1;
++        }
++        Err(Error::NotFound)
++    }
++}
++
++fn validate_absolute_path(path: &str) -> Result<(), Error> {
++    if path.is_empty() || !path.starts_with('/') || path.len() > PATH_CAPACITY {
++        return Err(Error::InvalidPath);
++    }
++    if path.as_bytes().contains(&0) {
++        return Err(Error::InvalidPath);
++    }
++    // The VFS accepts canonical absolute paths. Shell/task resolvers handle
++    // relative paths and dot components before entering this layer. Limit each
++    // component to the directory-entry ABI so names are never truncated.
++    if path != "/"
++        && path[1..]
++            .split('/')
++            .any(|part| part.is_empty() || part == "." || part == ".." || part.len() > MAX_DIR_NAME)
++    {
++        return Err(Error::InvalidPath);
++    }
++    Ok(())
++}
++
++/// Return the slash-prefixed suffix only at a directory boundary.
++fn descendant_suffix<'a>(directory: &str, path: &'a str) -> Option<&'a str> {
++    path.strip_prefix(directory)
++        .filter(|suffix| suffix.starts_with('/'))
++}
++
++fn parent_path(path: &str) -> Option<&str> {
++    if path == "/" {
++        return None;
++    }
++    let trimmed = path.trim_end_matches('/');
++    match trimmed.rfind('/') {
++        Some(0) => Some("/"),
++        Some(pos) => Some(&trimmed[..pos]),
++        None => None,
++    }
++}
++
++/// If `child` is an immediate child of `dir`, return the final path component.
++fn immediate_child_name<'a>(dir: &str, child: &'a str) -> Option<&'a str> {
++    if child == dir {
++        return None;
++    }
++    if dir == "/" {
++        if !child.starts_with('/') || child.len() < 2 {
++            return None;
++        }
++        let rest = &child[1..];
++        if rest.contains('/') {
++            return None;
++        }
++        return Some(rest);
++    }
++    if !child.starts_with(dir) {
++        return None;
++    }
++    let rest = &child[dir.len()..];
++    if !rest.starts_with('/') {
++        return None;
++    }
++    let name = &rest[1..];
++    if name.is_empty() || name.contains('/') {
++        return None;
++    }
++    Some(name)
++}
++
++static REGISTRY: Mutex<Registry> = Mutex::new(Registry::boot());
++
++/// Handle to a shared open-file description.
++///
++/// Process file-descriptor tables store these IDs. Multiple descriptors
++/// (including across fork) can refer to the same description so that the
++/// file offset is shared, matching POSIX semantics.
++#[derive(Clone, Copy, PartialEq, Eq)]
++pub struct OpenFileId(usize);
++
++struct OpenFileDescription {
++    node: usize,
++    generation: u64,
++    offset: usize,
++    refcount: u32,
++    occupied: bool,
++}
++
++impl OpenFileDescription {
++    const fn empty() -> Self {
++        Self {
++            node: 0,
++            generation: 0,
++            offset: 0,
++            refcount: 0,
++            occupied: false,
++        }
++    }
++}
++
++struct OpenFileTable {
++    entries: [OpenFileDescription; MAX_OPEN_FILES],
++}
++
++impl OpenFileTable {
++    const fn empty() -> Self {
++        Self {
++            entries: [const { OpenFileDescription::empty() }; MAX_OPEN_FILES],
++        }
++    }
++
++    fn alloc(&mut self, node: usize, generation: u64) -> Result<OpenFileId, Error> {
++        let slot = self
++            .entries
++            .iter()
++            .position(|entry| !entry.occupied)
++            .ok_or(Error::Full)?;
++        self.entries[slot] = OpenFileDescription {
++            node,
++            generation,
++            offset: 0,
++            refcount: 1,
++            occupied: true,
++        };
++        Ok(OpenFileId(slot))
++    }
++
++    fn get_mut(&mut self, id: OpenFileId) -> Result<&mut OpenFileDescription, Error> {
++        self.entries
++            .get_mut(id.0)
++            .filter(|entry| entry.occupied && entry.refcount > 0)
++            .ok_or(Error::InvalidDescriptor)
++    }
++
++    fn clone_id(&mut self, id: OpenFileId) -> Result<OpenFileId, Error> {
++        let entry = self.get_mut(id)?;
++        entry.refcount = entry.refcount.checked_add(1).ok_or(Error::Full)?;
++        Ok(id)
++    }
++
++    fn drop_id(&mut self, id: OpenFileId) -> Result<(), Error> {
++        let entry = self
++            .entries
++            .get_mut(id.0)
++            .filter(|entry| entry.occupied)
++            .ok_or(Error::InvalidDescriptor)?;
++        if entry.refcount == 0 {
++            return Err(Error::InvalidDescriptor);
++        }
++        entry.refcount -= 1;
++        if entry.refcount == 0 {
++            *entry = OpenFileDescription::empty();
++        }
++        Ok(())
++    }
++
++    fn live_count(&self) -> usize {
++        self.entries.iter().filter(|entry| entry.occupied).count()
++    }
++}
++
++static OPEN_FILES: Mutex<OpenFileTable> = Mutex::new(OpenFileTable::empty());
++
++/// Backwards-compatible alias used by older call sites during the transition.
++/// Prefer `OpenFileId` for new code.
++#[allow(dead_code)]
++pub type OpenFile = OpenFileId;
++
++#[derive(Clone, Copy, PartialEq, Eq)]
++pub enum Error {
++    NotFound,
++    InvalidDescriptor,
++    InvalidPath,
++    AlreadyExists,
++    ReadOnly,
++    Full,
++    NotEmpty,
++    Io,
++}
++
++pub fn create_read_only(path: &str, data: &[u8]) -> Result<(), Error> {
++    REGISTRY.lock().insert(path, data, false).map(|_| ())
++}
++
++/// Import disk metadata without copying the file payload into VFS RAM storage.
++pub fn create_disk_file(path: &str, length: usize) -> Result<(), Error> {
++    create_disk_file_with_writable(path, length, false)
++}
++
++/// Import disk metadata and set whether the VFS copy may be edited before
++/// persistence. The payload stays lazy until first read or partial write.
++pub fn create_disk_file_with_writable(
++    path: &str,
++    length: usize,
++    writable: bool,
++) -> Result<(), Error> {
++    if length > NODE_CAPACITY {
++        return Err(Error::Full);
++    }
++    let mut registry = REGISTRY.lock();
++    let index = registry.insert(path, &[], writable)?;
++    let mut backing = DiskPath {
++        bytes: [0; PATH_CAPACITY],
++        length: path.len(),
++    };
++    backing.bytes[..path.len()].copy_from_slice(path.as_bytes());
++    registry.nodes[index].backing = Some(backing);
++    registry.nodes[index].length = length;
++    Ok(())
++}
++
++/// Create or overwrite a writable file.
++pub fn write_file(path: &str, data: &[u8]) -> Result<(), Error> {
++    REGISTRY.lock().write_file(path, data)
++}
++
++/// Validate removal without mutating the registry.
++pub fn can_remove(path: &str) -> Result<(), Error> {
++    REGISTRY.lock().can_remove(path)
++}
++
++/// Preserve disk-backed bytes for an open file before its directory entry is
++/// removed from the mounted disk. This keeps POSIX-style unlink semantics for
++/// open descriptors even when the backing FAT32 name is about to disappear.
++pub fn prepare_remove(path: &str) -> Result<(), Error> {
++    validate_absolute_path(path)?;
++    let files = OPEN_FILES.lock();
++    let mut registry = REGISTRY.lock();
++    let index = registry
++        .nodes
++        .iter()
++        .position(|node| node.matches(path))
++        .ok_or(Error::NotFound)?;
++    registry.can_remove(path)?;
++    if registry.nodes[index].kind == NodeKind::File
++        && files
++            .entries
++            .iter()
++            .any(|entry| entry.occupied && entry.node == index)
++    {
++        materialize_disk_node(&mut registry.nodes[index])?;
++    }
++    Ok(())
++}
++
++/// Remove a file or empty directory.
++pub fn remove(path: &str) -> Result<(), Error> {
++    validate_absolute_path(path)?;
++    let files = OPEN_FILES.lock();
++    let mut registry = REGISTRY.lock();
++    let index = registry
++        .nodes
++        .iter()
++        .position(|node| node.matches(path))
++        .ok_or(Error::NotFound)?;
++    if registry.nodes[index].kind == NodeKind::File
++        && files
++            .entries
++            .iter()
++            .any(|entry| entry.occupied && entry.node == index)
++    {
++        // FAT32 backing is path-based. Preserve its bytes before releasing the
++        // name so persisting a replacement cannot redirect an older open inode.
++        materialize_disk_node(&mut registry.nodes[index])?;
++        // An unnamed occupied node remains addressable through its open references.
++        registry.nodes[index].path_length = 0;
++        registry.nodes[index].path.fill(0);
++        Ok(())
++    } else {
++        registry.remove(path)
++    }
++}
++
++pub fn can_rename(old: &str, new: &str) -> Result<(), Error> {
++    REGISTRY.lock().validate_rename(old, new)
++}
++
++pub fn rename(old: &str, new: &str) -> Result<(), Error> {
++    REGISTRY.lock().rename(old, new)
++}
++
++/// Create a directory. Parent must already exist.
++pub fn mkdir(path: &str) -> Result<(), Error> {
++    REGISTRY.lock().mkdir(path).map(|_| ())
++}
++
++/// Query metadata for a path.
++pub fn stat(path: &str) -> Result<Stat, Error> {
++    REGISTRY.lock().stat(path)
++}
++
++/// Read the `index`-th entry of a directory (0-based). Returns `NotFound` when exhausted.
++pub fn readdir(path: &str, index: usize) -> Result<DirEntry, Error> {
++    REGISTRY.lock().readdir(path, index)
++}
++
++/// Open a **file** path and return a new open-file description (refcount = 1).
++/// Directories cannot be opened for read/write; use `readdir` / `stat` instead.
++pub fn open(path: &str) -> Result<OpenFileId, Error> {
++    validate_absolute_path(path)?;
++    let mut open_files = OPEN_FILES.lock();
++    let registry = REGISTRY.lock();
++    let node = registry
++        .nodes
++        .iter()
++        .position(|node| node.matches(path) && node.kind == NodeKind::File)
++        .ok_or(Error::NotFound)?;
++    let generation = registry.generations[node];
++    drop(registry);
++    open_files.alloc(node, generation)
++}
++
++/// Increase the reference count of an existing open-file description.
++/// Used by fork (and future dup) so parent and child share the offset.
++pub fn clone_open_file(id: OpenFileId) -> Result<OpenFileId, Error> {
++    OPEN_FILES.lock().clone_id(id)
++}
++
++/// Decrease the reference count. Frees the description when it reaches zero.
++pub fn close_open_file(id: OpenFileId) -> Result<(), Error> {
++    let mut files = OPEN_FILES.lock();
++    let node = files.get_mut(id)?.node;
++    files.drop_id(id)?;
++    if !files
++        .entries
++        .iter()
++        .any(|entry| entry.occupied && entry.node == node)
++    {
++        let mut registry = REGISTRY.lock();
++        if registry.nodes[node].occupied && registry.nodes[node].path_length == 0 {
++            registry.generations[node] = registry.generations[node]
++                .checked_add(1)
++                .ok_or(Error::Full)?;
++            registry.nodes[node].occupied = false;
++            registry.nodes[node].length = 0;
++            registry.nodes[node].backing = None;
++            registry.nodes[node].data.fill(0);
++        }
++    }
++    Ok(())
++}
++
++/// Capture node identity so a lazy fault cannot read a reused VFS slot.
++pub fn file_identity(id: OpenFileId) -> Result<(usize, u64, u64), Error> {
++    let mut table = OPEN_FILES.lock();
++    let entry = table.get_mut(id)?;
++    let registry = REGISTRY.lock();
++    if !registry.nodes[entry.node].occupied || registry.generations[entry.node] != entry.generation
++    {
++        return Err(Error::InvalidDescriptor);
++    }
++    Ok((entry.node, entry.generation, registry.versions[entry.node]))
++}
++fn materialize_disk_node(node: &mut Node) -> Result<(), Error> {
++    if let Some(backing) = node.backing {
++        let count = crate::task::file_fault_io(|| {
++            crate::storage::read_disk_file(backing.as_str(), 0, &mut node.data[..node.length])
++        })
++        .map_err(|_| Error::Io)?;
++        if count != node.length {
++            return Err(Error::Io);
++        }
++        node.backing = None;
++    }
++    Ok(())
++}
++/// Writable shared disk mappings keep a RAM inode image for bounded writeback.
++/// The capability check is performed by the syscall before reaching this API.
++pub fn prepare_shared_file(id: OpenFileId) -> Result<(), Error> {
++    let mut table = OPEN_FILES.lock();
++    let entry = table.get_mut(id)?;
++    let mut registry = REGISTRY.lock();
++    let node = &mut registry.nodes[entry.node];
++    if !node.occupied {
++        return Err(Error::InvalidDescriptor);
++    }
++    if !node.writable {
++        if node.backing.is_none() {
++            return Err(Error::ReadOnly);
++        }
++        materialize_disk_node(node)?;
++        node.writable = true;
++    }
++    Ok(())
++}
++pub fn write_mapping_at(id: OpenFileId, offset: usize, bytes: &[u8]) -> Result<(), Error> {
++    let mut table = OPEN_FILES.lock();
++    let entry = table.get_mut(id)?;
++    let mut registry = REGISTRY.lock();
++    let node = &mut registry.nodes[entry.node];
++    if !node.occupied || !node.writable {
++        return Err(Error::ReadOnly);
++    }
++    if offset
++        .checked_add(bytes.len())
++        .is_none_or(|end| end > node.length)
++    {
++        return Err(Error::Full);
++    }
++    node.data[offset..offset + bytes.len()].copy_from_slice(bytes);
++    registry.versions[entry.node] = registry.versions[entry.node].wrapping_add(1);
++    crate::file_frames::update(entry.node, entry.generation, offset, bytes);
++    Ok(())
++}
++pub fn persist_mapping(id: OpenFileId) -> Result<(), Error> {
++    let mut path = [0; PATH_CAPACITY];
++    let length = {
++        let mut files = OPEN_FILES.lock();
++        let entry = files.get_mut(id)?;
++        let registry = REGISTRY.lock();
++        let node = &registry.nodes[entry.node];
++        path[..node.path_length].copy_from_slice(&node.path[..node.path_length]);
++        node.path_length
++    };
++    let path = core::str::from_utf8(&path[..length]).map_err(|_| Error::InvalidPath)?;
++    if path.starts_with("/mnt/") {
++        crate::storage::persist_path(path).map_err(|_| Error::Io)?;
++    }
++    Ok(())
++}
++
++pub fn file_generation(id: OpenFileId) -> Result<u64, Error> {
++    let mut table = OPEN_FILES.lock();
++    let entry = table.get_mut(id)?;
++    let registry = REGISTRY.lock();
++    if !registry.nodes[entry.node].occupied || registry.generations[entry.node] != entry.generation
++    {
++        return Err(Error::InvalidDescriptor);
++    }
++    Ok(entry.generation)
++}
++pub fn read_mapping_at(
++    id: OpenFileId,
++    generation: u64,
++    offset: usize,
++    buffer: &mut [u8],
++) -> Result<usize, Error> {
++    read_from(id, Some(offset), buffer, Some(generation))
++}
++
++pub fn file_size(id: OpenFileId) -> Result<usize, Error> {
++    let mut table = OPEN_FILES.lock();
++    let index = table.get_mut(id)?.node;
++    REGISTRY
++        .lock()
++        .nodes
++        .get(index)
++        .filter(|node| node.occupied && node.kind == NodeKind::File)
++        .map(|node| node.length)
++        .ok_or(Error::InvalidDescriptor)
++}
++
++pub fn open_file_path_starts_with(id: OpenFileId, prefix: &str) -> Result<bool, Error> {
++    let mut table = OPEN_FILES.lock();
++    let entry = table.get_mut(id)?;
++    let registry = REGISTRY.lock();
++    let node = registry
++        .nodes
++        .get(entry.node)
++        .filter(|node| node.occupied)
++        .ok_or(Error::InvalidDescriptor)?;
++    Ok(node.path_str().starts_with(prefix))
++}
++/// Positional reads do not alter the shared open-file offset.
++pub fn read_at(id: OpenFileId, offset: usize, buffer: &mut [u8]) -> Result<usize, Error> {
++    read_from(id, Some(offset), buffer, None)
++}
++
++pub fn read(id: OpenFileId, buffer: &mut [u8]) -> Result<usize, Error> {
++    read_from(id, None, buffer, None)
++}
++
++fn read_from(
++    id: OpenFileId,
++    position: Option<usize>,
++    buffer: &mut [u8],
++    generation: Option<u64>,
++) -> Result<usize, Error> {
++    let mut table = OPEN_FILES.lock();
++    let entry = table.get_mut(id)?;
++    let node_index = entry.node;
++    let offset = position.unwrap_or(entry.offset);
++
++    let registry = REGISTRY.lock();
++    if generation.is_some_and(|value| registry.generations[node_index] != value) {
++        return Err(Error::InvalidDescriptor);
++    }
++    let node = registry
++        .nodes
++        .get(node_index)
++        .filter(|node| node.occupied)
++        .ok_or(Error::InvalidDescriptor)?;
++    if offset > node.length {
++        return Err(Error::InvalidDescriptor);
++    }
++    let count = core::cmp::min(node.length - offset, buffer.len());
++    if let Some(backing) = node.backing {
++        drop(registry);
++        let read = crate::storage::read_disk_file(backing.as_str(), offset, &mut buffer[..count])
++            .map_err(|_| Error::Io)?;
++        if read != count {
++            return Err(Error::Io);
++        }
++    } else {
++        buffer[..count].copy_from_slice(&node.data[offset..offset + count]);
++        drop(registry);
++    }
++
++    crate::file_frames::overlay(node_index, entry.generation, offset, &mut buffer[..count]);
++    let entry = table.get_mut(id)?;
++    if position.is_none() {
++        entry.offset = offset + count;
++    }
++    Ok(count)
++}
++
++pub fn read_all(path: &str, buffer: &mut [u8]) -> Result<usize, Error> {
++    let file = open(path)?;
++    let result = (|| {
++        let size = file_size(file)?;
++        if size > buffer.len() {
++            return Err(Error::Full);
++        }
++        read_at(file, 0, &mut buffer[..size])
++    })();
++    let _ = close_open_file(file);
++    result
++}
++
++pub fn seek(id: OpenFileId, offset: usize) -> Result<usize, Error> {
++    let mut table = OPEN_FILES.lock();
++    let entry = table.get_mut(id)?;
++    let registry = REGISTRY.lock();
++    let node = registry
++        .nodes
++        .get(entry.node)
++        .filter(|n| n.occupied)
++        .ok_or(Error::NotFound)?;
++    let max = node.length;
++    drop(registry);
++    // Allow seek to end (offset == length) for append; not past EOF beyond length for simplicity.
++    let pos = core::cmp::min(offset, max);
++    entry.offset = pos;
++    Ok(pos)
++}
++
++/// Positional writes do not alter the shared open-file offset.
++/// Stage 10.5 uses this for asynchronous file I/O so concurrent requests do
++/// not race through the descriptor's mutable seek position.
++pub fn write_at(id: OpenFileId, offset: usize, buffer: &[u8]) -> Result<usize, Error> {
++    let mut table = OPEN_FILES.lock();
++    let entry = table.get_mut(id)?;
++    let node_index = entry.node;
++    let generation = entry.generation;
++
++    let mut registry = REGISTRY.lock();
++    if registry.generations[node_index] != generation {
++        return Err(Error::InvalidDescriptor);
++    }
++    let node = registry
++        .nodes
++        .get_mut(node_index)
++        .filter(|node| node.occupied)
++        .ok_or(Error::InvalidDescriptor)?;
++    if !node.writable {
++        return Err(Error::ReadOnly);
++    }
++    materialize_disk_node(node)?;
++    if offset > node.length {
++        return Err(Error::InvalidDescriptor);
++    }
++    let count = core::cmp::min(buffer.len(), NODE_CAPACITY - offset);
++    node.data[offset..offset + count].copy_from_slice(&buffer[..count]);
++    let new_end = offset + count;
++    node.length = core::cmp::max(node.length, new_end);
++    let short_write = count < buffer.len();
++    registry.versions[node_index] = registry.versions[node_index].wrapping_add(1);
++    crate::file_frames::update(node_index, generation, offset, &buffer[..count]);
++    if short_write {
++        return Err(Error::Full);
++    }
++    Ok(count)
++}
++
++pub fn write(id: OpenFileId, buffer: &[u8]) -> Result<usize, Error> {
++    let mut table = OPEN_FILES.lock();
++    let entry = table.get_mut(id)?;
++    let node_index = entry.node;
++    let offset = entry.offset;
++
++    let mut registry = REGISTRY.lock();
++    let node = registry
++        .nodes
++        .get_mut(node_index)
++        .filter(|node| node.occupied)
++        .ok_or(Error::InvalidDescriptor)?;
++    if !node.writable {
++        return Err(Error::ReadOnly);
++    }
++    materialize_disk_node(node)?;
++    if offset > node.length {
++        return Err(Error::InvalidDescriptor);
++    }
++    let count = core::cmp::min(buffer.len(), NODE_CAPACITY - offset);
++    node.data[offset..offset + count].copy_from_slice(&buffer[..count]);
++    let new_offset = offset + count;
++    node.length = core::cmp::max(node.length, new_offset);
++    let short_write = count < buffer.len();
++    registry.versions[node_index] = registry.versions[node_index].wrapping_add(1);
++    crate::file_frames::update(node_index, entry.generation, offset, &buffer[..count]);
++    drop(registry);
++
++    let entry = table.get_mut(id)?;
++    entry.offset = new_offset;
++    if short_write {
++        return Err(Error::Full);
++    }
++    Ok(count)
++}
++
++/// Invoke `f` for every occupied file node whose path starts with `prefix`.
++/// Directories are skipped. Intended for storage layer discovery under `/mnt`.
++pub fn for_each_file_with_prefix<F>(prefix: &str, mut f: F)
++where
++    F: FnMut(&str),
++{
++    let registry = REGISTRY.lock();
++    for node in registry.nodes.iter() {
++        if !node.occupied || node.kind != NodeKind::File {
++            continue;
++        }
++        let path = node.path_str();
++        if path.starts_with(prefix) {
++            f(path);
++        }
++    }
++}
++
++pub fn node_count() -> usize {
++    REGISTRY.lock().count()
++}
++
++pub fn open_file_description_count() -> usize {
++    OPEN_FILES.lock().live_count()
++}
++
++pub fn self_test() -> bool {
++    // The registry exceeds the 1 MiB boot stack. Reserve scratch storage
++    // statically and reset one node at a time so repeated self-tests are safe.
++    static SCRATCH: Mutex<Registry> = Mutex::new(Registry::empty());
++    let mut scratch = SCRATCH.lock();
++    for node in &mut scratch.nodes {
++        *node = Node::empty();
++    }
++    // Parent directories required before inserting files.
++    let root_ok = scratch.mkdir("/").is_err(); // root cannot be created via mkdir on empty
++    scratch.nodes[0] = Node::directory(b"/");
++    let mnt_ok = scratch.mkdir("/mnt") == Ok(1);
++    let inserted = scratch.insert("/mnt/test.txt", b"mounted", false).is_ok();
++    let duplicate = scratch.insert("/mnt/test.txt", b"again", false) == Err(Error::AlreadyExists);
++    let invalid_path = scratch.insert("relative", b"bad", false) == Err(Error::InvalidPath);
++    let no_parent = scratch.insert("/missing/file", b"x", false) == Err(Error::NotFound);
++
++    let path_semantics = path_semantics_self_test(&mut scratch);
++    let disk_write_semantics = disk_write_semantics_self_test();
++    let backing_rename_semantics = backing_rename_semantics_self_test();
++
++    // Directory listing on the live registry.
++    let root_stat = matches!(
++        stat("/"),
++        Ok(Stat {
++            kind: NodeKind::Directory,
++            ..
++        })
++    );
++    let etc_stat = matches!(
++        stat("/etc"),
++        Ok(Stat {
++            kind: NodeKind::Directory,
++            ..
++        })
++    );
++    let file_stat = matches!(
++        stat("/etc/motd"),
++        Ok(Stat {
++            kind: NodeKind::File,
++            size: 24,
++            writable: false,
++        })
++    );
++
++    // / should contain at least etc and tmp.
++    let mut found_etc = false;
++    let mut found_tmp = false;
++    let mut index = 0;
++    while let Ok(entry) = readdir("/", index) {
++        if entry.name_str() == "etc" {
++            found_etc = true;
++        }
++        if entry.name_str() == "tmp" {
++            found_tmp = true;
++        }
++        index += 1;
++        if index > 16 {
++            break;
++        }
++    }
++    let readdir_ok = found_etc && found_tmp;
++
++    let Ok(writer) = open("/tmp/vfs-self-test") else {
++        return false;
++    };
++    let payload = b"wovenhat-vfs";
++    if write(writer, payload) != Ok(payload.len()) {
++        let _ = close_open_file(writer);
++        return false;
++    }
++
++    // Shared offset: cloning the description must observe the advanced offset.
++    let Ok(shared) = clone_open_file(writer) else {
++        let _ = close_open_file(writer);
++        return false;
++    };
++    let mut probe = [0; 4];
++    let shared_offset_advanced = read(shared, &mut probe) == Ok(0);
++
++    // Independent open starts at offset 0 again.
++    let Ok(reader) = open("/tmp/vfs-self-test") else {
++        let _ = close_open_file(shared);
++        let _ = close_open_file(writer);
++        return false;
++    };
++    let mut buffer = [0; 12];
++    let round_trip = read(reader, &mut buffer) == Ok(payload.len()) && buffer == *payload;
++
++    let Ok(protected) = open("/etc/motd") else {
++        let _ = close_open_file(reader);
++        let _ = close_open_file(shared);
++        let _ = close_open_file(writer);
++        return false;
++    };
++    let mut complete = [0; 32];
++    let read_only_ok = write(protected, b"x") == Err(Error::ReadOnly)
++        && read_all("/etc/motd", &mut complete) == Ok(24)
++        && &complete[..24] == b"Welcome to WovenHat OS.\n";
++
++    // Directories cannot be opened as files.
++    let dir_open_rejected = open("/etc").is_err();
++
++    // A descriptor opened before a directory move still reads the same file.
++    let moved = rename("/tmp", "/vfs-moved").is_ok();
++    let handle_survives = moved
++        && seek(reader, 0) == Ok(0)
++        && read(reader, &mut buffer) == Ok(payload.len())
++        && buffer == *payload
++        && stat("/tmp/vfs-self-test").is_err()
++        && stat("/vfs-moved/vfs-self-test").is_ok();
++    let restored = moved && rename("/vfs-moved", "/tmp").is_ok();
++
++    let _ = close_open_file(protected);
++    let _ = close_open_file(reader);
++    let _ = close_open_file(shared);
++    let _ = close_open_file(writer);
++
++    // After closing all clones the description table should release the slots.
++    let cleaned = open_file_description_count() == 0;
++
++    // Boot registry: /, /etc, /tmp, motd, version, vfs-self-test
++    let boot_nodes = node_count() == 8;
++
++    root_ok
++        && mnt_ok
++        && inserted
++        && duplicate
++        && invalid_path
++        && no_parent
++        && path_semantics
++        && disk_write_semantics
++        && backing_rename_semantics
++        && root_stat
++        && etc_stat
++        && file_stat
++        && readdir_ok
++        && shared_offset_advanced
++        && round_trip
++        && read_only_ok
++        && dir_open_rejected
++        && handle_survives
++        && restored
++        && cleaned
++        && boot_nodes
++}
++
++fn backing_rename_semantics_self_test() -> bool {
++    static SCRATCH: Mutex<Registry> = Mutex::new(Registry::empty());
++    let mut fs = SCRATCH.lock();
++    for node in &mut fs.nodes {
++        *node = Node::empty();
++    }
++    fs.nodes[0] = Node::directory(b"/");
++    if fs.mkdir("/mnt").is_err()
++        || fs.mkdir("/mnt/docs").is_err()
++        || fs.insert("/mnt/docs/a.txt", &[], true).is_err()
++    {
++        return false;
++    }
++    let Some(index) = fs
++        .nodes
++        .iter()
++        .position(|node| node.matches("/mnt/docs/a.txt"))
++    else {
++        return false;
++    };
++    set_scratch_backing(&mut fs.nodes[index], "/mnt/docs/a.txt", 7);
++    fs.rename("/mnt/docs", "/mnt/archive").is_ok()
++        && fs.nodes[index].matches("/mnt/archive/a.txt")
++        && fs.nodes[index]
++            .backing
++            .is_some_and(|backing| backing.as_str() == "/mnt/archive/a.txt")
++}
++
++fn disk_write_semantics_self_test() -> bool {
++    static SCRATCH: Mutex<Registry> = Mutex::new(Registry::empty());
++    let mut fs = SCRATCH.lock();
++    for node in &mut fs.nodes {
++        *node = Node::empty();
++    }
++    fs.nodes[0] = Node::directory(b"/");
++    if fs.mkdir("/mnt").is_err() {
++        return false;
++    }
++
++    let Ok(ro_index) = fs.insert("/mnt/ro.txt", &[], false) else {
++        return false;
++    };
++    set_scratch_backing(&mut fs.nodes[ro_index], "/mnt/ro.txt", 5);
++    let ro_protected = fs.write_file("/mnt/ro.txt", b"new") == Err(Error::ReadOnly)
++        && fs.nodes[ro_index].backing.is_some()
++        && fs.nodes[ro_index].length == 5;
++
++    let Ok(rw_index) = fs.insert("/mnt/rw.txt", &[], true) else {
++        return false;
++    };
++    set_scratch_backing(&mut fs.nodes[rw_index], "/mnt/rw.txt", 5);
++    let rw_overwritten = fs.write_file("/mnt/rw.txt", b"new").is_ok()
++        && fs.nodes[rw_index].backing.is_none()
++        && fs.nodes[rw_index].length == 3
++        && &fs.nodes[rw_index].data[..3] == b"new";
++
++    ro_protected && rw_overwritten
++}
++
++fn set_scratch_backing(node: &mut Node, path: &str, length: usize) {
++    let mut backing = DiskPath {
++        bytes: [0; PATH_CAPACITY],
++        length: path.len(),
++    };
++    backing.bytes[..path.len()].copy_from_slice(path.as_bytes());
++    node.backing = Some(backing);
++    node.length = length;
++}
++
++/// Exercise path semantics on the statically allocated scratch registry.
++fn path_semantics_self_test(fs: &mut Registry) -> bool {
++    for path in [
++        "",
++        "relative",
++        "//home",
++        "/home/",
++        "/home//x",
++        "/home/./x",
++        "/home/../x",
++        "/nul\0x",
++    ] {
++        if fs.mkdir(path) != Err(Error::InvalidPath)
++            || fs.remove(path) != Err(Error::InvalidPath)
++            || !matches!(fs.stat(path), Err(Error::InvalidPath))
++            || !matches!(fs.readdir(path, 0), Err(Error::InvalidPath))
++            || fs.rename(path, "/valid") != Err(Error::InvalidPath)
++            || fs.rename("/mnt", path) != Err(Error::InvalidPath)
++            || fs.write_file(path, b"x") != Err(Error::InvalidPath)
++            || open(path) != Err(Error::InvalidPath)
++            || read_all(path, &mut [0; 1]) != Err(Error::InvalidPath)
++        {
++            return false;
++        }
++    }
++    for path in [
++        "/home",
++        "/home/anthony",
++        "/home/anthony/docs",
++        "/home/anthony2",
++    ] {
++        if fs.mkdir(path).is_err() {
++            return false;
++        }
++    }
++    let Ok(file_index) = fs.insert("/home/anthony/docs/a.txt", b"payload", true) else {
++        return false;
++    };
++    let count = fs.count();
++    if fs.remove("/home/anthony") != Err(Error::NotEmpty)
++        || fs.rename("/home/anthony", "/missing/user") != Err(Error::NotFound)
++        || fs.rename("/home/anthony", "/mnt/test.txt/user") != Err(Error::NotFound)
++        || fs.rename("/home/anthony", "/home/anthony/docs/user") != Err(Error::InvalidPath)
++        || fs.rename("/home/anthony", "/home/anthony2") != Err(Error::AlreadyExists)
++        || fs.rename("/", "/root") != Err(Error::ReadOnly)
++        || fs.rename("/home", "/") != Err(Error::ReadOnly)
++        || fs.rename("/missing", "/missing") != Err(Error::NotFound)
++        || fs.rename("/home/anthony", "/home/anthony").is_err()
++        || !fs.nodes[file_index].matches("/home/anthony/docs/a.txt")
++        || fs.count() != count
++    {
++        return false;
++    }
++    if fs.rename("/home/anthony", "/home/user").is_err()
++        || fs.stat("/home/anthony").is_ok()
++        || fs.stat("/home/anthony/docs").is_ok()
++        || fs.stat("/home/anthony/docs/a.txt").is_ok()
++        || fs.stat("/home/user").is_err()
++        || fs.stat("/home/user/docs").is_err()
++        || fs.stat("/home/anthony2").is_err()
++        || !fs.nodes[file_index].matches("/home/user/docs/a.txt")
++        || &fs.nodes[file_index].data[..7] != b"payload"
++        || !fs.nodes[file_index].writable
++        || fs.count() != count
++        || !matches!(fs.readdir("/home/user", 0), Ok(entry) if entry.name_str() == "docs")
++        || !matches!(fs.readdir("/home/user/docs", 0), Ok(entry) if entry.name_str() == "a.txt")
++    {
++        return false;
++    }
++    // Destination itself fits, but its descendants would exceed path capacity.
++    let parent = alloc::format!("/{}", "p".repeat(60));
++    let destination = alloc::format!("{}/{}", parent, "d".repeat(60));
++    if fs.mkdir(&parent).is_err()
++        || fs.rename("/home/user", &destination) != Err(Error::InvalidPath)
++        || fs.stat(&destination).is_ok()
++        || fs.stat("/home/user/docs").is_err()
++        || !fs.nodes[file_index].matches("/home/user/docs/a.txt")
++    {
++        return false;
++    }
++    // Exactly PATH_CAPACITY bytes is valid for both insertion and rename.
++    let parent = alloc::format!("/{}", "p".repeat(63));
++    let boundary = alloc::format!("{}/{}", parent, "a".repeat(63));
++    let renamed = alloc::format!("{}/{}", parent, "b".repeat(63));
++    let oversized = alloc::format!("{}/{}", parent, "c".repeat(64));
++    let long_component = alloc::format!("/{}", "x".repeat(MAX_DIR_NAME + 1));
++    if fs.mkdir(&parent).is_err()
++        || fs.mkdir(&boundary).is_err()
++        || fs.rename(&boundary, &renamed).is_err()
++        || fs.mkdir(&oversized) != Err(Error::InvalidPath)
++        || fs.mkdir(&long_component) != Err(Error::InvalidPath)
++        || fs.rename(&renamed, &oversized) != Err(Error::InvalidPath)
++        || fs.stat(&renamed).is_err()
++    {
++        return false;
++    }
++    // Move to another parent, then shorten the prefix, retaining file identity.
++    fs.rename("/home/user/docs", "/mnt/docs").is_ok()
++        && fs.rename("/mnt/docs/a.txt", "/mnt/docs/b.txt").is_ok()
++        && fs.rename("/mnt/docs", "/d").is_ok()
++        && fs.nodes[file_index].matches("/d/b.txt")
++        && fs.remove("/d") == Err(Error::NotEmpty)
++        && fs.remove("/d/b.txt").is_ok()
++        && fs.remove("/d").is_ok()
++        && fs.remove("/home/user").is_ok()
++}
+diff -ruN /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/run-stage10-5-acceptance.ps1 /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/run-stage10-5-acceptance.ps1
+--- /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/run-stage10-5-acceptance.ps1	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/run-stage10-5-acceptance.ps1	2026-09-14 10:22:38.435740414 +0000
+@@ -0,0 +1,20 @@
++$ErrorActionPreference = 'Stop'
++Write-Host '=== WovenHat Stage 10.5 Userspace Async VFS/File I/O Acceptance ==='
++Write-Host ''
++Write-Host '=== 1/2 Preserve the complete validated Stage 10.4 baseline ==='
++powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\run-stage10-4-acceptance.ps1
++if ($LASTEXITCODE -ne 0) { throw "Stage 10.4 preservation acceptance failed with exit code $LASTEXITCODE" }
++Write-Host ''
++Write-Host '=== 2/2 Isolated Stage 10.5 Ring-3 VFS async I/O boots: 1/2/4 CPUs ==='
++foreach ($cpu in 1,2,4) {
++    python .\scripts\test-memory-qemu.py --cpus $cpu --stage10-5
++    if ($LASTEXITCODE -ne 0) { throw "Stage 10.5 isolated boot failed on $cpu CPU(s)" }
++    $log = ".\target\stage10-5-regression-$cpu-debug\serial.log"
++    if (!(Select-String -Path $log -SimpleMatch '[S10.5] userspace async VFS read/write + fd pinning/cancel/teardown: PASSED' -Quiet)) {
++        throw "Stage 10.5 marker missing on $cpu CPU(s): $log"
++    }
++    Write-Host "Stage 10.5 userspace async VFS I/O marker: PASS ($cpu CPU)"
++}
++Write-Host ''
++Write-Host '=== STAGE 10.5 ACCEPTANCE: PASS ==='
++Write-Host 'Stage 10.4 preserved; ordinary User-domain Ring-3 apps now submit positional async VFS reads/writes with pinned open-file descriptions, kernel-owned buffers, cancellation, retry-safe completion copyout, and deterministic teardown on 1/2/4 CPUs.'
+Binary files /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/scripts/__pycache__/test-memory-qemu.cpython-313.pyc and /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/scripts/__pycache__/test-memory-qemu.cpython-313.pyc differ
+diff -ruN /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/scripts/test-memory-qemu.py /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/scripts/test-memory-qemu.py
+--- /mnt/data/stage105_base/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/scripts/test-memory-qemu.py	2026-09-14 09:30:15.000000000 +0000
++++ /mnt/data/stage105/WovenHat-OS-Stage10.4-Userspace-Async-Block-IO/scripts/test-memory-qemu.py	2026-09-14 10:22:38.288144154 +0000
+@@ -16,6 +16,7 @@
+     parser.add_argument('--release', action='store_true')
+     parser.add_argument('--legacy-irq', action='store_true')
+     parser.add_argument('--stage10-4', action='store_true', help='enable the isolated Stage 10.4 Ring-3 block-I/O acceptance probe')
++    parser.add_argument('--stage10-5', action='store_true', help='enable the isolated Stage 10.5 Ring-3 VFS async-I/O acceptance probe')
+     args = parser.parse_args()
+     if args.legacy_irq and args.cpus != 1:
+         parser.error('--legacy-irq requires --cpus 1')
+@@ -25,11 +26,13 @@
+     if not qemu.is_file() or not firmware.is_file():
+         parser.error('Set --qemu and --firmware to existing QEMU and OVMF files.')
+     env = os.environ.copy()
+-    feature = 'legacy-pic-test' if args.legacy_irq else ('stage10-4-test' if args.stage10_4 else 'qemu-test')
++    if args.stage10_4 and args.stage10_5:
++        parser.error('--stage10-4 and --stage10-5 are mutually exclusive')
++    feature = 'legacy-pic-test' if args.legacy_irq else ('stage10-4-test' if args.stage10_4 else ('stage10-5-test' if args.stage10_5 else 'qemu-test'))
+     image = subprocess.check_output(
+         ['cargo', 'run', '--quiet'] + (['--release'] if args.release else []) + ['--features', feature, '--', '--print-image'],
+         cwd=root, env=env, text=True).strip()
+-    prefix = 'stage10-4-regression' if args.stage10_4 else 'memory-regression'
++    prefix = 'stage10-4-regression' if args.stage10_4 else ('stage10-5-regression' if args.stage10_5 else 'memory-regression')
+     out = root / 'target' / f'{prefix}-{args.cpus}-{"release" if args.release else "debug"}{"-legacy" if args.legacy_irq else ""}'
+     out.mkdir(parents=True, exist_ok=True)
+     serial = out / 'serial.log'
+@@ -51,7 +54,13 @@
+         print('QEMU boot suite timed out. See', serial, file=sys.stderr)
+         return 1
+     log = serial.read_text(errors='replace')
+-    if args.stage10_4:
++    if args.stage10_5:
++        required = [
++            f'[SMP] online={args.cpus} expected={args.cpus}',
++            '[S10.3] userspace async completion ABI + cancellation/teardown: PASSED',
++            '[S10.5] userspace async VFS read/write + fd pinning/cancel/teardown: PASSED',
++        ]
++    elif args.stage10_4:
+         required = [
+             f'[SMP] online={args.cpus} expected={args.cpus}',
+             '[S10.3] userspace async completion ABI + cancellation/teardown: PASSED',

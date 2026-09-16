@@ -1,0 +1,30 @@
+[workspace]
+resolver = "3"
+members = ["kernel"]
+
+[features]
+qemu-test = ["kernel/qemu-test"]
+network-test = ["qemu-test", "kernel/network-test"]
+legacy-pic-test = ["qemu-test", "kernel/legacy-pic-test"]
+stage10-4-test = ["qemu-test", "kernel/stage10-4-test"]
+stage10-5-test = ["qemu-test", "kernel/stage10-5-test"]
+stage10-6-test = ["qemu-test", "kernel/stage10-6-test"]
+stage10-7-test = ["qemu-test", "kernel/stage10-7-test"]
+
+[profile.dev]
+panic = "abort"
+
+[package]
+name = "wovenhat-os"
+version = "0.8.0"
+edition = "2024"
+
+[dependencies]
+ovmf-prebuilt = "0.2.4"
+
+[build-dependencies]
+kernel = { package = "wovenhat-kernel", path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }
+
+bootloader = { version = "0.11.17", default-features = false, features = ["uefi"] }
+[lints.rust]
+warnings = "deny"
