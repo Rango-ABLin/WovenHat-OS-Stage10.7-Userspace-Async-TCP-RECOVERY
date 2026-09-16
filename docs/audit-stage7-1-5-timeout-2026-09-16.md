@@ -15,4 +15,11 @@ continues through its own dedicated pager probe. A focused 50-run one-CPU
 stress and 40-run two-CPU stress passed after that correction, with fresh 1/2/4
 CPU memory suites also passing. Lifecycle trace points distinguish the
 pre-kill check, kill publication, post-kill observation, and wait/reap
-completion. The full Stage 7.1.5 matrix remains the final acceptance gate.
+completion. The bounded wait now yields until the target is retired before
+reaping, so a scheduler hand-off cannot be reported as a false wait failure.
+
+The complete Stage 7.1.5 acceptance gate then passed on 2026-09-16: 50 one-CPU
+memory runs, 100 two-CPU runs, 50 four-CPU runs, and live DHCP/DNS/ICMP plus
+host-verified UDP/TCP round trips on 1, 2, and 4 CPUs. The retained serial logs
+under `target/memory-regression-*` and `target/network-regression-*` are the
+freeze evidence for this gate.

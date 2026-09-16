@@ -120,3 +120,11 @@ WovenFS metadata/integrity, volume-integrity envelope boundaries, snapshots,
 and storage-management inventory each passed their 1/2/4-CPU gates. See
 [audit](audit-stage12-2-5-2026-09-16.md). Production AEAD and key-vault work
 remains open before encrypted volumes are security-complete.
+
+## Stage 7.1.5 - accepted on 2026-09-16
+
+The scheduler/pager watchdog and termination lifecycle gate passed in full:
+50 one-CPU memory runs, 100 two-CPU runs, 50 four-CPU runs, and live
+DHCP/DNS/ICMP plus host-verified UDP/TCP at 1/2/4 CPUs. See
+audit-stage7-1-5-timeout-2026-09-16.md for the bounded lifecycle handoff
+correction and retained serial evidence.
