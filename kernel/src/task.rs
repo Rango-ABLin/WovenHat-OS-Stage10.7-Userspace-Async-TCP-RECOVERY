@@ -2192,7 +2192,7 @@ pub fn exit_current_process(exit_code: i32) -> ! {
     crate::terminal::release_foreground(exiting_pid);
     crate::network::close_process_sockets(exiting_pid);
     x86_64::instructions::interrupts::disable();
-    let context_switch_result = {
+    let (context_switch_result, mut detached_files) = {
         let mut scheduler = SCHEDULER.lock();
         let slot = scheduler.current_slot[crate::smp::cpu_index()];
         let task_id = scheduler.tasks[slot].id;
@@ -2219,33 +2219,48 @@ pub fn exit_current_process(exit_code: i32) -> ! {
         // guard as every other path so the lock's IRQ-safety contract is not
         // bypassed during process teardown. Lock order is SCHEDULER ->
         // PROCESS_TABLE throughout this critical section.
+        let mut detached_files = [None; MAX_FILE_DESCRIPTORS];
         let address_space_result = process_table_lock()
             .iter_mut()
             .flatten()
             .find(|process| process.task_id == task_id)
-            .and_then(|process| {
+            .map(|process| {
                 process.state = ProcessState::Exited;
                 process.exit_code = exit_code;
-                // Drop open-file references as soon as the process exits so
-                // offsets and description slots are not held by zombies.
-                release_file_table(&mut process.files);
-                process.address_space.take().map(|address_space| {
+                // Detach open files while PROCESS_TABLE is held, then release
+                // their VFS/pipe references after this guard is dropped.
+                detached_files = core::mem::take(&mut process.files);
+                let address_space = process.address_space.take();
+                let memory_mappings = if address_space.is_some() {
                     let memory_mappings = core::mem::replace(
                         &mut process.memory_mappings,
                         [None; userspace::MAX_ANONYMOUS_MAPPINGS],
                     );
-                    (address_space, memory_mappings)
-                })
+                    Some(memory_mappings)
+                } else {
+                    None
+                };
+                (address_space, memory_mappings)
             });
 
         scheduler.tasks[slot].state = TaskState::Dead;
         scheduler.tasks[slot].name = "exited";
         scheduler.task_count = scheduler.task_count.saturating_sub(1);
 
-        address_space_result.map(|(address_space, memory_mappings)| {
-            (scheduler.prepare_switch(), address_space, memory_mappings)
-        })
+        (
+            address_space_result.and_then(|(address_space, memory_mappings)| {
+                address_space.map(|address_space| {
+                    (
+                        scheduler.prepare_switch(),
+                        address_space,
+                        memory_mappings.unwrap_or([None; userspace::MAX_ANONYMOUS_MAPPINGS]),
+                    )
+                })
+            }),
+            detached_files,
+        )
     };
+    release_file_table(&mut detached_files);
 
     if let Some((context_switch, address_space, memory_mappings)) = context_switch_result {
         if let Some(context_switch) = context_switch {
@@ -2275,7 +2290,7 @@ pub fn exit_current_process(exit_code: i32) -> ! {
 pub fn wait_process(child_id: u64) -> Result<i32, WaitError> {
     let parent = ProcessId(current_process_id());
     let child = ProcessId(child_id);
-    let (exit_code, deferred_space) = {
+    let (exit_code, deferred_space, mut detached_files) = {
         let mut processes = process_table_lock();
         let Some(slot) = processes.iter().position(
             |entry| matches!(entry, Some(process) if process.id == child && process.parent == parent),
@@ -2286,7 +2301,7 @@ pub fn wait_process(child_id: u64) -> Result<i32, WaitError> {
         if process.state != ProcessState::Exited {
             return Err(WaitError::StillRunning);
         }
-        release_file_table(&mut process.files);
+        let detached_files = core::mem::take(&mut process.files);
         let exit_code = process.exit_code;
         let deferred_space = process.address_space.take().map(|address_space| {
             let mappings = core::mem::replace(
@@ -2295,13 +2310,15 @@ pub fn wait_process(child_id: u64) -> Result<i32, WaitError> {
             );
             (address_space, mappings)
         });
-        assert!(
-            ipc::unregister(child.as_u64()).is_ok(),
-            "reaped process has no IPC endpoint"
-        );
         processes[slot] = None;
-        (exit_code, deferred_space)
+        (exit_code, deferred_space, detached_files)
     };
+
+    release_file_table(&mut detached_files);
+    assert!(
+        ipc::unregister(child.as_u64()).is_ok(),
+        "reaped process has no IPC endpoint"
+    );
 
     // A signal-terminated zombie deliberately keeps its address space until
     // reap time. By definition its scheduler task is already retired here, so

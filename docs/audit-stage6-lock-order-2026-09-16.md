@@ -44,7 +44,9 @@ where completion-port ownership was released while `PROCESS_TABLE` was held.
 The termination path now marks the process and takes its file table under the
 rank-20 guard, then performs completion, event, notification, VFS, and pipe
 teardown after the guard is dropped. The complete release matrix was rerun
-after this fix and passed.
+after this fix and passed. The same ownership-transfer rule now covers the
+self-exit and wait/reap paths: VFS references and IPC endpoint unregistering
+occur only after the process-table guard has been released.
 
 This closes the bounded lock-order coverage gap for the audited scheduler,
 process, paging, COW, frame-allocation, pager, async-operation, completion-port,
