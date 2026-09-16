@@ -88,6 +88,14 @@ Clippy, and QEMU validation on 1/2/4 CPUs. See
 
 Next: Stage 12.2 WovenFS metadata and crash-consistency design.
 
+## Stage 13.1 — accepted on 2026-09-16
+
+The WovenDriver manager passed device matching, binding, suspend/resume,
+build, freestanding Clippy, and 1/2/4-CPU QEMU validation. See
+[audit](audit-stage13-1-2026-09-16.md).
+
+Next: Stage 13.2 production PCIe support.
+
 ## Stages 12.2–12.5 — accepted on 2026-09-16
 
 WovenFS metadata/integrity, volume-integrity envelope boundaries, snapshots,
