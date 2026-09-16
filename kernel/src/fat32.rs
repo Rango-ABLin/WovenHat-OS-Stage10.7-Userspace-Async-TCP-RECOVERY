@@ -16,6 +16,10 @@ const READ_ONLY_ATTRIBUTE: u8 = 0x01;
 const VOLUME_ID_ATTRIBUTE: u8 = 0x08;
 const DIRECTORY_ATTRIBUTE: u8 = 0x10;
 const LONG_NAME_ATTRIBUTE: u8 = 0x0f;
+/// Maximum UTF-8 bytes accepted by the bounded LFN codec.
+pub const MAX_LONG_NAME: usize = 255;
+const LFN_CHARS_PER_ENTRY: usize = 13;
+const MAX_LFN_ENTRIES: usize = MAX_LONG_NAME.div_ceil(LFN_CHARS_PER_ENTRY);
 const MAX_DIRECTORY_CLUSTERS: usize = 128;
 const MAX_FS_CHECK_DEPTH: usize = 4;
 
@@ -401,6 +405,72 @@ pub fn encode_short_name(name: &str) -> Option<[u8; 11]> {
         out[8 + i] = to_fat_char(byte)?;
     }
     Some(out)
+}
+
+/// Compute the FAT long-filename checksum for an 8.3 alias.
+pub fn long_name_checksum(short: &[u8; 11]) -> u8 {
+    short.iter().copied().fold(0u8, |checksum, byte| {
+        (((checksum & 1) << 7) | (checksum >> 1)).wrapping_add(byte)
+    })
+}
+
+/// Encode an ASCII long filename into FAT directory records.
+///
+/// Records are returned in on-disk order (highest ordinal first), followed by
+/// the short entry written by the caller. Only printable single-byte UTF-8 is
+/// accepted in this bounded kernel path; non-ASCII names remain rejected until
+/// the VFS string and directory listing buffers grow their Unicode contract.
+pub fn encode_long_name(
+    name: &str,
+    short: &[u8; 11],
+    out: &mut [[u8; DIRECTORY_ENTRY_SIZE]; MAX_LFN_ENTRIES],
+) -> Option<usize> {
+    let bytes = name.as_bytes();
+    if bytes.is_empty()
+        || bytes.len() > MAX_LONG_NAME
+        || !bytes
+            .iter()
+            .all(|byte| (0x20..=0x7e).contains(byte) && *byte != b'/' && *byte != b'\\')
+    {
+        return None;
+    }
+    let count = bytes.len().div_ceil(LFN_CHARS_PER_ENTRY);
+    if count > out.len() {
+        return None;
+    }
+    let checksum = long_name_checksum(short);
+    for ordinal in 1..=count {
+        let index = count - ordinal;
+        let start = (ordinal - 1) * LFN_CHARS_PER_ENTRY;
+        let end = bytes.len().min(start + LFN_CHARS_PER_ENTRY);
+        let record = &mut out[index];
+        record.fill(0xff);
+        record[0] = ordinal as u8 | if ordinal == count { 0x40 } else { 0 };
+        record[11] = LONG_NAME_ATTRIBUTE;
+        record[12] = 0;
+        record[13] = checksum;
+        record[26] = 0;
+        record[27] = 0;
+        for (offset, byte) in bytes[start..end].iter().copied().enumerate() {
+            let word = (byte as u16).to_le_bytes();
+            let target = match offset {
+                0..=4 => 1 + offset * 2,
+                5..=10 => 14 + (offset - 5) * 2,
+                _ => 28 + (offset - 11) * 2,
+            };
+            record[target..target + 2].copy_from_slice(&word);
+        }
+        let terminator = end - start;
+        if terminator < LFN_CHARS_PER_ENTRY {
+            let target = match terminator {
+                0..=4 => 1 + terminator * 2,
+                5..=10 => 14 + (terminator - 5) * 2,
+                _ => 28 + (terminator - 11) * 2,
+            };
+            record[target..target + 2].copy_from_slice(&0u16.to_le_bytes());
+        }
+    }
+    Some(count)
 }
 
 fn to_fat_char(byte: u8) -> Option<u8> {
@@ -2020,6 +2090,18 @@ pub fn self_test() -> bool {
         && payload[SECTOR_SIZE..].iter().all(|byte| *byte == b'B')
         && find_root(&mut disk, volume, b"MISSING TXT") == Err(Error::NotFound);
 
+    let mut lfn_records = [[0u8; DIRECTORY_ENTRY_SIZE]; MAX_LFN_ENTRIES];
+    let lfn_count = encode_long_name(
+        "A long filename.txt",
+        b"ALONGN~1TXT",
+        &mut lfn_records,
+    );
+    let lfn_valid = lfn_count == Some(2)
+        && lfn_records[0][0] == 0x42
+        && lfn_records[1][0] == 0x01
+        && lfn_records[0][11] == LONG_NAME_ATTRIBUTE
+        && lfn_records[0][13] == long_name_checksum(b"ALONGN~1TXT");
+
     let mut invalid = TestDisk {
         valid_signature: false,
         cyclic_chain: false,
@@ -2049,6 +2131,7 @@ pub fn self_test() -> bool {
     });
 
     valid
+        && lfn_valid
         && invalid_rejected
         && cycle_rejected
         && root_cycle_rejected
