@@ -172,6 +172,47 @@ impl PhysicalFrameAllocator {
         self.allocate_frame_for_domain(preferred)
     }
 
+    /// Reserve a physically contiguous run for a device DMA arena. Reclaimed
+    /// frames are intentionally excluded: they are individually reusable but
+    /// do not carry a contiguity guarantee. A run is carved from one original
+    /// usable range, preserving the allocator's bounded NUMA preference.
+    fn allocate_contiguous_frames(&mut self, count: usize) -> Option<PhysFrame<Size4KiB>> {
+        if !self.initialized || count == 0 {
+            return None;
+        }
+        let bytes = FRAME_SIZE.checked_mul(count as u64)?;
+        let preferred = self
+            .numa_enabled
+            .then(|| crate::smp::cpu_domain(crate::smp::cpu_index()));
+        for pass in 0..2 {
+            for offset in 0..self.range_count {
+                let index = (self.current_range + offset) % self.range_count;
+                if pass == 0
+                    && preferred.is_some_and(|domain| self.ranges[index].domain != domain)
+                {
+                    continue;
+                }
+                let range = &mut self.ranges[index];
+                let available = range.end.saturating_sub(range.next);
+                if available < bytes {
+                    continue;
+                }
+                let address = range.next;
+                range.next = range.next.checked_add(bytes)?;
+                self.current_range = if range.next >= range.end {
+                    (index + 1) % self.range_count
+                } else {
+                    index
+                };
+                self.allocated_frames = self
+                    .allocated_frames
+                    .checked_add(count as u64)?;
+                return PhysFrame::from_start_address(PhysAddr::new(address)).ok();
+            }
+        }
+        None
+    }
+
     fn allocate_frame_for_domain(
         &mut self,
         preferred: Option<u32>,
@@ -248,6 +289,10 @@ pub fn init_with_topology(
 
 pub fn allocate_frame() -> Option<PhysFrame<Size4KiB>> {
     ALLOCATOR.lock().allocate_frame()
+}
+
+pub(crate) fn allocate_contiguous_frames(count: usize) -> Option<PhysFrame<Size4KiB>> {
+    ALLOCATOR.lock().allocate_contiguous_frames(count)
 }
 
 pub fn deallocate_frame(frame: PhysFrame<Size4KiB>) -> bool {

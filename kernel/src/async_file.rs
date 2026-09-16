@@ -8,7 +8,7 @@
 //! its async handle and the worker releases the final pinned VFS reference.
 
 use core::sync::atomic::{AtomicU64, Ordering};
-use spin::Mutex;
+use crate::irq_lock::IrqMutex as Mutex;
 
 use crate::{
     async_op::{self, AsyncClass, Completion},
@@ -135,8 +135,8 @@ impl Queue {
     fn active(&self) -> usize { self.entries.iter().filter(|e| e.is_some()).count() }
 }
 
-static QUEUE: Mutex<Queue> = Mutex::new(Queue::new());
-static WORKER: Mutex<Option<TaskId>> = Mutex::new(None);
+static QUEUE: Mutex<Queue> = Mutex::with_rank(Queue::new(), 10);
+static WORKER: Mutex<Option<TaskId>> = Mutex::with_rank(None, 10);
 static SUBMITTED: AtomicU64 = AtomicU64::new(0);
 static COMPLETED: AtomicU64 = AtomicU64::new(0);
 static CANCELLED: AtomicU64 = AtomicU64::new(0);

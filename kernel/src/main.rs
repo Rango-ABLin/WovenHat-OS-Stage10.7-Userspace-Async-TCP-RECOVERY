@@ -1085,9 +1085,20 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                     halt();
                 }
             }
-            Err(_) => {
-                // No supported VirtIO NIC belongs to the normal memory/storage
-                // QEMU regressions, so networking is intentionally skipped.
+            Err(error) => {
+                // A network-test image must never silently downgrade to the
+                // no-NIC memory/storage path: the host harness relies on this
+                // marker to distinguish transport failure from an intentional
+                // skip. Other QEMU images still omit the NIC and continue.
+                #[cfg(feature = "network-test")]
+                {
+                    serial::write_line(format_args!("[NETTEST] init failed: {:?}", error));
+                    halt();
+                }
+                #[cfg(not(feature = "network-test"))]
+                {
+                    let _ = error;
+                }
             }
         }
     }

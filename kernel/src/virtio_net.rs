@@ -6,14 +6,10 @@
 //! intentionally polling-based first; MSI-X/interrupt moderation can be added
 //! after the dataplane is stable.
 
-use core::{
-    cell::UnsafeCell,
-    mem::size_of,
-    sync::atomic::{fence, Ordering},
-};
+use core::{mem::size_of, sync::atomic::{AtomicU64, fence, Ordering}};
 use crate::irq_lock::IrqMutex as Mutex;
 
-use crate::{hal::pci, paging};
+use crate::{hal::pci, memory, paging};
 
 pub const VIRTIO_VENDOR: u16 = 0x1af4;
 pub const VIRTIO_NET_LEGACY: u16 = 0x1000;
@@ -99,37 +95,74 @@ struct VirtqUsedElem {
     len: u32,
 }
 
-#[repr(align(4096))]
-struct QueueMemory(UnsafeCell<[u8; QUEUE_MEMORY_BYTES]>);
-unsafe impl Sync for QueueMemory {}
-impl QueueMemory {
-    const fn new() -> Self {
-        Self(UnsafeCell::new([0; QUEUE_MEMORY_BYTES]))
+const RX_QUEUE_OFFSET: usize = 0;
+const TX_QUEUE_OFFSET: usize = RX_QUEUE_OFFSET + QUEUE_MEMORY_BYTES;
+const RX_PACKETS_OFFSET: usize = TX_QUEUE_OFFSET + QUEUE_MEMORY_BYTES;
+const RX_PACKETS_BYTES: usize = ACTIVE_RX_DESCRIPTORS * PACKET_BYTES;
+const TX_PACKET_OFFSET: usize = RX_PACKETS_OFFSET + RX_PACKETS_BYTES;
+const DMA_BYTES: usize = TX_PACKET_OFFSET + PACKET_BYTES;
+const DMA_PAGES: usize = DMA_BYTES.div_ceil(PAGE_SIZE);
+
+// The bootloader's static BSS pages are not a DMA contiguity contract. Keep
+// virtqueue and packet storage in frames explicitly reserved as one physical
+// run, then access that run through the direct physical-memory mapping.
+static DMA_PHYSICAL: AtomicU64 = AtomicU64::new(0);
+static DMA_VIRTUAL: AtomicU64 = AtomicU64::new(0);
+
+struct DmaReservation {
+    frame: x86_64::structures::paging::PhysFrame<x86_64::structures::paging::Size4KiB>,
+    pages: usize,
+    committed: bool,
+}
+
+impl DmaReservation {
+    fn commit(mut self) {
+        self.committed = true;
     }
 }
 
-#[repr(align(2048))]
-struct PacketMemory(UnsafeCell<[u8; PACKET_BYTES]>);
-unsafe impl Sync for PacketMemory {}
-impl PacketMemory {
-    const fn new() -> Self {
-        Self(UnsafeCell::new([0; PACKET_BYTES]))
+impl Drop for DmaReservation {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        DMA_PHYSICAL.store(0, Ordering::Release);
+        DMA_VIRTUAL.store(0, Ordering::Release);
+        let start = self.frame.start_address().as_u64();
+        for index in 0..self.pages {
+            if let Ok(frame) = x86_64::structures::paging::PhysFrame::from_start_address(
+                x86_64::PhysAddr::new(start + (index as u64 * PAGE_SIZE as u64)),
+            ) {
+                let _ = memory::deallocate_frame(frame);
+            }
+        }
     }
 }
 
-static RX_QUEUE_MEMORY: QueueMemory = QueueMemory::new();
-static TX_QUEUE_MEMORY: QueueMemory = QueueMemory::new();
-static RX_PACKETS: [PacketMemory; ACTIVE_RX_DESCRIPTORS] = [
-    PacketMemory::new(),
-    PacketMemory::new(),
-    PacketMemory::new(),
-    PacketMemory::new(),
-    PacketMemory::new(),
-    PacketMemory::new(),
-    PacketMemory::new(),
-    PacketMemory::new(),
-];
-static TX_PACKET: PacketMemory = PacketMemory::new();
+fn dma_ptr(offset: usize) -> *mut u8 {
+    (DMA_VIRTUAL.load(Ordering::Acquire) + offset as u64) as *mut u8
+}
+
+fn dma_phys(offset: usize) -> u64 {
+    DMA_PHYSICAL.load(Ordering::Acquire) + offset as u64
+}
+
+fn reserve_dma() -> Result<DmaReservation, InitError> {
+    let frame = memory::allocate_contiguous_frames(DMA_PAGES).ok_or(InitError::DmaNotContiguous)?;
+    let reservation = DmaReservation { frame, pages: DMA_PAGES, committed: false };
+    let physical = frame.start_address().as_u64();
+    let offset = match paging::physical_memory_offset() {
+        Some(offset) => offset,
+        None => return Err(InitError::DmaNotContiguous),
+    };
+    let virtual_address = offset
+        .checked_add(physical)
+        .ok_or(InitError::DmaNotContiguous)?;
+    DMA_PHYSICAL.store(physical, Ordering::Release);
+    DMA_VIRTUAL.store(virtual_address, Ordering::Release);
+    unsafe { core::ptr::write_bytes(virtual_address as *mut u8, 0, DMA_BYTES); }
+    Ok(reservation)
+}
 
 #[derive(Clone, Copy)]
 struct Transport {
@@ -228,10 +261,19 @@ pub fn init() -> Result<(), InitError> {
         outl(io_base + VIRTIO_PCI_GUEST_FEATURES, 0);
     }
 
-    let rx_queue_size = setup_queue(io_base, RX_QUEUE, &RX_QUEUE_MEMORY)?;
-    let tx_queue_size = setup_queue(io_base, TX_QUEUE, &TX_QUEUE_MEMORY)?;
-    post_initial_rx(io_base, rx_queue_size)?;
-    setup_tx_descriptor(tx_queue_size)?;
+    let dma = reserve_dma()?;
+    let rx_queue_size = setup_queue(io_base, RX_QUEUE).inspect_err(|error| {
+        crate::serial::write_line(format_args!("[VIRTIO-NET] RX queue setup failed: {:?}", error));
+    })?;
+    let tx_queue_size = setup_queue(io_base, TX_QUEUE).inspect_err(|error| {
+        crate::serial::write_line(format_args!("[VIRTIO-NET] TX queue setup failed: {:?}", error));
+    })?;
+    post_initial_rx(io_base, rx_queue_size).inspect_err(|error| {
+        crate::serial::write_line(format_args!("[VIRTIO-NET] RX posting failed: {:?}", error));
+    })?;
+    setup_tx_descriptor(tx_queue_size).inspect_err(|error| {
+        crate::serial::write_line(format_args!("[VIRTIO-NET] TX descriptor setup failed: {:?}", error));
+    })?;
 
     let mut mac = [0x02, 0x57, 0x48, 0, 0, 1];
     // VIRTIO_NET_F_MAC is feature bit 5. QEMU normally exposes it.
@@ -264,6 +306,7 @@ pub fn init() -> Result<(), InitError> {
         rx_dropped: 0,
         tx_busy: 0,
     };
+    dma.commit();
     Ok(())
 }
 
@@ -321,7 +364,7 @@ pub fn receive_into(out: &mut [u8]) -> Option<usize> {
     if !t.initialized {
         return None;
     }
-    let mem = RX_QUEUE_MEMORY.0.get() as *mut u8;
+    let mem = dma_ptr(RX_QUEUE_OFFSET);
     let used_idx = unsafe { read_u16(used_idx_ptr(mem, t.rx_queue_size)) };
     if used_idx == t.rx_last_used {
         return None;
@@ -348,7 +391,7 @@ pub fn receive_into(out: &mut [u8]) -> Option<usize> {
         repost_rx(&mut t, id as u16);
         return None;
     }
-    let packet = RX_PACKETS[id].0.get() as *const u8;
+    let packet = dma_ptr(RX_PACKETS_OFFSET + id * PACKET_BYTES) as *const u8;
     unsafe {
         core::ptr::copy_nonoverlapping(
             packet.add(VIRTIO_NET_HDR_BYTES),
@@ -375,7 +418,7 @@ pub fn transmit(frame: &[u8]) -> bool {
         return false;
     }
 
-    let packet = TX_PACKET.0.get() as *mut u8;
+    let packet = dma_ptr(TX_PACKET_OFFSET);
     unsafe {
         core::ptr::write_bytes(packet, 0, VIRTIO_NET_HDR_BYTES);
         core::ptr::copy_nonoverlapping(
@@ -384,7 +427,7 @@ pub fn transmit(frame: &[u8]) -> bool {
             frame.len(),
         );
     }
-    let mem = TX_QUEUE_MEMORY.0.get() as *mut u8;
+    let mem = dma_ptr(TX_QUEUE_OFFSET);
     let desc = unsafe { &mut *desc_ptr(mem, 0) };
     desc.len = (VIRTIO_NET_HDR_BYTES + frame.len()) as u32;
     desc.flags = 0;
@@ -402,7 +445,7 @@ pub fn transmit(frame: &[u8]) -> bool {
     true
 }
 
-fn setup_queue(io_base: u16, queue: u16, memory: &QueueMemory) -> Result<u16, InitError> {
+fn setup_queue(io_base: u16, queue: u16) -> Result<u16, InitError> {
     unsafe {
         outw(io_base + VIRTIO_PCI_QUEUE_SEL, queue);
     }
@@ -421,11 +464,12 @@ fn setup_queue(io_base: u16, queue: u16, memory: &QueueMemory) -> Result<u16, In
         fail(io_base);
         return Err(InitError::QueueTooLarge);
     }
-    let ptr = memory.0.get() as *mut u8;
+    let offset = if queue == RX_QUEUE { RX_QUEUE_OFFSET } else { TX_QUEUE_OFFSET };
+    let ptr = dma_ptr(offset);
     unsafe {
         core::ptr::write_bytes(ptr, 0, QUEUE_MEMORY_BYTES);
     }
-    let phys = dma_physical(ptr as u64, total).ok_or(InitError::DmaNotContiguous)?;
+    let phys = dma_phys(offset);
     if phys & (PAGE_SIZE as u64 - 1) != 0 {
         fail(io_base);
         return Err(InitError::DmaNotContiguous);
@@ -437,10 +481,10 @@ fn setup_queue(io_base: u16, queue: u16, memory: &QueueMemory) -> Result<u16, In
 }
 
 fn post_initial_rx(io_base: u16, qsize: u16) -> Result<(), InitError> {
-    let mem = RX_QUEUE_MEMORY.0.get() as *mut u8;
-    for (id, packet) in RX_PACKETS.iter().enumerate().take(ACTIVE_RX_DESCRIPTORS) {
-        let packet = packet.0.get() as *mut u8;
-        let phys = dma_physical(packet as u64, PACKET_BYTES).ok_or(InitError::DmaNotContiguous)?;
+    let mem = dma_ptr(RX_QUEUE_OFFSET);
+    for id in 0..ACTIVE_RX_DESCRIPTORS {
+        let packet_offset = RX_PACKETS_OFFSET + id * PACKET_BYTES;
+        let phys = dma_phys(packet_offset);
         let desc = unsafe { &mut *desc_ptr(mem, id) };
         *desc = VirtqDesc {
             addr: phys,
@@ -460,9 +504,8 @@ fn post_initial_rx(io_base: u16, qsize: u16) -> Result<(), InitError> {
 }
 
 fn setup_tx_descriptor(_qsize: u16) -> Result<(), InitError> {
-    let mem = TX_QUEUE_MEMORY.0.get() as *mut u8;
-    let packet = TX_PACKET.0.get() as *mut u8;
-    let phys = dma_physical(packet as u64, PACKET_BYTES).ok_or(InitError::DmaNotContiguous)?;
+    let mem = dma_ptr(TX_QUEUE_OFFSET);
+    let phys = dma_phys(TX_PACKET_OFFSET);
     unsafe {
         *desc_ptr(mem, 0) = VirtqDesc {
             addr: phys,
@@ -475,7 +518,7 @@ fn setup_tx_descriptor(_qsize: u16) -> Result<(), InitError> {
 }
 
 fn repost_rx(t: &mut Transport, id: u16) {
-    let mem = RX_QUEUE_MEMORY.0.get() as *mut u8;
+    let mem = dma_ptr(RX_QUEUE_OFFSET);
     unsafe {
         push_avail(mem, t.rx_queue_size, id);
     }
@@ -489,30 +532,13 @@ fn reap_tx(t: &mut Transport) {
     if !t.tx_outstanding {
         return;
     }
-    let mem = TX_QUEUE_MEMORY.0.get() as *mut u8;
+    let mem = dma_ptr(TX_QUEUE_OFFSET);
     let used_idx = unsafe { read_u16(used_idx_ptr(mem, t.tx_queue_size)) };
     if used_idx != t.tx_last_used {
         fence(Ordering::Acquire);
         t.tx_last_used = used_idx;
         t.tx_outstanding = false;
     }
-}
-
-fn dma_physical(virtual_address: u64, size: usize) -> Option<u64> {
-    let first = paging::translate_kernel_address(virtual_address)?;
-    let start_page = virtual_address & !(PAGE_SIZE as u64 - 1);
-    let end = virtual_address.checked_add(size.saturating_sub(1) as u64)?;
-    let end_page = end & !(PAGE_SIZE as u64 - 1);
-    let first_page_phys = paging::translate_kernel_address(start_page)? & !(PAGE_SIZE as u64 - 1);
-    let mut page = start_page;
-    while page <= end_page {
-        let phys = paging::translate_kernel_address(page)? & !(PAGE_SIZE as u64 - 1);
-        if phys != first_page_phys.checked_add(page - start_page)? {
-            return None;
-        }
-        page = page.checked_add(PAGE_SIZE as u64)?;
-    }
-    Some(first)
 }
 
 fn find_device(location: PciLocation) -> Option<pci::Device> {

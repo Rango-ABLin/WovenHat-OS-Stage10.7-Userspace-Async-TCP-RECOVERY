@@ -46,6 +46,7 @@ teardown after the guard is dropped. The complete release matrix was rerun
 after this fix and passed.
 
 This closes the bounded lock-order coverage gap for the audited scheduler,
-process, paging, COW, frame-allocation, async-operation, and completion-port
-domains. Locks in other subsystems still use their existing compatibility
-mutexes, and priority inheritance remains separate Stage 6 work.
+process, paging, COW, frame-allocation, async-operation, completion-port, and
+file/block/network worker domains. Locks in other subsystems still use their
+existing compatibility mutexes, and priority inheritance remains separate
+Stage 6 work.

@@ -195,12 +195,11 @@ pub fn init(physical_memory_offset: u64) -> Result<(), InitError> {
     Ok(())
 }
 
-pub fn translate_kernel_address(address: u64) -> Option<u64> {
+/// Return the bootloader-provided direct-map base used to access physical
+/// frames from kernel code and DMA arenas.
+pub fn physical_memory_offset() -> Option<u64> {
     let paging = PAGING.lock();
-    let mapper = paging.mapper.as_ref()?;
-    mapper
-        .translate_addr(VirtAddr::new(address))
-        .map(|phys| phys.as_u64())
+    paging.mapper.as_ref().map(|_| paging.physical_memory_offset)
 }
 
 pub fn self_test(addresses: &[u64]) -> bool {

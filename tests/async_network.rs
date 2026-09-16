@@ -8,6 +8,7 @@ pub struct Mutex<T>(std::sync::Mutex<T>);
 mod irq_lock { pub use crate::Mutex as IrqMutex; }
 impl<T> Mutex<T> {
     pub const fn new(value: T) -> Self { Self(std::sync::Mutex::new(value)) }
+    pub const fn with_rank(value: T, _rank: u8) -> Self { Self::new(value) }
     pub fn lock(&self) -> std::sync::MutexGuard<'_, T> { self.0.lock().unwrap() }
 }
 pub mod wire {

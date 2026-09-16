@@ -148,8 +148,8 @@ impl Queue {
     fn active(&self) -> usize { self.entries.iter().filter(|e| e.is_some()).count() }
 }
 
-static QUEUE: Mutex<Queue> = Mutex::new(Queue::new());
-static WORKER: Mutex<Option<TaskId>> = Mutex::new(None);
+static QUEUE: Mutex<Queue> = Mutex::with_rank(Queue::new(), 10);
+static WORKER: Mutex<Option<TaskId>> = Mutex::with_rank(None, 10);
 static SUBMITTED: AtomicU64 = AtomicU64::new(0);
 static COMPLETED: AtomicU64 = AtomicU64::new(0);
 static CANCELLED: AtomicU64 = AtomicU64::new(0);
