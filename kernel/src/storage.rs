@@ -1156,7 +1156,10 @@ pub fn delete_path(path: &str) -> Result<(), MutationError> {
         return Err(MutationError::ReadOnly);
     }
     FILE_PAGES.lock().invalidate();
-    let result = delete_on_cached_device(&mut disk, relative);
+    let mut result = delete_on_cached_device(&mut disk, relative);
+    if result.is_ok() {
+        result = remove_metadata_on_device(&mut disk, path);
+    }
     let flushed = disk.flush().map_err(|_| MutationError::Failed);
     let status = result.and(flushed);
     if status.is_ok() {
@@ -1191,6 +1194,36 @@ fn delete_on_cached_device(
     }
 }
 
+fn remove_metadata_on_device(
+    device: &mut impl crate::block::BlockDevice,
+    path: &str,
+) -> Result<(), MutationError> {
+    let hash = fat32::metadata_path_hash(path);
+    let tag = fat32::metadata_path_tag(path);
+    match fat32::mount(device) {
+        Ok(volume) => fat32::remove_file_metadata(device, volume, hash, tag)
+            .map_err(map_mutation_err),
+        Err(fat32::Error::InvalidBootSector | fat32::Error::UnsupportedGeometry) => {
+            if let Ok(Some(part)) = partition::find_fat32(device) {
+                let mut view = partition::PartitionDevice::new(device, part)
+                    .map_err(|_| MutationError::Failed)?;
+                let volume = fat32::mount(&mut view).map_err(map_mutation_err)?;
+                fat32::remove_file_metadata(&mut view, volume, hash, tag)
+                    .map_err(map_mutation_err)
+            } else if let Ok(Some(part)) = gpt::find_fat_partition(device) {
+                let mut view = partition::PartitionDevice::new(device, part)
+                    .map_err(|_| MutationError::Failed)?;
+                let volume = fat32::mount(&mut view).map_err(map_mutation_err)?;
+                fat32::remove_file_metadata(&mut view, volume, hash, tag)
+                    .map_err(map_mutation_err)
+            } else {
+                Err(MutationError::Failed)
+            }
+        }
+        Err(_) => Err(MutationError::Failed),
+    }
+}
+
 pub fn rename_path(old: &str, new: &str) -> Result<(), MutationError> {
     if old == "/mnt" || new == "/mnt" || !old.starts_with("/mnt/") || !new.starts_with("/mnt/") {
         return Err(MutationError::NotSupported);
@@ -1210,7 +1243,10 @@ pub fn rename_path(old: &str, new: &str) -> Result<(), MutationError> {
         return Err(MutationError::ReadOnly);
     }
     FILE_PAGES.lock().invalidate();
-    let result = rename_on_cached_device(&mut disk, old_relative, new_relative);
+    let mut result = rename_on_cached_device(&mut disk, old_relative, new_relative);
+    if result.is_ok() {
+        result = move_metadata_on_device(&mut disk, old, new);
+    }
     let flushed = disk.flush().map_err(|_| MutationError::Failed);
     let status = result.and(flushed);
     if status.is_ok() {
@@ -1245,6 +1281,54 @@ fn rename_on_cached_device(
             fat32::rename_path(&mut view, volume, old, new).map_err(map_mutation_err)
         }
         _ => Err(MutationError::Failed),
+    }
+}
+
+fn move_metadata_on_device(
+    device: &mut impl crate::block::BlockDevice,
+    old: &str,
+    new: &str,
+) -> Result<(), MutationError> {
+    let old_hash = fat32::metadata_path_hash(old);
+    let old_tag = fat32::metadata_path_tag(old);
+    let new_hash = fat32::metadata_path_hash(new);
+    let new_tag = fat32::metadata_path_tag(new);
+    fn move_in_volume(
+        device: &mut impl crate::block::BlockDevice,
+        volume: fat32::Volume,
+        old_hash: u64,
+        old_tag: u32,
+        new_hash: u64,
+        new_tag: u32,
+    ) -> Result<(), MutationError> {
+        let Some(metadata) = fat32::read_file_metadata(device, volume, old_hash, old_tag)
+            .map_err(map_mutation_err)?
+        else {
+            return Ok(());
+        };
+        fat32::write_file_metadata(device, volume, new_hash, new_tag, metadata)
+            .map_err(map_mutation_err)?;
+        fat32::remove_file_metadata(device, volume, old_hash, old_tag)
+            .map_err(map_mutation_err)
+    }
+    match fat32::mount(device) {
+        Ok(volume) => move_in_volume(device, volume, old_hash, old_tag, new_hash, new_tag),
+        Err(fat32::Error::InvalidBootSector | fat32::Error::UnsupportedGeometry) => {
+            if let Ok(Some(part)) = partition::find_fat32(device) {
+                let mut view = partition::PartitionDevice::new(device, part)
+                    .map_err(|_| MutationError::Failed)?;
+                let volume = fat32::mount(&mut view).map_err(map_mutation_err)?;
+                move_in_volume(&mut view, volume, old_hash, old_tag, new_hash, new_tag)
+            } else if let Ok(Some(part)) = gpt::find_fat_partition(device) {
+                let mut view = partition::PartitionDevice::new(device, part)
+                    .map_err(|_| MutationError::Failed)?;
+                let volume = fat32::mount(&mut view).map_err(map_mutation_err)?;
+                move_in_volume(&mut view, volume, old_hash, old_tag, new_hash, new_tag)
+            } else {
+                Err(MutationError::Failed)
+            }
+        }
+        Err(_) => Err(MutationError::Failed),
     }
 }
 
