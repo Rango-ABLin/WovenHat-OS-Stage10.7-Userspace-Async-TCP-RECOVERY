@@ -20,6 +20,7 @@ const LONG_NAME_ATTRIBUTE: u8 = 0x0f;
 pub const MAX_LONG_NAME: usize = 255;
 const LFN_CHARS_PER_ENTRY: usize = 13;
 const MAX_LFN_ENTRIES: usize = MAX_LONG_NAME.div_ceil(LFN_CHARS_PER_ENTRY);
+const MAX_LFN_EXTENSIONS: usize = 2;
 const MAX_DIRECTORY_CLUSTERS: usize = 128;
 const MAX_FS_CHECK_DEPTH: usize = 4;
 
@@ -454,6 +455,7 @@ pub fn encode_short_name(name: &str) -> Option<[u8; 11]> {
 #[derive(Clone, Copy)]
 struct LongDirectoryReservation {
     slots: [(u64, usize); MAX_LFN_ENTRIES + 1],
+    extensions: [Option<DirectoryExtension>; MAX_LFN_EXTENSIONS],
 }
 
 /// Look up either an 8.3 alias or an ASCII long filename in a directory.
@@ -1608,6 +1610,8 @@ fn find_long_directory_slots(
     let mut visited_count = 0;
     let mut run = [(0u64, 0usize); MAX_LFN_ENTRIES + 1];
     let mut run_len = 0;
+    let mut extensions = [None; MAX_LFN_EXTENSIONS];
+    let mut extension_count = 0usize;
     let mut sector = [0u8; SECTOR_SIZE];
     loop {
         if visited_count == visited.len() || visited[..visited_count].contains(&cluster) {
@@ -1632,7 +1636,7 @@ fn find_long_directory_slots(
                         run_len += 1;
                     }
                     if run_len == count {
-                        return Ok(LongDirectoryReservation { slots: run });
+                        return Ok(LongDirectoryReservation { slots: run, extensions });
                     }
                 } else {
                     run_len = 0;
@@ -1641,8 +1645,34 @@ fn find_long_directory_slots(
         }
         cluster = match next_cluster(device, volume, cluster)? {
             ClusterLink::Next(next) => next,
-            ClusterLink::End => return Err(Error::DirectoryFull),
+            ClusterLink::End => {
+                if extension_count == extensions.len() {
+                    return Err(Error::DirectoryFull);
+                }
+                let extension = extend_directory_chain(device, volume, cluster)?;
+                let Some(link) = extension.extension else {
+                    return Err(Error::CorruptChain);
+                };
+                let next_cluster = link.cluster;
+                extensions[extension_count] = Some(link);
+                extension_count += 1;
+                next_cluster
+            }
         };
+    }
+}
+
+fn rollback_long_directory_reservation(
+    device: &mut impl BlockDevice,
+    volume: Volume,
+    reservation: LongDirectoryReservation,
+    used_slots: usize,
+) {
+    for slot in reservation.slots.iter().take(used_slots) {
+        let _ = mark_directory_entry_deleted(device, slot.0, slot.1);
+    }
+    for extension in reservation.extensions.iter().rev().flatten() {
+        let _ = rollback_directory_extension(device, volume, *extension);
     }
 }
 
@@ -1666,7 +1696,13 @@ fn create_long_file_in_directory(
     } else {
         data.len().div_ceil(bytes_per_cluster)
     };
-    let first_cluster = allocate_file_chain(device, volume, needed_clusters)?;
+    let first_cluster = match allocate_file_chain(device, volume, needed_clusters) {
+        Ok(cluster) => cluster,
+        Err(error) => {
+            rollback_long_directory_reservation(device, volume, reservation, 0);
+            return Err(error);
+        }
+    };
     if let Err(error) = write_file_data_chain(device, volume, first_cluster, data) {
         if first_cluster >= 2 {
             let _ = free_cluster_chain(device, volume, first_cluster);
@@ -1680,9 +1716,7 @@ fn create_long_file_in_directory(
             reservation.slots[index].1,
             record,
         ) {
-            for slot in reservation.slots.iter().take(index + 1) {
-                let _ = mark_directory_entry_deleted(device, slot.0, slot.1);
-            }
+            rollback_long_directory_reservation(device, volume, reservation, index + 1);
             if first_cluster >= 2 {
                 let _ = free_cluster_chain(device, volume, first_cluster);
             }
@@ -1698,9 +1732,7 @@ fn create_long_file_in_directory(
         first_cluster,
         data.len() as u32,
     ) {
-        for slot in reservation.slots.iter().take(record_count + 1) {
-            let _ = mark_directory_entry_deleted(device, slot.0, slot.1);
-        }
+        rollback_long_directory_reservation(device, volume, reservation, record_count + 1);
         if first_cluster >= 2 {
             let _ = free_cluster_chain(device, volume, first_cluster);
         }
@@ -2348,9 +2380,7 @@ pub fn rename_path(
                 reservation.slots[index].1,
                 record,
             ) {
-                for slot in reservation.slots.iter().take(index + 1) {
-                    let _ = mark_directory_entry_deleted(device, slot.0, slot.1);
-                }
+                rollback_long_directory_reservation(device, volume, reservation, index + 1);
                 return Err(err);
             }
         }
@@ -2358,9 +2388,7 @@ pub fn rename_path(
         raw[..11].copy_from_slice(&new_short);
         let short_slot = reservation.slots[record_count];
         if let Err(err) = write_raw_directory_slot(device, short_slot.0, short_slot.1, &raw) {
-            for slot in reservation.slots.iter().take(record_count + 1) {
-                let _ = mark_directory_entry_deleted(device, slot.0, slot.1);
-            }
+            rollback_long_directory_reservation(device, volume, reservation, record_count + 1);
             return Err(err);
         }
         let parent_update = if is_directory {
@@ -2369,15 +2397,11 @@ pub fn rename_path(
             Ok(())
         };
         if let Err(err) = parent_update {
-            for slot in reservation.slots.iter().take(record_count + 1) {
-                let _ = mark_directory_entry_deleted(device, slot.0, slot.1);
-            }
+            rollback_long_directory_reservation(device, volume, reservation, record_count + 1);
             return Err(err);
         }
         if let Err(err) = mark_directory_entry_deleted(device, old_slot.lba, old_slot.offset) {
-            for slot in reservation.slots.iter().take(record_count + 1) {
-                let _ = mark_directory_entry_deleted(device, slot.0, slot.1);
-            }
+            rollback_long_directory_reservation(device, volume, reservation, record_count + 1);
             if is_directory {
                 let _ = update_dotdot(device, volume, old_slot.entry.first_cluster, old_parent);
             }
@@ -2919,7 +2943,24 @@ fn long_filename_self_test() -> bool {
         && resolve_path(&mut disk, volume, renamed_name)
             .is_err_and(|error| error == Error::NotFound)
         && create_path_file(&mut disk, volume, name, b"lfn2").is_ok();
-    read_ok && listing_ok && rename_ok && delete_ok
+    let mut growth_disk = MutableFatDisk::new();
+    let growth_ok = mount(&mut growth_disk).is_ok_and(|growth_volume| {
+        for index in 0..DIRECTORY_ENTRIES_PER_SECTOR {
+            let mut short = [0u8; 7];
+            let Some(short) = numbered_leaf(b'g', index, &mut short) else {
+                return false;
+            };
+            if create_path_file(&mut growth_disk, growth_volume, short, b"x").is_err() {
+                return false;
+            }
+        }
+        let long = "A long filename after growth.txt";
+        create_path_file(&mut growth_disk, growth_volume, long, b"g").is_ok()
+            && next_cluster(&mut growth_disk, growth_volume, growth_volume.root_cluster)
+                .is_ok_and(|link| matches!(link, ClusterLink::Next(_)))
+            && resolve_path(&mut growth_disk, growth_volume, long).is_ok()
+    });
+    read_ok && listing_ok && rename_ok && delete_ok && growth_ok
 }
 
 fn directory_growth_self_test() -> bool {

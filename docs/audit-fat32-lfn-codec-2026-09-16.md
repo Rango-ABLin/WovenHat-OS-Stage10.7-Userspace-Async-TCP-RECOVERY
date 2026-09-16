@@ -13,6 +13,7 @@ verifies slot reuse in the in-memory FAT32 regression. Rename and VFS listing
 display integration now use the decoded name during mounted-directory import;
 rename relocates the bounded LFN sequence with rollback before deleting the old
 sequence. The low-level `list_directory` result still exposes only its
-compatibility short-name field. Directory growth still requires a contiguous
-run of slots, and the codec intentionally accepts bounded printable ASCII
-rather than the complete Unicode LFN space.
+compatibility short-name field. Long-name allocation now extends the directory
+chain by up to two bounded clusters and rolls those links back on failed
+publication. The codec intentionally accepts bounded printable ASCII rather
+than the complete Unicode LFN space.
