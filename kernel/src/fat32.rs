@@ -275,10 +275,29 @@ pub fn for_each_directory_entry<F>(
 where
     F: FnMut(DirectoryEntry) -> Result<(), Error>,
 {
+    for_each_directory_entry_named(device, volume, dir_cluster, |entry, _| visitor(entry))
+}
+
+/// Visit entries and provide a validated display name when a FAT long-name
+/// record sequence is present. The optional name borrows a bounded scratch
+/// buffer for the duration of the callback; callers fall back to the short
+/// alias when it is `None`.
+pub fn for_each_directory_entry_named<F>(
+    device: &mut impl BlockDevice,
+    volume: Volume,
+    dir_cluster: u32,
+    mut visitor: F,
+) -> Result<(), Error>
+where
+    F: FnMut(DirectoryEntry, Option<&str>) -> Result<(), Error>,
+{
     let mut cluster = dir_cluster;
     let mut visited = [0_u32; MAX_DIRECTORY_CLUSTERS];
     let mut visited_count = 0;
     let mut sector = [0_u8; SECTOR_SIZE];
+    let mut records = [[0_u8; DIRECTORY_ENTRY_SIZE]; MAX_LFN_ENTRIES];
+    let mut record_count = 0usize;
+    let mut expected_checksum = 0u8;
 
     loop {
         if visited_count == visited.len() {
@@ -302,13 +321,39 @@ where
                     return Ok(());
                 }
                 let attributes = sector[offset + 11];
-                if first == 0xe5
-                    || attributes == LONG_NAME_ATTRIBUTE
-                    || attributes & VOLUME_ID_ATTRIBUTE != 0
-                {
+                if first == 0xe5 {
+                    record_count = 0;
                     continue;
                 }
-                visitor(directory_entry_from_sector(&sector, offset)?)?;
+                if attributes == LONG_NAME_ATTRIBUTE {
+                    let ordinal = first & 0x1f;
+                    if ordinal == 0 || ordinal as usize > MAX_LFN_ENTRIES {
+                        record_count = 0;
+                        continue;
+                    }
+                    records[ordinal as usize - 1]
+                        .copy_from_slice(&sector[offset..offset + DIRECTORY_ENTRY_SIZE]);
+                    record_count = record_count.max(ordinal as usize);
+                    if first & 0x40 != 0 {
+                        expected_checksum = sector[offset + 13];
+                    }
+                    continue;
+                }
+                if attributes & VOLUME_ID_ATTRIBUTE != 0 {
+                    record_count = 0;
+                    continue;
+                }
+                let entry = directory_entry_from_sector(&sector, offset)?;
+                let mut decoded = [0u8; MAX_LONG_NAME];
+                let display_name = decode_long_name(
+                    &records,
+                    record_count,
+                    expected_checksum,
+                    &mut decoded,
+                )
+                .and_then(|length| core::str::from_utf8(&decoded[..length]).ok());
+                record_count = 0;
+                visitor(entry, display_name)?;
             }
         }
         cluster = match next_cluster(device, volume, cluster)? {
@@ -2792,10 +2837,24 @@ fn long_filename_self_test() -> bool {
     let mut bytes = [0u8; 4];
     let read_ok = read_path_bytes(&mut disk, volume, name, &mut bytes) == Ok(3)
         && &bytes[..3] == b"lfn";
+    let mut listed = false;
+    let listing_ok = for_each_directory_entry_named(
+        &mut disk,
+        volume,
+        volume.root_cluster,
+        |_, display_name| {
+            if display_name == Some(name) {
+                listed = true;
+            }
+            Ok(())
+        },
+    )
+    .is_ok()
+        && listed;
     let delete_ok = delete_path(&mut disk, volume, name).is_ok()
         && resolve_path(&mut disk, volume, name).is_err_and(|error| error == Error::NotFound)
         && create_path_file(&mut disk, volume, name, b"lfn2").is_ok();
-    read_ok && delete_ok
+    read_ok && listing_ok && delete_ok
 }
 
 fn directory_growth_self_test() -> bool {

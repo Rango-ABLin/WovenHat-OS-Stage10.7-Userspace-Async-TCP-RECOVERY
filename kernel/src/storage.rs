@@ -268,7 +268,7 @@ fn import_directory(
     let mut mounted = 0usize;
     let mut children = alloc::vec::Vec::new();
 
-    fat32::for_each_directory_entry(device, volume, dir_cluster, |entry| {
+    fat32::for_each_directory_entry_named(device, volume, dir_cluster, |entry, long_name| {
         if entry.attributes & 0x08 != 0 {
             return Ok(());
         }
@@ -278,11 +278,16 @@ fn import_directory(
         }
 
         let mut name = [0u8; 12];
-        let Some(name_len) = short_name_to_str(&entry.short_name, &mut name) else {
-            return Ok(());
-        };
-        let Ok(name_str) = core::str::from_utf8(&name[..name_len]) else {
-            return Ok(());
+        let name_str = if let Some(long_name) = long_name {
+            long_name
+        } else {
+            let Some(name_len) = short_name_to_str(&entry.short_name, &mut name) else {
+                return Ok(());
+            };
+            let Ok(short_name) = core::str::from_utf8(&name[..name_len]) else {
+                return Ok(());
+            };
+            short_name
         };
 
         let mut path_buf = [0u8; crate::config::MAX_PATH_SIZE];
