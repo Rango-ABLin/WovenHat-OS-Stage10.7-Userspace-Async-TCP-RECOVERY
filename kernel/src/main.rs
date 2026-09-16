@@ -41,6 +41,8 @@ mod completion_port;
 mod device;
 #[cfg(feature = "stage13-1-test")]
 mod driver;
+#[cfg(feature = "stage1-5-test")]
+mod journal;
 mod elf;
 mod entropy;
 mod fat32;
@@ -1735,6 +1737,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     }
     #[cfg(feature = "stage13-1-test")]
     { if !driver::register("pit", device::DeviceKind::Timer) || !driver::bind("pit") || !driver::suspend("pit") || !driver::resume("pit") { serial::write_line(format_args!("[S13.1] driver framework: FAILED")); qemu_test_exit_failure(); } serial::write_line(format_args!("[S13.1] driver framework: PASSED")); qemu_test_exit_success(); }
+    #[cfg(feature = "stage1-5-test")]
+    { if !journal::structural_self_test() { serial::write_line(format_args!("[S1-5] storage journal: FAILED")); qemu_test_exit_failure(); } serial::write_line(format_args!("[S1-5] storage journal: PASSED")); qemu_test_exit_success(); }
     #[cfg(feature = "stage12-2-test")]
     { if !wovenfs::structural_self_test() { serial::write_line(format_args!("[S12.2] WovenFS: FAILED")); qemu_test_exit_failure(); } serial::write_line(format_args!("[S12.2] WovenFS: PASSED")); qemu_test_exit_success(); }
     #[cfg(feature = "stage12-3-test")]
