@@ -12,7 +12,7 @@ mod async_file;
 mod async_network;
 mod async_events;
 mod deadline;
-#[cfg(feature = "stage11-2-test")]
+#[allow(dead_code)]
 mod thread;
 mod notifications;
 #[cfg(feature = "stage12-1-test")]

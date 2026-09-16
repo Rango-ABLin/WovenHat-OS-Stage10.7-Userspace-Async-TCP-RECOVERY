@@ -72,6 +72,31 @@ pub fn join(owner: u64, id: ThreadId) -> Result<i32, JoinError> {
     Ok(exit)
 }
 
+/// Reclaim every thread record owned by a process that is terminating.
+///
+/// The generation is advanced for each reclaimed slot, so a stale handle
+/// from the terminated process cannot address a subsequently created thread.
+pub fn reap_owner(owner: u64) -> usize {
+    let mut table = TABLE.lock();
+    let mut reclaimed = 0;
+    for record in &mut table.records {
+        if record.state != State::Free && record.owner == owner {
+            record.state = State::Free;
+            record.owner = 0;
+            record.exit = 0;
+            record.errno = 0;
+            record.tls = 0;
+            record.generation = record
+                .generation
+                .checked_add(1)
+                .filter(|generation| *generation != 0)
+                .unwrap_or(u32::MAX);
+            reclaimed += 1;
+        }
+    }
+    reclaimed
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum JoinError { Invalid, NotOwner, Running }
 
@@ -86,4 +111,9 @@ pub fn structural_self_test() -> bool {
     set_tls(id, 0xfeed_beef) && set_errno(id, 37) && tls(id) == Some(0xfeed_beef)
         && errno(id) == Some(37) && join(1, id) == Err(JoinError::Running)
         && terminate(id, 23) && join(1, id) == Ok(23) && tls(id).is_none()
+        && {
+            let Some(stale) = create(9) else { return false };
+            set_tls(stale, 0x1234) && reap_owner(9) == 1 && tls(stale).is_none()
+                && create(9).is_some_and(|fresh| fresh != stale)
+        }
 }
