@@ -2265,8 +2265,8 @@ pub fn rename_path(
         resolve_parent_cluster(device, volume, old_path, false)?;
     let old_leaf =
         core::str::from_utf8(&old_leaf[..old_leaf_len]).map_err(|_| Error::NameTooLong)?;
-    let old_short = encode_short_name(old_leaf).ok_or(Error::NameTooLong)?;
-    let old_slot = find_existing_directory_slot(device, volume, old_parent, &old_short)?;
+    let old_slot = find_existing_directory_slot_name(device, volume, old_parent, old_leaf)?;
+    let old_short = old_slot.entry.short_name;
     if old_slot.entry.attributes & READ_ONLY_ATTRIBUTE != 0 {
         return Err(Error::ReadOnly);
     }
@@ -2282,7 +2282,14 @@ pub fn rename_path(
         resolve_parent_cluster(device, volume, new_path, false)?;
     let new_leaf =
         core::str::from_utf8(&new_leaf[..new_leaf_len]).map_err(|_| Error::NameTooLong)?;
-    let new_short = encode_short_name(new_leaf).ok_or(Error::NameTooLong)?;
+    if old_parent == new_parent && old_leaf.eq_ignore_ascii_case(new_leaf) {
+        return Ok(());
+    }
+    let short_name = encode_short_name(new_leaf);
+    let new_short = match short_name {
+        Some(short) => short,
+        None => generate_short_alias(device, volume, new_parent, new_leaf)?,
+    };
 
     if old_parent == new_parent && old_short == new_short {
         return Ok(());
@@ -2294,37 +2301,90 @@ pub fn rename_path(
         Err(err) => return Err(err),
     }
 
-    if old_parent == new_parent {
-        return write_short_name(device, old_slot.lba, old_slot.offset, &new_short);
-    }
-
-    let new_slot = find_directory_slot(device, volume, new_parent, &new_short)?;
-    if new_slot.existing.is_some() {
-        return Err(Error::AlreadyExists);
-    }
-    let mut raw = old_slot.raw;
-    raw[..11].copy_from_slice(&new_short);
-    if let Err(err) = write_raw_directory_slot(device, new_slot.lba, new_slot.offset, &raw) {
-        rollback_reserved_slot(device, volume, new_slot);
-        return Err(err);
-    }
-    let parent_update = if is_directory {
-        update_dotdot(device, volume, old_slot.entry.first_cluster, new_parent)
-    } else { Ok(()) };
-    if let Err(err) = parent_update {
-        let _ = mark_directory_entry_deleted(device, new_slot.lba, new_slot.offset);
-        rollback_reserved_slot(device, volume, new_slot);
-        return Err(err);
-    }
-    if let Err(err) = mark_directory_entry_deleted(device, old_slot.lba, old_slot.offset) {
-        let _ = mark_directory_entry_deleted(device, new_slot.lba, new_slot.offset);
-        if is_directory {
-            let _ = update_dotdot(device, volume, old_slot.entry.first_cluster, old_parent);
+    if let Some(short) = short_name {
+        if old_parent == new_parent {
+            write_short_name(device, old_slot.lba, old_slot.offset, &short)?;
+            return mark_lfn_prefix_deleted(device, old_slot.lba, old_slot.offset);
         }
-        rollback_reserved_slot(device, volume, new_slot);
-        return Err(err);
+
+        let new_slot = find_directory_slot(device, volume, new_parent, &short)?;
+        if new_slot.existing.is_some() {
+            return Err(Error::AlreadyExists);
+        }
+        let mut raw = old_slot.raw;
+        raw[..11].copy_from_slice(&short);
+        if let Err(err) = write_raw_directory_slot(device, new_slot.lba, new_slot.offset, &raw) {
+            rollback_reserved_slot(device, volume, new_slot);
+            return Err(err);
+        }
+        let parent_update = if is_directory {
+            update_dotdot(device, volume, old_slot.entry.first_cluster, new_parent)
+        } else {
+            Ok(())
+        };
+        if let Err(err) = parent_update {
+            let _ = mark_directory_entry_deleted(device, new_slot.lba, new_slot.offset);
+            rollback_reserved_slot(device, volume, new_slot);
+            return Err(err);
+        }
+        if let Err(err) = mark_directory_entry_deleted(device, old_slot.lba, old_slot.offset) {
+            let _ = mark_directory_entry_deleted(device, new_slot.lba, new_slot.offset);
+            if is_directory {
+                let _ = update_dotdot(device, volume, old_slot.entry.first_cluster, old_parent);
+            }
+            rollback_reserved_slot(device, volume, new_slot);
+            return Err(err);
+        }
+        mark_lfn_prefix_deleted(device, old_slot.lba, old_slot.offset)
+    } else {
+        let mut records = [[0u8; DIRECTORY_ENTRY_SIZE]; MAX_LFN_ENTRIES];
+        let record_count = encode_long_name(new_leaf, &new_short, &mut records)
+            .ok_or(Error::NameTooLong)?;
+        let reservation = find_long_directory_slots(device, volume, new_parent, record_count + 1)?;
+        for (index, record) in records.iter().take(record_count).enumerate() {
+            if let Err(err) = write_raw_directory_slot(
+                device,
+                reservation.slots[index].0,
+                reservation.slots[index].1,
+                record,
+            ) {
+                for slot in reservation.slots.iter().take(index + 1) {
+                    let _ = mark_directory_entry_deleted(device, slot.0, slot.1);
+                }
+                return Err(err);
+            }
+        }
+        let mut raw = old_slot.raw;
+        raw[..11].copy_from_slice(&new_short);
+        let short_slot = reservation.slots[record_count];
+        if let Err(err) = write_raw_directory_slot(device, short_slot.0, short_slot.1, &raw) {
+            for slot in reservation.slots.iter().take(record_count + 1) {
+                let _ = mark_directory_entry_deleted(device, slot.0, slot.1);
+            }
+            return Err(err);
+        }
+        let parent_update = if is_directory {
+            update_dotdot(device, volume, old_slot.entry.first_cluster, new_parent)
+        } else {
+            Ok(())
+        };
+        if let Err(err) = parent_update {
+            for slot in reservation.slots.iter().take(record_count + 1) {
+                let _ = mark_directory_entry_deleted(device, slot.0, slot.1);
+            }
+            return Err(err);
+        }
+        if let Err(err) = mark_directory_entry_deleted(device, old_slot.lba, old_slot.offset) {
+            for slot in reservation.slots.iter().take(record_count + 1) {
+                let _ = mark_directory_entry_deleted(device, slot.0, slot.1);
+            }
+            if is_directory {
+                let _ = update_dotdot(device, volume, old_slot.entry.first_cluster, old_parent);
+            }
+            return Err(err);
+        }
+        mark_lfn_prefix_deleted(device, old_slot.lba, old_slot.offset)
     }
-    Ok(())
 }
 
 struct TestDisk {
@@ -2851,10 +2911,15 @@ fn long_filename_self_test() -> bool {
     )
     .is_ok()
         && listed;
-    let delete_ok = delete_path(&mut disk, volume, name).is_ok()
+    let renamed_name = "Renamed long filename.txt";
+    let rename_ok = rename_path(&mut disk, volume, name, renamed_name).is_ok()
         && resolve_path(&mut disk, volume, name).is_err_and(|error| error == Error::NotFound)
+        && resolve_path(&mut disk, volume, renamed_name).is_ok();
+    let delete_ok = delete_path(&mut disk, volume, renamed_name).is_ok()
+        && resolve_path(&mut disk, volume, renamed_name)
+            .is_err_and(|error| error == Error::NotFound)
         && create_path_file(&mut disk, volume, name, b"lfn2").is_ok();
-    read_ok && listing_ok && delete_ok
+    read_ok && listing_ok && rename_ok && delete_ok
 }
 
 fn directory_growth_self_test() -> bool {

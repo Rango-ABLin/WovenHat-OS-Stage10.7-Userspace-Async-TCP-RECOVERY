@@ -11,7 +11,8 @@ checked aliases plus contiguous LFN records. Long-name delete now resolves the
 display name, removes the short entry and its preceding LFN records, and
 verifies slot reuse in the in-memory FAT32 regression. Rename and VFS listing
 display integration now use the decoded name during mounted-directory import;
-the low-level `list_directory` result still exposes only its compatibility
-short-name field. Directory growth still requires a contiguous run of slots,
-and the codec intentionally accepts bounded printable ASCII rather than the
-complete Unicode LFN space.
+rename relocates the bounded LFN sequence with rollback before deleting the old
+sequence. The low-level `list_directory` result still exposes only its
+compatibility short-name field. Directory growth still requires a contiguous
+run of slots, and the codec intentionally accepts bounded printable ASCII
+rather than the complete Unicode LFN space.
