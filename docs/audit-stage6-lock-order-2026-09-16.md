@@ -60,6 +60,11 @@ all registration rollback paths now release the process-table guard before
 touching IPC. The complete release matrix and both 2/4-CPU hotplug cycles were
 rerun after that correction and passed.
 
+After the bounded audit/ATA/snapshot/WovenFS/driver/PCI registry conversion,
+the complete release matrix was rerun on 2026-09-17. All host tests, 1/2/4-CPU
+debug suites, legacy PIC, 4-CPU release suites, release build, and shell smoke
+passed; `target/release-validation/results.json` retains the result.
+
 This closes the bounded lock-order coverage gap for the audited scheduler,
 process, paging, COW, frame-allocation, pager, async-operation, completion-port,
 file/block/network worker, pipe, IPC namespace, WovenGuard lineage, audit, ATA,
