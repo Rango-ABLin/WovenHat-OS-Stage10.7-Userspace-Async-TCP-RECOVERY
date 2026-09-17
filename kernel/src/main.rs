@@ -1738,6 +1738,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     }
     #[cfg(feature = "stage6-hotplug-test")]
     {
+        if !task::hotplug_evacuation_atomic_self_test() {
+            serial::write_line(format_args!("[S6.HOTPLUG] evacuation: FAILED"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!("[S6.HOTPLUG] evacuation: PASSED"));
         const CYCLES: usize = 2;
         for cycle in 0..CYCLES {
             let offline_cpu = smp::online_count().saturating_sub(1);
@@ -1765,6 +1770,41 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             CYCLES,
             smp::online_count(), smp::online_mask()
         ));
+        if smp::online_count() == 4 {
+            for cycle in 0..CYCLES {
+                if !smp::request_cpu_offline(1)
+                    || smp::online_count() != 3
+                    || smp::online_mask() != 0xd
+                    || smp::reschedule_cpu(1)
+                    || !smp::reschedule_cpu(3)
+                {
+                    serial::write_line(format_args!(
+                        "[S6.HOTPLUG] middle offline: FAILED cycle={}", cycle
+                    ));
+                    qemu_test_exit_failure();
+                }
+                if !smp::hotplug_hole_worker_probe(cycle + 1) {
+                    serial::write_line(format_args!(
+                        "[S6.HOTPLUG] hole worker: FAILED cycle={}", cycle
+                    ));
+                    qemu_test_exit_failure();
+                }
+                smp::shootdown();
+                if !smp::request_cpu_online(1)
+                    || smp::online_count() != 4
+                    || smp::online_mask() != 0xf
+                {
+                    serial::write_line(format_args!(
+                        "[S6.HOTPLUG] middle online: FAILED cycle={}", cycle
+                    ));
+                    qemu_test_exit_failure();
+                }
+            }
+            serial::write_line(format_args!(
+                "[S6.HOTPLUG] middle lifecycle: PASSED cycles={} online={} mask={:#x}",
+                CYCLES, smp::online_count(), smp::online_mask()
+            ));
+        }
         qemu_test_exit_success();
     }
     #[cfg(feature = "stage11-2-test")]

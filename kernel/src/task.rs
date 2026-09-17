@@ -705,6 +705,8 @@ pub enum CapabilityError {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SpawnError {
     Full,
+    OfflineCpu,
+    InvalidAffinity,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -731,7 +733,7 @@ const fn cpu_bit(cpu: usize) -> usize {
 }
 
 fn online_affinity_mask() -> usize {
-    crate::smp::online_mask()
+    crate::smp::schedulable_mask()
 }
 
 struct ContextSwitch {
@@ -848,7 +850,7 @@ impl Scheduler {
     }
 
     fn validate_affinity_invariants(&self) {
-        let online = online_affinity_mask();
+        let online = crate::smp::online_mask();
         for task in &self.tasks {
             if matches!(task.state, TaskState::Empty | TaskState::Dead) {
                 continue;
@@ -1061,11 +1063,10 @@ impl Scheduler {
     /// This is a placement hint only: the scheduler lock makes the snapshot
     /// coherent, but later runnable changes may immediately alter the load.
     fn least_loaded_cpu_for_mask(&self, affinity_mask: usize) -> Option<usize> {
-        let online = crate::smp::online_count();
         let loads = self.run_loads();
         let local_domain = crate::smp::cpu_domain(crate::smp::cpu_index());
-        (0..online)
-            .filter(|cpu| affinity_mask & cpu_bit(*cpu) != 0)
+        (0..crate::smp::MAX_CPUS)
+            .filter(|cpu| crate::smp::cpu_is_schedulable(*cpu) && affinity_mask & cpu_bit(*cpu) != 0)
             .min_by_key(|cpu| {
                 (
                     usize::from(crate::smp::cpu_domain(*cpu) != local_domain),
@@ -1092,7 +1093,7 @@ impl Scheduler {
             if task.state != TaskState::Ready
                 || !task.migratable
                 || matches!(task.name, "idle" | "cpu-idle")
-                || task.cpu >= online
+                || !crate::smp::cpu_is_online(task.cpu)
                 // Stage 7.4 proved Ring-3 migration before first dispatch.
                 // Do not extend that proof to a process that has already run
                 // and only later became Ready again after preemption/wakeup.
@@ -1101,8 +1102,11 @@ impl Scheduler {
                 continue;
             }
             let source = task.cpu;
-            for target in 0..online {
-                if target == source || (task.affinity_mask & cpu_bit(target)) == 0 {
+            for target in 0..crate::smp::MAX_CPUS {
+                if target == source
+                    || !crate::smp::cpu_is_schedulable(target)
+                    || (task.affinity_mask & cpu_bit(target)) == 0
+                {
                     continue;
                 }
                 let source_load = loads[source].runnable();
@@ -1460,6 +1464,11 @@ pub fn spawn_multicore_user_process(
 
     let result = {
         let mut scheduler = SCHEDULER.lock();
+        if affinity_mask & !online_affinity_mask() != 0 {
+            drop(scheduler);
+            let _ = userspace::destroy(program.address_space);
+            return Err(ProcessError::Full);
+        }
         scheduler.reap_dead();
         let Some(task_slot) = scheduler
             .tasks
@@ -1534,7 +1543,7 @@ pub fn spawn_pinned_user_process_on(
     name: &'static str,
     program: userspace::UserProgram,
 ) -> Result<(ProcessId, UserTaskContext), ProcessError> {
-    if !crate::smp::cpu_is_online(cpu) || !program.image.is_valid() {
+    if !crate::smp::cpu_is_schedulable(cpu) || !program.image.is_valid() {
         let _ = userspace::destroy(program.address_space);
         return Err(ProcessError::Full);
     }
@@ -1547,6 +1556,11 @@ pub fn spawn_pinned_user_process_on(
 
     let result = {
         let mut scheduler = SCHEDULER.lock();
+        if !crate::smp::cpu_is_schedulable(cpu) {
+            drop(scheduler);
+            let _ = userspace::destroy(program.address_space);
+            return Err(ProcessError::Full);
+        }
         scheduler.reap_dead();
         let Some(task_slot) = scheduler
             .tasks
@@ -4952,7 +4966,9 @@ pub fn init_ap(cpu: usize) {
 fn evacuate_cpu(scheduler: &mut Scheduler, target: usize) -> bool {
     let current_slot = scheduler.current_slot[target];
     let target_bit = cpu_bit(target);
-    for (slot, task) in scheduler.tasks.iter_mut().enumerate() {
+    let remaining = online_affinity_mask() & !target_bit;
+    let mut changes = [None; MAX_TASKS];
+    for (slot, task) in scheduler.tasks.iter().enumerate() {
         if task.state == TaskState::Empty {
             continue;
         }
@@ -4960,8 +4976,7 @@ fn evacuate_cpu(scheduler: &mut Scheduler, target: usize) -> bool {
             if task.cpu == target {
                 // A dead task owns no runnable context. Move it to the BSP so
                 // its scheduler-owned reclamation can run after the AP parks.
-                task.cpu = 0;
-                task.affinity_mask = cpu_bit(0);
+                changes[slot] = Some((0, cpu_bit(0)));
             }
             continue;
         }
@@ -4977,33 +4992,83 @@ fn evacuate_cpu(scheduler: &mut Scheduler, target: usize) -> bool {
         if matches!(task.name, "idle" | "cpu-idle") {
             continue;
         }
+        let new_mask = task.affinity_mask & !target_bit;
+        if new_mask == 0 {
+            return false;
+        }
         if task.cpu == target {
-            if matches!(task.state, TaskState::Running | TaskState::Switching) {
-                if slot == current_slot {
-                    continue;
-                }
+            if matches!(task.state, TaskState::Running | TaskState::Switching)
+                && slot != current_slot
+            {
                 return false;
             }
-            if !task.migratable {
+            if !task.migratable || (task.entry.is_none() && task.ever_dispatched) {
                 return false;
             }
-            let Some(destination) = (0..target)
-                .find(|cpu| task.affinity_mask & cpu_bit(*cpu) != 0)
+            let Some(destination) = (0..crate::smp::MAX_CPUS)
+                .find(|cpu| remaining & task.affinity_mask & cpu_bit(*cpu) != 0)
             else {
                 return false;
             };
-            task.cpu = destination;
+            if slot != current_slot {
+                changes[slot] = Some((destination, new_mask));
+            }
         } else if !task.migratable {
             // A task owned by another CPU with a hard affinity bit for the
             // target cannot safely retain that bit after the target leaves.
             return false;
+        } else {
+            changes[slot] = Some((task.cpu, new_mask));
         }
-        task.affinity_mask &= !target_bit;
-        if task.affinity_mask == 0 {
-            return false;
+    }
+    // No task changes ownership until every candidate is known to have a
+    // legal destination. The scheduler lock prevents the plan from going stale.
+    for (task, change) in scheduler.tasks.iter_mut().zip(changes) {
+        if let Some((cpu, affinity_mask)) = change {
+            task.cpu = cpu;
+            task.affinity_mask = affinity_mask;
         }
     }
     true
+}
+
+#[cfg(feature = "stage6-hotplug-test")]
+pub fn hotplug_evacuation_atomic_self_test() -> bool {
+    if crate::smp::online_count() < 2 {
+        return false;
+    }
+    // On the four-CPU gate, plan a middle-CPU evacuation even though the
+    // external control plane still restricts actual offlining to the tail.
+    let target = 1;
+    let target_bit = cpu_bit(target);
+    let mut scheduler = Scheduler::empty();
+    scheduler.current_slot[target] = 0;
+    scheduler.tasks[0].state = TaskState::Running;
+    scheduler.tasks[0].name = "cpu-idle";
+    scheduler.tasks[0].cpu = target;
+    scheduler.tasks[0].affinity_mask = target_bit;
+    scheduler.tasks[1].state = TaskState::Ready;
+    scheduler.tasks[1].name = "movable-probe";
+    scheduler.tasks[1].entry = Some(idle_task);
+    scheduler.tasks[1].cpu = target;
+    scheduler.tasks[1].affinity_mask = online_affinity_mask();
+    scheduler.tasks[1].migratable = true;
+    scheduler.tasks[2].state = TaskState::Ready;
+    scheduler.tasks[2].name = "pinned-probe";
+    scheduler.tasks[2].entry = Some(idle_task);
+    scheduler.tasks[2].cpu = target;
+    scheduler.tasks[2].affinity_mask = target_bit;
+
+    let rejected = !evacuate_cpu(&mut scheduler, target)
+        && scheduler.tasks[1].cpu == target
+        && scheduler.tasks[1].affinity_mask == online_affinity_mask()
+        && scheduler.tasks[2].cpu == target
+        && scheduler.tasks[2].affinity_mask == target_bit;
+    scheduler.tasks[2] = TaskControlBlock::empty();
+    let accepted = evacuate_cpu(&mut scheduler, target)
+        && scheduler.tasks[1].cpu == 0
+        && scheduler.tasks[1].affinity_mask == (online_affinity_mask() & !target_bit);
+    rejected && accepted
 }
 
 /// Prepare an AP for offline transition by evacuating every non-running task
@@ -5012,7 +5077,7 @@ fn evacuate_cpu(scheduler: &mut Scheduler, target: usize) -> bool {
 /// ownership rule of the scheduler.
 #[allow(dead_code)] // Called by the Stage 6 lifecycle control plane.
 pub fn prepare_cpu_offline(target: usize) -> bool {
-    if target == 0 || target + 1 != crate::smp::online_count() {
+    if target == 0 || !crate::smp::cpu_is_online(target) {
         return false;
     }
     x86_64::instructions::interrupts::without_interrupts(|| {
@@ -5028,7 +5093,7 @@ pub fn prepare_cpu_offline(target: usize) -> bool {
 /// Complete the transition from the AP-owned idle task. This is called only
 /// on the target CPU after the reschedule request has selected its idle task.
 pub fn offline_cpu_checkpoint(target: usize) -> bool {
-    if target == 0 || target + 1 != crate::smp::online_count() {
+    if target == 0 || !crate::smp::cpu_is_online(target) {
         return false;
     }
     x86_64::instructions::interrupts::without_interrupts(|| {
@@ -5057,10 +5122,7 @@ pub fn offline_cpu_checkpoint(target: usize) -> bool {
 /// hotplug checkpoint. The previous `offline-idle` entry is reused to keep
 /// repeated offline/online cycles bounded by the fixed task table.
 pub fn online_cpu_checkpoint(target: usize) -> bool {
-    if target == 0
-        || target >= crate::smp::online_count()
-        || !crate::smp::cpu_is_online(target)
-    {
+    if target == 0 || !crate::smp::cpu_is_online(target) {
         return false;
     }
     x86_64::instructions::interrupts::without_interrupts(|| {
@@ -5090,11 +5152,14 @@ fn spawn_kernel_on(
     migratable: bool,
     affinity_mask: usize,
 ) -> Result<TaskId, SpawnError> {
-    assert!(cpu < crate::smp::online_count());
-    assert!((affinity_mask & cpu_bit(cpu)) != 0, "spawn CPU must be inside affinity mask");
-    assert_eq!(affinity_mask & !online_affinity_mask(), 0, "affinity includes offline CPU");
     let result = x86_64::instructions::interrupts::without_interrupts(|| {
         let mut scheduler = SCHEDULER.lock();
+        if !crate::smp::cpu_is_schedulable(cpu) || affinity_mask & !online_affinity_mask() != 0 {
+            return Err(SpawnError::OfflineCpu);
+        }
+        if affinity_mask & cpu_bit(cpu) == 0 {
+            return Err(SpawnError::InvalidAffinity);
+        }
         let slot = scheduler
             .tasks
             .iter()
@@ -5156,7 +5221,8 @@ pub fn spawn_io_service(name: &'static str, entry: fn() -> !) -> Result<TaskId, 
     let cpu = {
         let scheduler = SCHEDULER.lock();
         let loads = scheduler.run_loads();
-        (0..crate::smp::online_count())
+        (0..crate::smp::MAX_CPUS)
+            .filter(|cpu| crate::smp::cpu_is_schedulable(*cpu))
             .min_by_key(|cpu| {
                 (
                     usize::from(crate::smp::cpu_domain(*cpu) != crate::smp::cpu_domain(crate::smp::cpu_index())),
@@ -5183,12 +5249,15 @@ pub fn spawn_io_service(name: &'static str, entry: fn() -> !) -> Result<TaskId, 
 /// it is execution-history metadata used to bound Stage 7.6 *automatic* Ring-3
 /// rebalancing, not a replacement for the validated Ready-state contract.
 pub fn migrate_ready_task(id: TaskId, target_cpu: usize) -> Result<(), MigrationError> {
-    if target_cpu >= crate::smp::online_count() {
+    if !crate::smp::cpu_is_schedulable(target_cpu) {
         return Err(MigrationError::OfflineCpu);
     }
 
     let result = x86_64::instructions::interrupts::without_interrupts(|| {
         let mut scheduler = SCHEDULER.lock();
+        if !crate::smp::cpu_is_schedulable(target_cpu) {
+            return Err(MigrationError::OfflineCpu);
+        }
         let task = scheduler
             .tasks
             .iter_mut()
@@ -5234,13 +5303,12 @@ pub fn set_ready_task_affinity(id: TaskId, affinity_mask: usize) -> Result<(), A
     if affinity_mask == 0 {
         return Err(AffinityError::InvalidMask);
     }
-    let online = online_affinity_mask();
-    if affinity_mask & !online != 0 {
-        return Err(AffinityError::OfflineCpu);
-    }
 
     let target = x86_64::instructions::interrupts::without_interrupts(|| {
         let mut scheduler = SCHEDULER.lock();
+        if affinity_mask & !online_affinity_mask() != 0 {
+            return Err(AffinityError::OfflineCpu);
+        }
         let task = scheduler
             .tasks
             .iter_mut()
@@ -5256,7 +5324,7 @@ pub fn set_ready_task_affinity(id: TaskId, affinity_mask: usize) -> Result<(), A
         let target = if affinity_mask & cpu_bit(task.cpu) != 0 {
             None
         } else {
-            let new_cpu = (0..crate::smp::online_count())
+            let new_cpu = (0..crate::smp::MAX_CPUS)
                 .find(|cpu| affinity_mask & cpu_bit(*cpu) != 0)
                 .expect("validated affinity must contain an online CPU");
             task.cpu = new_cpu;
@@ -5379,7 +5447,8 @@ pub unsafe fn spawn_parallel(name: &'static str, entry: fn() -> !) -> Result<Tas
     let cpu = {
         let scheduler = SCHEDULER.lock();
         let loads = scheduler.run_loads();
-        (0..crate::smp::online_count())
+        (0..crate::smp::MAX_CPUS)
+            .filter(|cpu| crate::smp::cpu_is_schedulable(*cpu))
             .min_by_key(|cpu| loads[*cpu].runnable())
             .unwrap_or(0)
     };

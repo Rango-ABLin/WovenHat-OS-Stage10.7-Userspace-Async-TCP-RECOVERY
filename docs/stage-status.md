@@ -28,6 +28,16 @@ contiguous arena; see the [NUMA/x2APIC audit](audit-stage6-numa-2026-09-16.md),
 [lock-order audit](audit-stage6-lock-order-2026-09-16.md) and
 [DMA audit](audit-stage6-dma-2026-09-16.md).
 
+The CPU lifecycle follow-up supports a non-contiguous online mask in QEMU:
+CPU 1 can park while CPU 3 continues scheduling work and acknowledging TLB
+shootdowns, then rejoin its stable slot. Offline preparation validates every
+task move before committing any; draining CPUs reject new placement. See the
+[non-contiguous hotplug audit](audit-stage6-noncontiguous-hotplug-2026-09-17.md).
+Physical non-contiguous hotplug, high APIC-ID, and multi-node NUMA hardware
+qualification remain open.
+The final source passed the complete release matrix and dedicated twice-cycled
+2/4-CPU hotplug gates after this follow-up.
+
 The 2026-09-17 lock follow-up made the file-frame cache IRQ-safe, moved
 fork/dup reference retention outside the process-table lock, and added
 generation-tagged VFS and pipe handles to reject stale slot reuse. The VFS

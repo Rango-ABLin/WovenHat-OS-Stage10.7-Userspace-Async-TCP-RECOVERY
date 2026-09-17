@@ -47,3 +47,8 @@ This closes the software gap for the bounded contiguous-prefix AP
 offline/re-online lifecycle. Non-contiguous hotplug topology, APIC-ID-above-255
 hardware, and multi-node NUMA qualification remain separate production
 requirements.
+
+The 2026-09-17 [non-contiguous hotplug follow-up](audit-stage6-noncontiguous-hotplug-2026-09-17.md)
+supersedes the contiguous-prefix software restriction above. Its QEMU gate
+parks and restores CPU 1 while CPU 3 remains active; physical hardware
+qualification is still open.

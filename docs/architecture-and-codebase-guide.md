@@ -76,6 +76,20 @@ This lock split covers the VFS/ATA slow-I/O boundary. FAT32 mutation still
 crosses the storage and VFS layers without one transaction, so unrestricted
 concurrent filesystem operations remain a separate production requirement.
 
+## Stage 6 CPU lifecycle
+
+Logical CPU slots and APIC identities remain stable while the online mask may
+have holes. `online_count` is a population count, not an upper bound on valid
+CPU indices. Scheduler placement uses a separate schedulable mask that excludes
+APs draining or rebuilding their idle task; TLB shootdown snapshots the
+physical online mask under the same transition lock that publishes an AP's
+offline/online state. An offline request first plans all Ready-task moves under
+the scheduler lock and commits them only if every task has a legal destination.
+The CPU-owned idle checkpoint revalidates that plan before parking. A parked
+AP retains its bootstrap stack and rejoins its original logical slot.
+The 4-CPU QEMU gate offlines CPU 1 while CPU 3 remains active, runs a worker on
+CPU 3, and performs an acknowledged shootdown across the resulting hole.
+
 ## Stage 10.7 objects and data flow
 
 `async_op::Handle` identifies a slot and a 32-bit generation. Its raw ABI uses

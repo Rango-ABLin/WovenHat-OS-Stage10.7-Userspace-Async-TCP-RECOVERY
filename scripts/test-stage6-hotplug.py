@@ -48,8 +48,11 @@ def main():
     mask_after = (1 << online_after) - 1
     required = [f'[SMP] online={args.cpus} expected={args.cpus}',
                 '[SMP] topology/NUMA affinity: PASSED',
+                '[S6.HOTPLUG] evacuation: PASSED',
                 f'[S6.HOTPLUG] offline AP: PASSED online={online_after} mask=0x{mask_after:x}',
                 f'[S6.HOTPLUG] lifecycle: PASSED cycles=2 online={args.cpus} mask=0x{((1 << args.cpus) - 1):x}']
+    if args.cpus == 4:
+        required.append('[S6.HOTPLUG] middle lifecycle: PASSED cycles=2 online=4 mask=0xf')
     if result.returncode != 33 or any(marker not in log for marker in required):
         print(log[-12000:], file=sys.stderr)
         print('FAILED; evidence:', out, file=sys.stderr)

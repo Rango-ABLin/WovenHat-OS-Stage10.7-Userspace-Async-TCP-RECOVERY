@@ -21,6 +21,7 @@ static OFFLINE_STATE: [AtomicU8; MAX_CPUS] = [const { AtomicU8::new(0) }; MAX_CP
 static ACK: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 static SHOOT_LOCK: AtomicBool = AtomicBool::new(false);
+static HOTPLUG_REQUEST: AtomicBool = AtomicBool::new(false);
 static LAPIC: AtomicU64 = AtomicU64::new(0);
 static X2APIC_REQUESTED: AtomicBool = AtomicBool::new(false);
 static X2APIC_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -29,6 +30,8 @@ static COUNT: AtomicUsize = AtomicUsize::new(1);
 static IOAPIC: AtomicU64 = AtomicU64::new(0);
 static TIMER_COUNT: AtomicU32 = AtomicU32::new(1_000_000);
 static RESCHEDULE_IPIS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "stage6-hotplug-test")]
+static HOTPLUG_HOLE_DONE: AtomicUsize = AtomicUsize::new(0);
 #[repr(align(16))]
 struct Stack(UnsafeCell<[u8; 131072]>);
 // Each AP exclusively owns its bootstrap stack for its entire lifetime.
@@ -82,6 +85,21 @@ pub fn cpu_is_online(cpu: usize) -> bool {
     cpu < MAX_CPUS && ONLINE[cpu].load(Ordering::Acquire)
 }
 
+/// A draining or not-yet-ready AP remains physically online for interrupt
+/// routing, but must not receive new scheduler ownership or affinity bits.
+pub fn cpu_is_schedulable(cpu: usize) -> bool {
+    if !cpu_is_online(cpu) {
+        return false;
+    }
+    !matches!(OFFLINE_STATE[cpu].load(Ordering::Acquire), 1 | 2 | 6)
+}
+
+pub fn schedulable_mask() -> usize {
+    (0..MAX_CPUS).fold(0, |mask, cpu| {
+        if cpu_is_schedulable(cpu) { mask | (1usize << cpu) } else { mask }
+    })
+}
+
 /// Snapshot the CPUs that have individually published themselves online.
 pub fn online_mask() -> usize {
     ONLINE
@@ -102,14 +120,32 @@ pub fn offline_requested(cpu: usize) -> bool {
     cpu < MAX_CPUS && OFFLINE_STATE[cpu].load(Ordering::Acquire) == 1
 }
 
-/// Ask the highest-numbered AP to enter its permanent offline state after all
-/// eligible tasks have been evacuated. Only the highest online CPU is accepted
-/// so `COUNT` remains a contiguous online prefix and existing CPU indexing stays
-/// valid. Re-online requires a fresh AP trampoline and is intentionally separate.
+struct HotplugRequestGuard;
+
+impl HotplugRequestGuard {
+    fn claim() -> Option<Self> {
+        HOTPLUG_REQUEST
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| Self)
+    }
+}
+
+impl Drop for HotplugRequestGuard {
+    fn drop(&mut self) {
+        HOTPLUG_REQUEST.store(false, Ordering::Release);
+    }
+}
+
+/// Ask an online AP to park after every task that can leave it has been
+/// evacuated. Requests are serialized; CPU slots and APIC identities remain
+/// stable even when the online mask has a hole.
 #[allow(dead_code)] // Management syscall wiring is a later lifecycle stage.
 pub fn request_cpu_offline(cpu: usize) -> bool {
-    let online = online_count();
-    if cpu == 0 || cpu + 1 != online || !cpu_is_online(cpu) {
+    let Some(_request) = HotplugRequestGuard::claim() else {
+        return false;
+    };
+    if cpu == 0 || !cpu_is_online(cpu) {
         return false;
     }
     let state = OFFLINE_STATE[cpu].load(Ordering::Acquire);
@@ -141,14 +177,15 @@ pub fn request_cpu_offline(cpu: usize) -> bool {
     }
 }
 
-/// Ask a parked AP to rejoin the contiguous online prefix. The AP retains its
-/// bootstrap context while parked, so re-online does not allocate a new stack
-/// or rerun firmware startup. Only the next CPU after the current prefix may
-/// rejoin; this keeps scheduler CPU indexing and affinity masks deterministic.
+/// Ask a parked AP to rejoin its stable logical slot and APIC identity. The
+/// bootstrap context is retained, so re-online needs no new stack or firmware
+/// startup and may fill a hole in the online mask.
 #[allow(dead_code)] // Management syscall wiring is a later lifecycle stage.
 pub fn request_cpu_online(cpu: usize) -> bool {
+    let Some(_request) = HotplugRequestGuard::claim() else {
+        return false;
+    };
     if cpu == 0
-        || cpu != online_count()
         || cpu >= MAX_CPUS
         || OFFLINE_STATE[cpu].load(Ordering::Acquire) != 5
     {
@@ -205,8 +242,10 @@ pub fn offline_checkpoint(cpu: usize) -> bool {
     // Mask the local timer before withdrawing the CPU from the global online
     // set. Peer schedulers then stop sending timer/shootdown work to it.
     write(0x320, 1 << 16);
+    lock_shootdown();
     ONLINE[cpu].store(false, Ordering::Release);
-    COUNT.store(cpu, Ordering::Release);
+    COUNT.fetch_sub(1, Ordering::AcqRel);
+    SHOOT_LOCK.store(false, Ordering::Release);
     OFFLINE_STATE[cpu].store(5, Ordering::Release);
     true
 }
@@ -216,7 +255,7 @@ pub fn offline_checkpoint(cpu: usize) -> bool {
 /// so repeated lifecycle tests do not consume task-table capacity.
 pub fn online_checkpoint(cpu: usize) -> bool {
     if cpu == 0
-        || cpu != online_count()
+        || cpu >= MAX_CPUS
         || OFFLINE_STATE[cpu].load(Ordering::Acquire) != 6
     {
         return false;
@@ -225,20 +264,48 @@ pub fn online_checkpoint(cpu: usize) -> bool {
     // Publish the CPU before creating its live idle TCB, matching AP bootstrap
     // ordering. This prevents the scheduler invariant checker from observing
     // a live task whose affinity refers to a still-offline CPU.
+    lock_shootdown();
     ONLINE[cpu].store(true, Ordering::Release);
-    COUNT.store(cpu + 1, Ordering::Release);
+    COUNT.fetch_add(1, Ordering::AcqRel);
+    SHOOT_LOCK.store(false, Ordering::Release);
     if task::online_cpu_checkpoint(cpu) {
         start_timer();
         OFFLINE_STATE[cpu].store(7, Ordering::Release);
         true
     } else {
         serial::write_line(format_args!("[S6.HOTPLUG] online checkpoint rejected cpu={}", cpu));
+        lock_shootdown();
         ONLINE[cpu].store(false, Ordering::Release);
-        COUNT.store(cpu, Ordering::Release);
+        COUNT.fetch_sub(1, Ordering::AcqRel);
+        SHOOT_LOCK.store(false, Ordering::Release);
         OFFLINE_STATE[cpu].store(3, Ordering::Release);
         x86_64::instructions::interrupts::enable();
         false
     }
+}
+
+#[cfg(feature = "stage6-hotplug-test")]
+fn hotplug_hole_worker() -> ! {
+    HOTPLUG_HOLE_DONE.fetch_add(1, Ordering::Release);
+    task::exit_current_task();
+}
+
+#[cfg(feature = "stage6-hotplug-test")]
+pub fn hotplug_hole_worker_probe(expected: usize) -> bool {
+    // CPU 3 remains online after CPU 1 leaves, even though online_count is 3.
+    if online_mask() != 0xd
+        || unsafe { task::spawn_on(3, "hotplug-hole", hotplug_hole_worker) }.is_err()
+    {
+        return false;
+    }
+    let deadline = crate::timer::ticks().saturating_add(100);
+    while HOTPLUG_HOLE_DONE.load(Ordering::Acquire) < expected {
+        if crate::timer::ticks() >= deadline {
+            return false;
+        }
+        task::yield_now();
+    }
+    true
 }
 pub fn cpu_domain(cpu: usize) -> u32 {
     if cpu < MAX_CPUS {
@@ -250,7 +317,10 @@ pub fn cpu_domain(cpu: usize) -> u32 {
 pub fn topology_domains() -> u16 {
     let mut seen = [u32::MAX; MAX_CPUS];
     let mut count = 0_u16;
-    for cpu in 0..online_count() {
+    for cpu in 0..MAX_CPUS {
+        if !cpu_is_online(cpu) {
+            continue;
+        }
         let domain = cpu_domain(cpu);
         if !seen[..count as usize].contains(&domain) {
             seen[count as usize] = domain;
@@ -347,7 +417,7 @@ fn send(id: u32, command: u32) {
 /// shootdowns. Calling it for the current CPU simply requests a local
 /// reschedule and avoids a self-IPI.
 pub fn reschedule_cpu(cpu: usize) -> bool {
-    if cpu >= online_count() || !ONLINE[cpu].load(Ordering::Acquire) {
+    if !cpu_is_online(cpu) {
         return false;
     }
     if cpu == cpu_index() {
@@ -644,25 +714,24 @@ pub fn shootdown() {
     x86_64::instructions::interrupts::without_interrupts(shootdown_inner);
 }
 fn shootdown_inner() {
-    if online_count() == 1 {
+    lock_shootdown();
+    let mask = online_mask();
+    if mask.count_ones() <= 1 {
+        SHOOT_LOCK.store(false, Ordering::Release);
         return;
-    }
-    while SHOOT_LOCK
-        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-        .is_err()
-    {
-        core::hint::spin_loop();
     }
     let generation = GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
     let current = cpu_index();
     acknowledge_tlb();
-    for (cpu, id) in IDS.iter().enumerate().take(online_count()) {
-        if cpu != current {
+    for (cpu, id) in IDS.iter().enumerate() {
+        if cpu != current && mask & (1usize << cpu) != 0 {
             send(id.load(Ordering::Relaxed), 0x400);
         }
     }
     let start = unsafe { core::arch::x86_64::_rdtsc() };
-    while (0..online_count()).any(|cpu| ACK[cpu].load(Ordering::Acquire) < generation) {
+    while (0..MAX_CPUS).any(|cpu| {
+        mask & (1usize << cpu) != 0 && ACK[cpu].load(Ordering::Acquire) < generation
+    }) {
         assert!(
             unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) < 5_000_000_000,
             "TLB shootdown timeout"
@@ -670,6 +739,15 @@ fn shootdown_inner() {
         core::hint::spin_loop();
     }
     SHOOT_LOCK.store(false, Ordering::Release);
+}
+
+fn lock_shootdown() {
+    while SHOOT_LOCK
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        core::hint::spin_loop();
+    }
 }
 
 static ARRIVED: AtomicUsize = AtomicUsize::new(0);
@@ -1293,7 +1371,7 @@ pub fn diagnostic(console: &mut crate::console::Console<'_>) {
         count,
         GENERATION.load(Ordering::Acquire),
         reschedule_ipi_count(),
-        &loads[..count],
+        loads,
         task::rebalance_stats()
     ));
 }
