@@ -41,6 +41,10 @@ bounded number of times. Rename increments node versions. Prefix iteration
 copies bounded path names before calling external code. File-frame cache
 updates may nest under the VFS guards at rank 10.
 
+The global heap's metadata guard is rank 50 and disables local interrupts
+during allocation and deallocation. Boot-time heap page mapping occurs before
+acquiring that guard, preserving the paging (10) to heap (50) order.
+
 This lock split covers the VFS/ATA slow-I/O boundary. FAT32 mutation still
 crosses the storage and VFS layers without one transaction, so unrestricted
 concurrent filesystem operations remain a separate production requirement.

@@ -125,3 +125,9 @@ persist error if that intermittent failure recurs. Five more sequential
 The original failed serial log was overwritten before it could be copied, so
 the cause of that one transient failure remains unproven; it is not treated
 as evidence that unrestricted concurrent filesystem mutation is complete.
+
+The heap metadata lock is now rank-50 IRQ-safe. Boot-time heap page mapping
+occurs before that guard is taken, so runtime allocation never nests a
+lower-ranked paging lock beneath the heap. The full release matrix passed
+after this change, as did twice-cycled 2/4-CPU hotplug. The 256 KiB heap
+capacity and fixed metadata tables remain separate scalability limits.

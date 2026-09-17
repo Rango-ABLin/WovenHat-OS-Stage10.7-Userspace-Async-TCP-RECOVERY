@@ -39,6 +39,9 @@ locks. See the
 matrix and twice-cycled 2/4-CPU hotplug gates passed after these changes.
 The pipe follow-up also uses scheduler-latched wakeups and rejects full waiter
 tables, closing a lost-wakeup window under concurrent readers and writers.
+The global heap metadata lock is now rank-50 IRQ-safe; page mapping happens
+before that guard is taken during boot. Its full release and 2/4-CPU hotplug
+gates passed, while heap capacity remains bounded.
 
 ## Stage 10.7 — accepted on 2026-09-16
 

@@ -4,7 +4,7 @@ use core::{
 };
 
 use alloc::{boxed::Box, vec::Vec};
-use spin::Mutex;
+use crate::irq_lock::IrqMutex as Mutex;
 
 use crate::config::MAX_HEAP_ALLOCATIONS as MAX_ALLOCATIONS;
 use crate::paging;
@@ -14,7 +14,9 @@ pub const SIZE: usize = 256 * 1024;
 
 #[global_allocator]
 static ALLOCATOR: TrackedAllocator = TrackedAllocator;
-static HEAP: Mutex<HeapState> = Mutex::new(HeapState::empty());
+// Allocation can occur beneath paging, frame, process, or audit guards. The
+// heap metadata never acquires another ranked lock during runtime allocation.
+static HEAP: Mutex<HeapState> = Mutex::with_rank(HeapState::empty(), 50);
 
 #[derive(Clone, Copy)]
 struct FreeBlock {
@@ -59,8 +61,6 @@ impl HeapState {
         if self.start != 0 {
             return Err(InitError::AlreadyInitialized);
         }
-
-        paging::map_range(START, SIZE).map_err(|_| InitError::Paging)?;
 
         let start = usize::try_from(START).map_err(|_| InitError::AddressOverflow)?;
         let end = start.checked_add(SIZE).ok_or(InitError::AddressOverflow)?;
@@ -232,6 +232,11 @@ unsafe impl GlobalAlloc for TrackedAllocator {
 }
 
 pub fn init() -> Result<(), InitError> {
+    if HEAP.lock().start != 0 {
+        return Err(InitError::AlreadyInitialized);
+    }
+    // Map pages before taking the rank-50 heap guard. Paging is rank 10.
+    paging::map_range(START, SIZE).map_err(|_| InitError::Paging)?;
     HEAP.lock().init()
 }
 
