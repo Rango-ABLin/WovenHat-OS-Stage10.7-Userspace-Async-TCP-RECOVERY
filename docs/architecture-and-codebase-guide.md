@@ -29,6 +29,22 @@ programs, and host/QEMU acceptance harnesses. The supplied
 | `panic.rs`, `benchmark.rs` | Failure reporting and existing benchmark support |
 | `tests/`, `scripts/`, `run-stage*-acceptance.ps1` | Host regressions, QEMU orchestration and stage preservation gates |
 
+## Stage 6 filesystem concurrency boundary
+
+`vfs.rs` keeps node metadata and shared open descriptions in separate rank-10
+IRQ mutexes; when both are needed, open descriptions precede nodes. Handles
+carry non-wrapping slot epochs, and node references carry generations. Disk-
+backed reads and lazy materialization snapshot identity, backing path, version,
+and (for shared reads) offset, drop both VFS guards for ATA I/O, then revalidate
+before publishing data or changing the seek position. A conflict retries a
+bounded number of times. Rename increments node versions. Prefix iteration
+copies bounded path names before calling external code. File-frame cache
+updates may nest under the VFS guards at rank 10.
+
+This lock split covers the VFS/ATA slow-I/O boundary. FAT32 mutation still
+crosses the storage and VFS layers without one transaction, so unrestricted
+concurrent filesystem operations remain a separate production requirement.
+
 ## Stage 10.7 objects and data flow
 
 `async_op::Handle` identifies a slot and a 32-bit generation. Its raw ABI uses

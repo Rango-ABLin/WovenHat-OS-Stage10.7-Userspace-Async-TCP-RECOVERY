@@ -2092,9 +2092,7 @@ pub fn fork_current(frame: crate::syscall::UserForkFrame) -> Result<ProcessId, P
             .ok_or(ProcessError::Full)?;
 
     // Retain VFS and pipe objects before the process-table transaction. The
-    // pipe table is rank 10 and must never be entered under rank 20; keeping
-    // VFS outside this guard also avoids a future inversion when its slow-I/O
-    // transaction is split and the registry becomes IRQ-safe.
+    // pipe and VFS tables are rank 10 and must never be entered under rank 20.
     let mut child_files = match clone_file_table(&parent.files) {
         Ok(files) => files,
         Err(error) => {

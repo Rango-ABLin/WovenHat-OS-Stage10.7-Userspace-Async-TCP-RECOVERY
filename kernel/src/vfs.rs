@@ -1,4 +1,4 @@
-use spin::Mutex;
+use crate::irq_lock::IrqMutex as Mutex;
 use unicode_normalization::UnicodeNormalization;
 
 use crate::config::{
@@ -16,7 +16,7 @@ pub enum NodeKind {
     Directory,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct DiskPath {
     bytes: [u8; PATH_CAPACITY],
     length: usize,
@@ -373,7 +373,11 @@ impl Registry {
             .position(|n| n.matches(old))
             .ok_or(Error::NotFound)?;
         let directory = self.nodes[index].kind == NodeKind::Directory;
-        for node in self.nodes.iter_mut().filter(|n| n.occupied) {
+        for (index, node) in self.nodes.iter_mut().enumerate() {
+            if !node.occupied {
+                continue;
+            }
+            let mut changed = false;
             let suffix_start = if node.matches(old)
                 || (directory && descendant_suffix(old, node.path_str()).is_some())
             {
@@ -382,6 +386,7 @@ impl Registry {
                 None
             };
             if let Some(start) = suffix_start {
+                changed = true;
                 let suffix_len = node.path_length - start;
                 node.path.copy_within(start..node.path_length, new.len());
                 node.path[..new.len()].copy_from_slice(new.as_bytes());
@@ -400,11 +405,15 @@ impl Registry {
                 }
             });
             if let (Some(backing), Some(start)) = (node.backing.as_mut(), backing_suffix_start) {
+                changed = true;
                 let suffix_len = backing.length - start;
                 backing.bytes.copy_within(start..backing.length, new.len());
                 backing.bytes[..new.len()].copy_from_slice(new.as_bytes());
                 backing.length = new.len() + suffix_len;
                 backing.bytes[backing.length..].fill(0);
+            }
+            if changed {
+                self.versions[index] = self.versions[index].wrapping_add(1);
             }
         }
         Ok(())
@@ -596,7 +605,7 @@ fn immediate_child_name<'a>(dir: &str, child: &'a str) -> Option<&'a str> {
     Some(name)
 }
 
-static REGISTRY: Mutex<Registry> = Mutex::new(Registry::boot());
+static REGISTRY: Mutex<Registry> = Mutex::with_rank(Registry::boot(), 10);
 
 /// Handle to a shared open-file description.
 ///
@@ -700,7 +709,7 @@ impl OpenFileTable {
     }
 }
 
-static OPEN_FILES: Mutex<OpenFileTable> = Mutex::new(OpenFileTable::empty());
+static OPEN_FILES: Mutex<OpenFileTable> = Mutex::with_rank(OpenFileTable::empty(), 10);
 
 /// Backwards-compatible alias used by older call sites during the transition.
 /// Prefer `OpenFileId` for new code.
@@ -783,53 +792,59 @@ pub fn can_remove(path: &str) -> Result<(), Error> {
 /// open descriptors even when the backing FAT32 name is about to disappear.
 pub fn prepare_remove(path: &str) -> Result<(), Error> {
     validate_absolute_path(path)?;
-    let files = OPEN_FILES.lock();
-    let mut registry = REGISTRY.lock();
-    let index = registry
-        .nodes
-        .iter()
-        .position(|node| node.matches(path))
-        .ok_or(Error::NotFound)?;
-    registry.can_remove(path)?;
-    if registry.nodes[index].kind == NodeKind::File
-        && files
-            .entries
-            .iter()
-            .any(|entry| entry.occupied && entry.node == index)
-    {
-        materialize_disk_node(&mut registry.nodes[index])?;
+    for _ in 0..8 {
+        let pending = {
+            let files = OPEN_FILES.lock();
+            let registry = REGISTRY.lock();
+            let index = registry.removable_index(path)?;
+            let open_file = registry.nodes[index].kind == NodeKind::File
+                && files.entries.iter().any(|entry| entry.occupied && entry.node == index);
+            if !open_file || registry.nodes[index].backing.is_none() {
+                return Ok(());
+            }
+            (index, registry.generations[index])
+        };
+        materialize_disk_node(pending.0, pending.1)?;
     }
-    Ok(())
+    Err(Error::Io)
 }
 
 /// Remove a file or empty directory.
 pub fn remove(path: &str) -> Result<(), Error> {
     validate_absolute_path(path)?;
-    let files = OPEN_FILES.lock();
-    let mut registry = REGISTRY.lock();
-    let index = registry
-        .nodes
-        .iter()
-        .position(|node| node.matches(path))
-        .ok_or(Error::NotFound)?;
-    if registry.nodes[index].kind == NodeKind::File
-        && files
-            .entries
-            .iter()
-            .any(|entry| entry.occupied && entry.node == index)
-    {
-        // FAT32 backing is path-based. Preserve its bytes before releasing the
-        // name so persisting a replacement cannot redirect an older open inode.
-        materialize_disk_node(&mut registry.nodes[index])?;
-        // An unnamed occupied node remains addressable through its open references.
-        registry.nodes[index].path_length = 0;
-        registry.nodes[index].path.fill(0);
-        Ok(())
-    } else {
-        let result = registry.remove(path);
-        if result.is_ok() && path.starts_with("/mnt/") { crate::storage::mark_mnt_dirty(); }
-        result
+    for _ in 0..8 {
+        let pending = {
+            let files = OPEN_FILES.lock();
+            let mut registry = REGISTRY.lock();
+            let index = registry
+                .nodes
+                .iter()
+                .position(|node| node.matches(path))
+                .ok_or(Error::NotFound)?;
+            let open_file = registry.nodes[index].kind == NodeKind::File
+                && files.entries.iter().any(|entry| entry.occupied && entry.node == index);
+            if open_file && registry.nodes[index].backing.is_some() {
+                Some((index, registry.generations[index]))
+            } else if open_file {
+                // Open descriptors retain the unnamed inode after unlink.
+                registry.nodes[index].path_length = 0;
+                registry.nodes[index].path.fill(0);
+                return Ok(());
+            } else {
+                let result = registry.remove(path);
+                if result.is_ok() && path.starts_with("/mnt/") {
+                    crate::storage::mark_mnt_dirty();
+                }
+                return result;
+            }
+        };
+        if let Some((index, generation)) = pending {
+            // FAT32 backing is path-based; preserve its bytes before releasing
+            // the name so a replacement cannot redirect the old descriptor.
+            materialize_disk_node(index, generation)?;
+        }
     }
+    Err(Error::Io)
 }
 
 pub fn can_rename(old: &str, new: &str) -> Result<(), Error> {
@@ -916,37 +931,83 @@ pub fn file_identity(id: OpenFileId) -> Result<(usize, u64, u64), Error> {
     }
     Ok((entry.node, entry.generation, registry.versions[entry.node]))
 }
-fn materialize_disk_node(node: &mut Node) -> Result<(), Error> {
-    if let Some(backing) = node.backing {
-        let count = crate::task::file_fault_io(|| {
-            crate::storage::read_disk_file(backing.as_str(), 0, &mut node.data[..node.length])
-        })
-        .map_err(|_| Error::Io)?;
-        if count != node.length {
+fn materialize_disk_node(index: usize, generation: u64) -> Result<(), Error> {
+    // Preserve the old disk image for unlink/write without holding VFS locks
+    // through ATA I/O. A conflicting rename or write retries from a fresh
+    // snapshot; a reused node slot is rejected by its generation.
+    let mut bytes = [0u8; NODE_CAPACITY];
+    for _ in 0..8 {
+        let (backing, length, version) = {
+            let registry = REGISTRY.lock();
+            let node = registry.nodes.get(index).ok_or(Error::InvalidDescriptor)?;
+            if !node.occupied || registry.generations[index] != generation {
+                return Err(Error::InvalidDescriptor);
+            }
+            let Some(backing) = node.backing else {
+                return Ok(());
+            };
+            (backing, node.length, registry.versions[index])
+        };
+        let read = crate::task::file_fault_io(|| {
+            crate::storage::read_disk_file(backing.as_str(), 0, &mut bytes[..length])
+        });
+        let mut registry = REGISTRY.lock();
+        let node = &registry.nodes[index];
+        if !node.occupied || registry.generations[index] != generation {
+            return Err(Error::InvalidDescriptor);
+        }
+        if node.backing != Some(backing)
+            || node.length != length
+            || registry.versions[index] != version
+        {
+            continue;
+        }
+        if read.map_err(|_| Error::Io)? != length {
             return Err(Error::Io);
         }
-        node.backing = None;
+        registry.nodes[index].data[..length].copy_from_slice(&bytes[..length]);
+        registry.nodes[index].backing = None;
+        return Ok(());
     }
-    Ok(())
+    Err(Error::Io)
 }
 /// Writable shared disk mappings keep a RAM inode image for bounded writeback.
 /// The capability check is performed by the syscall before reaching this API.
 pub fn prepare_shared_file(id: OpenFileId) -> Result<(), Error> {
-    let mut table = OPEN_FILES.lock();
-    let entry = table.get_mut(id)?;
-    let mut registry = REGISTRY.lock();
-    let node = &mut registry.nodes[entry.node];
-    if !node.occupied {
-        return Err(Error::InvalidDescriptor);
-    }
-    if !node.writable || !access_allowed(node, true) {
-        if node.backing.is_none() {
-            return Err(Error::ReadOnly);
+    for _ in 0..8 {
+        let (index, generation) = {
+            let mut table = OPEN_FILES.lock();
+            let entry = table.get_mut(id)?;
+            let registry = REGISTRY.lock();
+            let node = &registry.nodes[entry.node];
+            if !node.occupied || registry.generations[entry.node] != entry.generation {
+                return Err(Error::InvalidDescriptor);
+            }
+            if node.writable && access_allowed(node, true) {
+                return Ok(());
+            }
+            if node.backing.is_none() {
+                return Err(Error::ReadOnly);
+            }
+            (entry.node, entry.generation)
+        };
+        materialize_disk_node(index, generation)?;
+        let mut table = OPEN_FILES.lock();
+        let entry = table.get_mut(id)?;
+        if entry.node != index || entry.generation != generation {
+            return Err(Error::InvalidDescriptor);
         }
-        materialize_disk_node(node)?;
-        node.writable = true;
+        let mut registry = REGISTRY.lock();
+        if !registry.nodes[index].occupied || registry.generations[index] != generation {
+            return Err(Error::InvalidDescriptor);
+        }
+        if registry.nodes[index].backing.is_some() {
+            continue;
+        }
+        registry.nodes[index].writable = true;
+        return Ok(());
     }
-    Ok(())
+    Err(Error::Io)
 }
 pub fn write_mapping_at(id: OpenFileId, offset: usize, bytes: &[u8]) -> Result<(), Error> {
     let mut table = OPEN_FILES.lock();
@@ -1043,45 +1104,88 @@ fn read_from(
     buffer: &mut [u8],
     generation: Option<u64>,
 ) -> Result<usize, Error> {
-    let mut table = OPEN_FILES.lock();
-    let entry = table.get_mut(id)?;
-    let node_index = entry.node;
-    let offset = position.unwrap_or(entry.offset);
+    // Disk I/O must not retain the open-description or node registry lock.
+    // Retry when another CPU changes the node or shared seek position while
+    // the read is in flight, so the returned bytes match the committed offset.
+    for _ in 0..8 {
+        let (node_index, node_generation, offset, count, backing, version, length) = {
+            let mut table = OPEN_FILES.lock();
+            let entry = table.get_mut(id)?;
+            let node_index = entry.node;
+            let node_generation = entry.generation;
+            let offset = position.unwrap_or(entry.offset);
+            let registry = REGISTRY.lock();
+            if registry.generations[node_index] != node_generation
+                || generation.is_some_and(|value| value != node_generation)
+            {
+                return Err(Error::InvalidDescriptor);
+            }
+            let node = registry
+                .nodes
+                .get(node_index)
+                .filter(|node| node.occupied)
+                .ok_or(Error::InvalidDescriptor)?;
+            if !access_allowed(node, false) {
+                return Err(Error::ReadOnly);
+            }
+            if offset > node.length {
+                return Err(Error::InvalidDescriptor);
+            }
+            let count = core::cmp::min(node.length - offset, buffer.len());
+            if node.backing.is_none() || count == 0 {
+                buffer[..count].copy_from_slice(&node.data[offset..offset + count]);
+                crate::file_frames::overlay(
+                    node_index, node_generation, offset, &mut buffer[..count],
+                );
+                if position.is_none() {
+                    entry.offset = offset + count;
+                }
+                return Ok(count);
+            }
+            (
+                node_index,
+                node_generation,
+                offset,
+                count,
+                node.backing.unwrap(),
+                registry.versions[node_index],
+                node.length,
+            )
+        };
 
-    let registry = REGISTRY.lock();
-    if generation.is_some_and(|value| registry.generations[node_index] != value) {
-        return Err(Error::InvalidDescriptor);
-    }
-    let node = registry
-        .nodes
-        .get(node_index)
-        .filter(|node| node.occupied)
-        .ok_or(Error::InvalidDescriptor)?;
-    if !access_allowed(node, false) {
-        return Err(Error::ReadOnly);
-    }
-    if offset > node.length {
-        return Err(Error::InvalidDescriptor);
-    }
-    let count = core::cmp::min(node.length - offset, buffer.len());
-    if let Some(backing) = node.backing {
-        drop(registry);
-        let read = crate::storage::read_disk_file(backing.as_str(), offset, &mut buffer[..count])
-            .map_err(|_| Error::Io)?;
-        if read != count {
+        let read = crate::task::file_fault_io(|| {
+            crate::storage::read_disk_file(backing.as_str(), offset, &mut buffer[..count])
+        });
+        let mut table = OPEN_FILES.lock();
+        let entry = table.get_mut(id)?;
+        if entry.node != node_index || entry.generation != node_generation {
+            return Err(Error::InvalidDescriptor);
+        }
+        let registry = REGISTRY.lock();
+        let node = &registry.nodes[node_index];
+        if !node.occupied || registry.generations[node_index] != node_generation {
+            return Err(Error::InvalidDescriptor);
+        }
+        if !access_allowed(node, false) {
+            return Err(Error::ReadOnly);
+        }
+        if registry.versions[node_index] != version
+            || node.backing != Some(backing)
+            || node.length != length
+            || (position.is_none() && entry.offset != offset)
+        {
+            continue;
+        }
+        if read.map_err(|_| Error::Io)? != count {
             return Err(Error::Io);
         }
-    } else {
-        buffer[..count].copy_from_slice(&node.data[offset..offset + count]);
-        drop(registry);
+        crate::file_frames::overlay(node_index, node_generation, offset, &mut buffer[..count]);
+        if position.is_none() {
+            entry.offset = offset + count;
+        }
+        return Ok(count);
     }
-
-    crate::file_frames::overlay(node_index, entry.generation, offset, &mut buffer[..count]);
-    let entry = table.get_mut(id)?;
-    if position.is_none() {
-        entry.offset = offset + count;
-    }
-    Ok(count)
+    Err(Error::Io)
 }
 
 pub fn read_all(path: &str, buffer: &mut [u8]) -> Result<usize, Error> {
@@ -1118,74 +1222,109 @@ pub fn seek(id: OpenFileId, offset: usize) -> Result<usize, Error> {
 /// Stage 10.5 uses this for asynchronous file I/O so concurrent requests do
 /// not race through the descriptor's mutable seek position.
 pub fn write_at(id: OpenFileId, offset: usize, buffer: &[u8]) -> Result<usize, Error> {
-    let mut table = OPEN_FILES.lock();
-    let entry = table.get_mut(id)?;
-    let node_index = entry.node;
-    let generation = entry.generation;
-
-    let mut registry = REGISTRY.lock();
-    if registry.generations[node_index] != generation {
-        return Err(Error::InvalidDescriptor);
+    for _ in 0..8 {
+        let (node_index, generation) = {
+            let mut table = OPEN_FILES.lock();
+            let entry = table.get_mut(id)?;
+            let registry = REGISTRY.lock();
+            let node = &registry.nodes[entry.node];
+            if !node.occupied || registry.generations[entry.node] != entry.generation {
+                return Err(Error::InvalidDescriptor);
+            }
+            if !node.writable || !access_allowed(node, true) {
+                return Err(Error::ReadOnly);
+            }
+            (entry.node, entry.generation)
+        };
+        materialize_disk_node(node_index, generation)?;
+        let mut table = OPEN_FILES.lock();
+        let entry = table.get_mut(id)?;
+        if entry.node != node_index || entry.generation != generation {
+            return Err(Error::InvalidDescriptor);
+        }
+        let mut registry = REGISTRY.lock();
+        if registry.generations[node_index] != generation {
+            return Err(Error::InvalidDescriptor);
+        }
+        let node = registry.nodes.get_mut(node_index)
+            .filter(|node| node.occupied)
+            .ok_or(Error::InvalidDescriptor)?;
+        if !node.writable || !access_allowed(node, true) {
+            return Err(Error::ReadOnly);
+        }
+        if node.backing.is_some() {
+            continue;
+        }
+        if offset > node.length {
+            return Err(Error::InvalidDescriptor);
+        }
+        let count = core::cmp::min(buffer.len(), NODE_CAPACITY - offset);
+        node.data[offset..offset + count].copy_from_slice(&buffer[..count]);
+        let new_end = offset + count;
+        node.length = core::cmp::max(node.length, new_end);
+        let short_write = count < buffer.len();
+        registry.versions[node_index] = registry.versions[node_index].wrapping_add(1);
+        crate::file_frames::update(node_index, generation, offset, &buffer[..count]);
+        if short_write {
+            return Err(Error::Full);
+        }
+        return Ok(count);
     }
-    let node = registry
-        .nodes
-        .get_mut(node_index)
-        .filter(|node| node.occupied)
-        .ok_or(Error::InvalidDescriptor)?;
-    if !node.writable || !access_allowed(node, true) {
-        return Err(Error::ReadOnly);
-    }
-    materialize_disk_node(node)?;
-    if offset > node.length {
-        return Err(Error::InvalidDescriptor);
-    }
-    let count = core::cmp::min(buffer.len(), NODE_CAPACITY - offset);
-    node.data[offset..offset + count].copy_from_slice(&buffer[..count]);
-    let new_end = offset + count;
-    node.length = core::cmp::max(node.length, new_end);
-    let short_write = count < buffer.len();
-    registry.versions[node_index] = registry.versions[node_index].wrapping_add(1);
-    crate::file_frames::update(node_index, generation, offset, &buffer[..count]);
-    if short_write {
-        return Err(Error::Full);
-    }
-    Ok(count)
+    Err(Error::Io)
 }
 
 pub fn write(id: OpenFileId, buffer: &[u8]) -> Result<usize, Error> {
-    let mut table = OPEN_FILES.lock();
-    let entry = table.get_mut(id)?;
-    let node_index = entry.node;
-    let offset = entry.offset;
-
-    let mut registry = REGISTRY.lock();
-    let node = registry
-        .nodes
-        .get_mut(node_index)
-        .filter(|node| node.occupied)
-        .ok_or(Error::InvalidDescriptor)?;
-    if !node.writable || !access_allowed(node, true) {
-        return Err(Error::ReadOnly);
+    for _ in 0..8 {
+        let (node_index, generation) = {
+            let mut table = OPEN_FILES.lock();
+            let entry = table.get_mut(id)?;
+            let registry = REGISTRY.lock();
+            let node = &registry.nodes[entry.node];
+            if !node.occupied || registry.generations[entry.node] != entry.generation {
+                return Err(Error::InvalidDescriptor);
+            }
+            if !node.writable || !access_allowed(node, true) {
+                return Err(Error::ReadOnly);
+            }
+            (entry.node, entry.generation)
+        };
+        materialize_disk_node(node_index, generation)?;
+        let mut table = OPEN_FILES.lock();
+        let entry = table.get_mut(id)?;
+        if entry.node != node_index || entry.generation != generation {
+            return Err(Error::InvalidDescriptor);
+        }
+        let offset = entry.offset;
+        let mut registry = REGISTRY.lock();
+        if registry.generations[node_index] != generation {
+            return Err(Error::InvalidDescriptor);
+        }
+        let node = registry.nodes.get_mut(node_index)
+            .filter(|node| node.occupied)
+            .ok_or(Error::InvalidDescriptor)?;
+        if !node.writable || !access_allowed(node, true) {
+            return Err(Error::ReadOnly);
+        }
+        if node.backing.is_some() {
+            continue;
+        }
+        if offset > node.length {
+            return Err(Error::InvalidDescriptor);
+        }
+        let count = core::cmp::min(buffer.len(), NODE_CAPACITY - offset);
+        node.data[offset..offset + count].copy_from_slice(&buffer[..count]);
+        let new_offset = offset + count;
+        node.length = core::cmp::max(node.length, new_offset);
+        let short_write = count < buffer.len();
+        registry.versions[node_index] = registry.versions[node_index].wrapping_add(1);
+        crate::file_frames::update(node_index, generation, offset, &buffer[..count]);
+        entry.offset = new_offset;
+        if short_write {
+            return Err(Error::Full);
+        }
+        return Ok(count);
     }
-    materialize_disk_node(node)?;
-    if offset > node.length {
-        return Err(Error::InvalidDescriptor);
-    }
-    let count = core::cmp::min(buffer.len(), NODE_CAPACITY - offset);
-    node.data[offset..offset + count].copy_from_slice(&buffer[..count]);
-    let new_offset = offset + count;
-    node.length = core::cmp::max(node.length, new_offset);
-    let short_write = count < buffer.len();
-    registry.versions[node_index] = registry.versions[node_index].wrapping_add(1);
-    crate::file_frames::update(node_index, entry.generation, offset, &buffer[..count]);
-    drop(registry);
-
-    let entry = table.get_mut(id)?;
-    entry.offset = new_offset;
-    if short_write {
-        return Err(Error::Full);
-    }
-    Ok(count)
+    Err(Error::Io)
 }
 
 /// Invoke `f` for every occupied file node whose path starts with `prefix`.
@@ -1194,13 +1333,23 @@ pub fn for_each_file_with_prefix<F>(prefix: &str, mut f: F)
 where
     F: FnMut(&str),
 {
-    let registry = REGISTRY.lock();
-    for node in registry.nodes.iter() {
-        if !node.occupied || node.kind != NodeKind::File {
-            continue;
+    // Callers may allocate or persist in the callback. Snapshot bounded names
+    // first so no external code runs while the registry guard is held.
+    let mut paths = [[0u8; PATH_CAPACITY]; MAX_NODES];
+    let mut lengths = [0usize; MAX_NODES];
+    let mut count = 0usize;
+    {
+        let registry = REGISTRY.lock();
+        for node in registry.nodes.iter() {
+            if node.occupied && node.kind == NodeKind::File && node.path_str().starts_with(prefix) {
+                paths[count][..node.path_length].copy_from_slice(&node.path[..node.path_length]);
+                lengths[count] = node.path_length;
+                count += 1;
+            }
         }
-        let path = node.path_str();
-        if path.starts_with(prefix) {
+    }
+    for index in 0..count {
+        if let Ok(path) = core::str::from_utf8(&paths[index][..lengths[index]]) {
             f(path);
         }
     }
@@ -1217,7 +1366,7 @@ pub fn open_file_description_count() -> usize {
 pub fn self_test() -> bool {
     // The registry exceeds the 1 MiB boot stack. Reserve scratch storage
     // statically and reset one node at a time so repeated self-tests are safe.
-    static SCRATCH: Mutex<Registry> = Mutex::new(Registry::empty());
+    static SCRATCH: Mutex<Registry> = Mutex::with_rank(Registry::empty(), 10);
     let mut scratch = SCRATCH.lock();
     for node in &mut scratch.nodes {
         *node = Node::empty();
@@ -1379,7 +1528,7 @@ pub fn self_test() -> bool {
 }
 
 fn backing_rename_semantics_self_test() -> bool {
-    static SCRATCH: Mutex<Registry> = Mutex::new(Registry::empty());
+    static SCRATCH: Mutex<Registry> = Mutex::with_rank(Registry::empty(), 10);
     let mut fs = SCRATCH.lock();
     for node in &mut fs.nodes {
         *node = Node::empty();
@@ -1407,7 +1556,7 @@ fn backing_rename_semantics_self_test() -> bool {
 }
 
 fn disk_write_semantics_self_test() -> bool {
-    static SCRATCH: Mutex<Registry> = Mutex::new(Registry::empty());
+    static SCRATCH: Mutex<Registry> = Mutex::with_rank(Registry::empty(), 10);
     let mut fs = SCRATCH.lock();
     for node in &mut fs.nodes {
         *node = Node::empty();

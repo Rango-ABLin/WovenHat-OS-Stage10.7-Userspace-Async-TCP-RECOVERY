@@ -31,9 +31,10 @@ contiguous arena; see the [NUMA/x2APIC audit](audit-stage6-numa-2026-09-16.md),
 The 2026-09-17 lock follow-up made the file-frame cache IRQ-safe, moved
 fork/dup reference retention outside the process-table lock, and added
 generation-tagged VFS and pipe handles to reject stale slot reuse. The VFS
-registry/open-description conversion remains open because disk-backed reads
-and materialization still span those guards; the I/O transaction must be
-separated before those locks can be converted safely. See the
+read and materialization paths now release registry/open-description guards
+for disk I/O and revalidate node identity, version, backing, and shared seek
+position before committing results. Both VFS tables now use ranked IRQ-safe
+locks. See the
 [lock-order audit](audit-stage6-lock-order-2026-09-16.md). The full release
 matrix and twice-cycled 2/4-CPU hotplug gates passed after these changes.
 The pipe follow-up also uses scheduler-latched wakeups and rejects full waiter

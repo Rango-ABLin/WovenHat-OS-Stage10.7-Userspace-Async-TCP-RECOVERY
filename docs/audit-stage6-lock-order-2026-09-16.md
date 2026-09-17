@@ -82,21 +82,24 @@ hotplug cycles passed twice on both 2 and 4 CPUs; their serial evidence is in
 `audit-artifacts/stage6-hotplug-*`.
 
 A trial VFS IRQ-lock conversion exposed an existing slow-I/O boundary:
-disk-backed node materialization and descriptor reads can run while VFS
-registry/open-description guards are held. That conversion was withdrawn;
-these guards remain compatibility spin mutexes until disk I/O is split into
-an unlocked transaction with node-generation/version revalidation and shared
-offset serialization. The file-frame cache conversion is independent of this
-boundary. The VFS file-size path now explicitly drops its nested registry
-guard before the open-description guard.
+disk-backed node materialization and descriptor reads ran while VFS
+registry/open-description guards were held. The conversion was withdrawn
+until the I/O was split into an unlocked transaction. Disk reads now snapshot
+the node, backing path, version, and shared offset, release both guards for
+I/O, then revalidate before returning bytes or advancing the offset. Lazy
+materialization does the same for unlink, shared mappings, and writes. Bounded
+retries reject conflicting changes and generation checks reject slot reuse.
+Renames advance node versions, and prefix callbacks run after a bounded path
+snapshot is taken. The VFS registry and open-description table now use rank-10
+IRQ mutexes. The file-size path explicitly drops its nested registry guard
+before the open-description guard.
 
 This closes the bounded lock-order coverage gap for the audited scheduler,
 process, paging, COW, frame-allocation, pager, async-operation, completion-port,
 file/block/network worker, pipe, IPC namespace, WovenGuard lineage, audit, ATA,
-file-frame cache, and isolated catalog domains. VFS and other subsystem locks
-still use compatibility mutexes while their I/O and cross-lock ordering is
-being separated;
-priority inheritance remains separate Stage 6 work.
+file-frame cache, VFS, and isolated catalog domains. Other subsystem locks
+still use compatibility mutexes; broader filesystem mutation transactions and
+priority inheritance remain separate Stage 6 work.
 
 The subsequent pipe wait audit found a wake/block race in `wake_task` plus
 `block_current`: a peer could wake a still-running task immediately before it
@@ -109,3 +112,16 @@ The full release matrix passed after this change, including warning-denying
 lint, host tests, 1/2/4-CPU memory/storage/network gates, legacy PIC, 4-CPU
 release gates, and shell smoke. Dedicated 2/4-CPU hotplug passed twice-cycled
 offline/re-online tests again.
+
+After the VFS I/O split and rank-10 conversion, `python scripts/test-release.py`
+passed warning-denying lint, host tests, 1/2/4-CPU memory/storage/network
+gates, legacy PIC, 4-CPU release gates, release build, and shell smoke.
+Dedicated 2/4-CPU twice-cycled hotplug also passed. One earlier focused
+1-CPU storage boot stopped at the FAT32 mkdir mutation check while the VFS
+refactor was in progress; a subsequent run, the full release matrix, and two
+additional focused runs passed. The storage self-test now logs the underlying
+persist error if that intermittent failure recurs. Five more sequential
+1-CPU FAT32 storage boots passed with automatic failure-log preservation.
+The original failed serial log was overwritten before it could be copied, so
+the cause of that one transient failure remains unproven; it is not treated
+as evidence that unrestricted concurrent filesystem mutation is complete.

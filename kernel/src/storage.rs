@@ -739,7 +739,8 @@ pub fn live_mutation_self_test() -> LiveMutationTestStatus {
     if vfs::mkdir(OLD_DIR).is_err() {
         return LiveMutationTestStatus::Failed("vfs mkdir");
     }
-    if persist_directory(OLD_DIR).is_err() {
+    if let Err(error) = persist_directory(OLD_DIR) {
+        crate::serial::write_line(format_args!("[STORAGE MUTATION] fat mkdir error: {:?}", error));
         return LiveMutationTestStatus::Failed("fat mkdir");
     }
     if vfs::write_file(OLD_FILE, CONTENT).is_err() {
