@@ -2,6 +2,8 @@ use core::{
     alloc::{GlobalAlloc, Layout},
     ptr::null_mut,
 };
+#[cfg(not(test))]
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use alloc::{boxed::Box, vec::Vec};
 use crate::irq_lock::IrqMutex as Mutex;
@@ -10,8 +12,18 @@ use crate::{memory, paging};
 
 pub const START: u64 = 0x4444_5000_0000;
 pub const MIN_SIZE: usize = 256 * 1024;
-pub const MAX_SIZE: usize = 8 * 1024 * 1024;
+pub const MAX_BOOT_SIZE: usize = 8 * 1024 * 1024;
+// Keep growth inside the heap's existing P4 slot, which is shared by every
+// already-created user address space. Physical frames still bound demand.
+pub const MAX_SIZE: usize = 64 * 1024 * 1024 * 1024;
 const PAGE_SIZE: usize = 4096;
+const GROW_CHUNK: usize = 256 * 1024;
+const LOW_WATER: usize = 1024 * 1024;
+
+#[cfg(not(test))]
+static GROW_OWNER: AtomicUsize = AtomicUsize::new(0);
+#[cfg(not(test))]
+static GROW_PRESSURE: AtomicBool = AtomicBool::new(false);
 
 #[cfg_attr(not(test), global_allocator)]
 static ALLOCATOR: TrackedAllocator = TrackedAllocator;
@@ -52,6 +64,7 @@ struct HeapState {
     next: usize,
     total_allocations: usize,
     total_allocated_bytes: usize,
+    free_bytes: usize,
     free_head: usize,
 }
 
@@ -63,6 +76,7 @@ impl HeapState {
             next: 0,
             total_allocations: 0,
             total_allocated_bytes: 0,
+            free_bytes: 0,
             free_head: 0,
         }
     }
@@ -71,7 +85,7 @@ impl HeapState {
         if self.start != 0 {
             return Err(InitError::AlreadyInitialized);
         }
-        if !(MIN_SIZE..=MAX_SIZE).contains(&size) || !size.is_multiple_of(PAGE_SIZE) {
+        if !(MIN_SIZE..=MAX_BOOT_SIZE).contains(&size) || !size.is_multiple_of(PAGE_SIZE) {
             return Err(InitError::AddressOverflow);
         }
 
@@ -83,7 +97,7 @@ impl HeapState {
         if self.start != 0 {
             return Err(InitError::AlreadyInitialized);
         }
-        if !(MIN_SIZE..=MAX_SIZE).contains(&size)
+        if !(MIN_SIZE..=MAX_BOOT_SIZE).contains(&size)
             || !size.is_multiple_of(PAGE_SIZE)
             || !start.is_multiple_of(PAGE_SIZE)
         {
@@ -93,7 +107,23 @@ impl HeapState {
         self.start = start;
         self.end = end;
         self.next = start;
+        self.free_bytes = size;
         Ok(())
+    }
+
+    fn extend_mapped(&mut self, size: usize) -> bool {
+        if self.start == 0 || size == 0 || !size.is_multiple_of(PAGE_SIZE) {
+            return false;
+        }
+        let Some(new_end) = self.end.checked_add(size) else {
+            return false;
+        };
+        if new_end - self.start > MAX_SIZE {
+            return false;
+        }
+        self.end = new_end;
+        self.free_bytes += size;
+        true
     }
 
     fn place(start: usize, layout: Layout) -> Option<Placement> {
@@ -135,6 +165,7 @@ impl HeapState {
         unsafe { ((payload - HEADER_SIZE) as *mut AllocHeader).write(header) };
         self.total_allocations += 1;
         self.total_allocated_bytes += layout.size();
+        self.free_bytes -= end - block_start;
         payload as *mut u8
     }
 
@@ -245,22 +276,16 @@ impl HeapState {
         unsafe { ((ptr - HEADER_SIZE) as *mut u64).write(0) };
         self.total_allocations = self.total_allocations.saturating_sub(1);
         self.total_allocated_bytes = self.total_allocated_bytes.saturating_sub(header.requested_size);
+        self.free_bytes += header.block_size;
         self.insert_free(header.block_start, header.block_size);
     }
 
     fn stats(&self) -> Stats {
-        let mut free_bytes = self.end.saturating_sub(self.next);
-        let mut current = self.free_head;
-        while current != 0 {
-            let node = Self::read_free(current);
-            free_bytes += node.size;
-            current = node.next;
-        }
         Stats {
             start: START,
             size: self.end.saturating_sub(self.start),
             allocated_bytes: self.total_allocated_bytes,
-            free_bytes,
+            free_bytes: self.free_bytes,
             allocations: self.total_allocations,
         }
     }
@@ -285,7 +310,27 @@ pub enum InitError {
 
 unsafe impl GlobalAlloc for TrackedAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        HEAP.lock().alloc(layout)
+        let (pointer, low_water) = {
+            let mut heap = HEAP.lock();
+            let pointer = heap.alloc(layout);
+            (pointer, heap.free_bytes < LOW_WATER || heap.end.saturating_sub(heap.next) < LOW_WATER)
+        };
+        #[cfg(test)]
+        { let _ = low_water; pointer }
+        #[cfg(not(test))]
+        {
+            if low_water {
+                GROW_PRESSURE.store(true, Ordering::Release);
+            }
+            if !pointer.is_null() {
+                return pointer;
+            }
+            if !crate::irq_lock::pager_entry_allowed() {
+                GROW_PRESSURE.store(true, Ordering::Release);
+                return null_mut();
+            }
+            alloc_with_growth(layout)
+        }
     }
 
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
@@ -302,10 +347,154 @@ pub fn init() -> Result<(), InitError> {
     // including allocations made from within other kernel critical sections.
     let frames = usize::try_from(memory::stats().remaining_frames).unwrap_or(usize::MAX);
     let budget = frames.saturating_mul(PAGE_SIZE) / 16;
-    let size = budget.clamp(MIN_SIZE, MAX_SIZE) & !(PAGE_SIZE - 1);
+    let size = budget.clamp(MIN_SIZE, MAX_BOOT_SIZE) & !(PAGE_SIZE - 1);
     // Map pages before taking the rank-50 heap guard. Paging is rank 10.
     paging::map_range(START, size).map_err(|_| InitError::Paging)?;
     HEAP.lock().init(size)
+}
+
+#[cfg(not(test))]
+struct GrowthClaim;
+
+#[cfg(not(test))]
+impl GrowthClaim {
+    fn acquire() -> Result<Self, usize> {
+        let owner = crate::smp::lock_cpu_index() + 1;
+        GROW_OWNER
+            .compare_exchange(0, owner, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| Self)
+    }
+}
+
+#[cfg(not(test))]
+impl Drop for GrowthClaim {
+    fn drop(&mut self) {
+        GROW_OWNER.store(0, Ordering::Release);
+    }
+}
+
+#[cfg(not(test))]
+enum GrowthStep {
+    Grew,
+    Busy,
+    Failed,
+}
+
+#[cfg(not(test))]
+fn grow_one_chunk() -> GrowthStep {
+    let _preemption = crate::task::local_preemption_guard();
+    let _claim = match GrowthClaim::acquire() {
+        Ok(claim) => claim,
+        Err(owner) => {
+            if owner == crate::smp::lock_cpu_index() + 1 {
+                return GrowthStep::Failed;
+            }
+            return GrowthStep::Busy;
+        }
+    };
+    let (start, end) = {
+        let heap = HEAP.lock();
+        (heap.start, heap.end)
+    };
+    if start == 0 || end == 0 {
+        return GrowthStep::Failed;
+    }
+    let Some(limit) = start.checked_add(MAX_SIZE) else {
+        return GrowthStep::Failed;
+    };
+    let size = limit.saturating_sub(end).min(GROW_CHUNK);
+    if size == 0 {
+        return GrowthStep::Failed;
+    }
+    // Map with no heap guard held. Only the growth owner may change `end`;
+    // allocations can keep using the old published region during this call.
+    if paging::map_range(end as u64, size).is_err() {
+        return GrowthStep::Failed;
+    }
+    let mut heap = HEAP.lock();
+    assert_eq!(heap.end, end, "heap growth owner changed");
+    assert!(heap.extend_mapped(size), "mapped heap extension rejected");
+    GrowthStep::Grew
+}
+
+#[cfg(not(test))]
+fn alloc_with_growth(layout: Layout) -> *mut u8 {
+    let feasible = {
+        let heap = HEAP.lock();
+        heap.start != 0
+            && heap.start.checked_add(MAX_SIZE).is_some_and(|limit| {
+                HeapState::place(heap.next, layout)
+                    .is_some_and(|placement| placement.end <= limit)
+            })
+    };
+    if !feasible {
+        return null_mut();
+    }
+    for _ in 0..MAX_SIZE / GROW_CHUNK {
+        let (pointer, low_water) = {
+            let mut heap = HEAP.lock();
+            let pointer = heap.alloc(layout);
+            (pointer, heap.free_bytes < LOW_WATER || heap.end.saturating_sub(heap.next) < LOW_WATER)
+        };
+        if !pointer.is_null() {
+            if low_water {
+                GROW_PRESSURE.store(true, Ordering::Release);
+            }
+            return pointer;
+        }
+        match grow_one_chunk() {
+            GrowthStep::Grew => {}
+            GrowthStep::Failed => return null_mut(),
+            GrowthStep::Busy => {
+                let start = unsafe { core::arch::x86_64::_rdtsc() };
+                while GROW_OWNER.load(Ordering::Acquire) != 0 {
+                    if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) > 5_000_000_000 {
+                        return null_mut();
+                    }
+                    core::hint::spin_loop();
+                }
+            }
+        }
+    }
+    null_mut()
+}
+
+/// Grow ahead of allocations made under higher-ranked locks, where the
+/// allocator itself cannot enter the rank-10 pager. Called from BSP idle.
+#[cfg(not(test))]
+pub fn maintain_capacity() {
+    if crate::smp::cpu_index() != 0
+        || !GROW_PRESSURE.load(Ordering::Acquire)
+        || !crate::irq_lock::pager_entry_allowed()
+    {
+        return;
+    }
+    for _ in 0..4 {
+        let (tail, available, size) = {
+            let heap = HEAP.lock();
+            (heap.end.saturating_sub(heap.next), heap.free_bytes, heap.end.saturating_sub(heap.start))
+        };
+        if (tail >= LOW_WATER && available >= LOW_WATER) || size >= MAX_SIZE {
+            GROW_PRESSURE.store(false, Ordering::Release);
+            // An allocation racing the clear may have crossed the threshold
+            // after the snapshot. Recheck under HEAP so its request survives.
+            let heap = HEAP.lock();
+            if (heap.end.saturating_sub(heap.next) < LOW_WATER || heap.free_bytes < LOW_WATER)
+                && heap.end.saturating_sub(heap.start) < MAX_SIZE
+            {
+                GROW_PRESSURE.store(true, Ordering::Release);
+            }
+            return;
+        }
+        match grow_one_chunk() {
+            GrowthStep::Grew => {}
+            GrowthStep::Busy => return,
+            GrowthStep::Failed => {
+                GROW_PRESSURE.store(false, Ordering::Release);
+                return;
+            }
+        }
+    }
 }
 
 pub fn self_test() -> bool {
@@ -359,6 +548,47 @@ pub fn live_metadata_self_test() -> bool {
         && after.free_bytes == before.free_bytes
 }
 
+#[cfg(feature = "qemu-test")]
+pub fn runtime_growth_self_test() -> bool {
+    let before = stats();
+    let mut bytes = Vec::new();
+    bytes.resize(before.size + 1024, 0x5a_u8);
+    let grown = stats();
+    let valid = grown.size > before.size
+        && grown.allocations == before.allocations + 1
+        && bytes[0] == 0x5a
+        && bytes[bytes.len() - 1] == 0x5a;
+    drop(bytes);
+    let after = stats();
+    if !valid
+        || after.allocations != before.allocations
+        || after.allocated_bytes != before.allocated_bytes
+        || after.free_bytes != before.free_bytes + after.size - before.size
+    {
+        return false;
+    }
+    let before_reserve = stats().size;
+    let tail = {
+        let heap = HEAP.lock();
+        heap.end.saturating_sub(heap.next)
+    };
+    if tail <= LOW_WATER + PAGE_SIZE {
+        return false;
+    }
+    let mut reserve = Vec::new();
+    reserve.resize(tail - LOW_WATER / 2 - HEADER_SIZE - PAGE_SIZE, 0x3c_u8);
+    maintain_capacity();
+    let maintained = stats().size > before_reserve
+        && reserve[0] == 0x3c
+        && reserve[reserve.len() - 1] == 0x3c;
+    drop(reserve);
+    let final_stats = stats();
+    maintained
+        && final_stats.allocations == before.allocations
+        && final_stats.allocated_bytes == before.allocated_bytes
+        && final_stats.free_bytes == before.free_bytes + final_stats.size - before.size
+}
+
 pub fn stats() -> Stats {
     HEAP.lock().stats()
 }
@@ -387,7 +617,11 @@ mod tests {
 
     impl TestHeap {
         fn new() -> Self {
-            let layout = Layout::from_size_align(MIN_SIZE, PAGE_SIZE).unwrap();
+            Self::with_backing(MIN_SIZE)
+        }
+
+        fn with_backing(backing_size: usize) -> Self {
+            let layout = Layout::from_size_align(backing_size, PAGE_SIZE).unwrap();
             let arena = NonNull::new(unsafe { alloc_zeroed(layout) }).unwrap();
             let mut state = HeapState::empty();
             assert!(state.init_at(arena.as_ptr() as usize, MIN_SIZE).is_ok());
@@ -511,5 +745,27 @@ mod tests {
         assert_eq!(heap.stats().free_bytes, MIN_SIZE);
         assert_eq!(heap.free_head, 0);
         assert_eq!(heap.next, heap.start);
+    }
+
+    #[test]
+    fn mapped_extension_preserves_live_data_and_recovers_capacity() {
+        let mut heap = TestHeap::with_backing(2 * MIN_SIZE);
+        let small = Layout::from_size_align(64, 16).unwrap();
+        let first = heap.alloc(small);
+        assert!(!first.is_null());
+        unsafe { first.write_bytes(0x3c, 64) };
+        let large = Layout::from_size_align(MIN_SIZE, 8).unwrap();
+        let before = heap.stats().free_bytes;
+        assert!(heap.alloc(large).is_null());
+        assert_eq!(heap.stats().free_bytes, before);
+        assert!(heap.extend_mapped(MIN_SIZE));
+        let second = heap.alloc(large);
+        assert!(!second.is_null());
+        assert_eq!(unsafe { *first }, 0x3c);
+        unsafe { second.write_bytes(0x79, large.size()) };
+        assert_eq!(unsafe { *second.add(large.size() - 1) }, 0x79);
+        heap.dealloc(second, large);
+        heap.dealloc(first, small);
+        assert_eq!(heap.stats().free_bytes, 2 * MIN_SIZE);
     }
 }

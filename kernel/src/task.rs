@@ -4544,6 +4544,8 @@ fn idle_task() -> ! {
             }
         }
 
+        crate::heap::maintain_capacity();
+
         // Consume any already-published scheduling request first. If none is
         // pending, park with STI+HLT as one architectural idle sequence. This
         // avoids the check-then-HLT window where an interrupt could arrive

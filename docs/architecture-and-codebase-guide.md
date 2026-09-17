@@ -47,9 +47,13 @@ acquiring that guard, preserving the paging (10) to heap (50) order. Its eager
 mapped size is one sixteenth of available physical memory, clamped to 256 KiB
 through 8 MiB. The allocator retains alignment padding with each allocation
 and coalesces freed intervals. Kernel range mapping rolls back newly mapped
-pages on a partial failure. Later heap growth still requires a design that
-can honor lock order when allocation occurs under paging, frame, process, or
-audit guards.
+pages on a partial failure. Runtime growth maps 256 KiB chunks only after
+releasing the heap guard; the boundary is published under that guard after
+mapping succeeds. A rank-free, IRQ-enabled caller can grow synchronously on
+allocation failure. BSP idle maintains mapped headroom when free space falls
+below 1 MiB so guarded callers usually stay on the allocation-only path.
+The growth window remains in the P4 slot already shared by user address
+spaces. See the [growth audit](audit-stage6-heap-growth-2026-09-17.md).
 The rank-40 physical-frame allocator stores one allocation bitmap in reserved
 pages at the start of each usable RAM range. Returned frames beyond its 4,096
 entry hot cache remain reusable through a bitmap scan; the bit also rejects

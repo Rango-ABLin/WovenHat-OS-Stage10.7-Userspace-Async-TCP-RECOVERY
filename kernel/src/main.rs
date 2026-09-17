@@ -859,6 +859,16 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         pic::unmask(keyboard::IRQ);
     }
     x86_64::instructions::interrupts::enable();
+    #[cfg(feature = "qemu-test")]
+    if !heap::runtime_growth_self_test() {
+        serial::write_line(format_args!("[S6.HEAP] runtime growth: FAILED"));
+        qemu_test_exit_failure();
+    }
+    #[cfg(feature = "qemu-test")]
+    serial::write_line(format_args!(
+        "[S6.HEAP] runtime growth: PASSED mapped={} bytes",
+        heap::stats().size
+    ));
     if ipc::stage8_1_runtime_probe()
         && ipc::object_count() == 0
         && ipc::endpoint_count() == 0

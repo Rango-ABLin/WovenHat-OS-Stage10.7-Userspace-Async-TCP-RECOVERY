@@ -70,6 +70,14 @@ runtime growth and broad allocator throughput remain open. See the
 [heap metadata audit](audit-stage6-heap-metadata-2026-09-17.md).
 The final metadata source passed the full 33-check release matrix and the
 twice-cycled 2/4-CPU hotplug gates.
+Runtime heap growth now maps and publishes 256 KiB chunks outside the heap
+guard. Rank-free, IRQ-enabled allocations can grow on failure; BSP idle maps
+ahead for guarded callers when free space is low. QEMU exercises growth after
+SMP startup and reserve maintenance. Sudden large guarded allocations,
+low-memory behavior, and multicore throughput still need qualification; see
+the [heap growth audit](audit-stage6-heap-growth-2026-09-17.md).
+The final growth source passed the complete 33-check release matrix and
+twice-cycled 2/4-CPU hotplug gates.
 The frame allocator now reserves a bitmap in each usable physical range and
 uses it to track allocations, reject double frees, and recover returned
 frames beyond its 4,096-entry hot cache. See the

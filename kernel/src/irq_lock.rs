@@ -74,6 +74,10 @@ mod lock_order {
         DEPTH[token.cpu].store((depth - 1) as u8, Ordering::Relaxed);
         HIGHEST_RANK[token.cpu].store(token.previous_rank, Ordering::Relaxed);
     }
+
+    pub fn highest_rank() -> u8 {
+        HIGHEST_RANK[crate::smp::lock_cpu_index()].load(Ordering::Relaxed)
+    }
 }
 
 #[cfg(test)]
@@ -81,6 +85,13 @@ mod lock_order {
     pub struct Token;
     pub fn enter(_: usize, _: u8) -> Token { Token }
     pub fn exit(_: Token) {}
+    pub fn highest_rank() -> u8 { 0 }
+}
+
+/// A pager operation acquires rank 10 and can wait for remote TLB flushes.
+/// It must begin outside other ranked guards with local IRQs enabled.
+pub fn pager_entry_allowed() -> bool {
+    interrupts::are_enabled() && lock_order::highest_rank() == 0
 }
 
 pub struct IrqMutex<T> {

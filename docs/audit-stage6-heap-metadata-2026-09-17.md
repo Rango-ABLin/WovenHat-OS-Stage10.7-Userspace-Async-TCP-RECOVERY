@@ -33,3 +33,7 @@ passed with evidence in
 The mapped heap remains capped at its boot-time 8 MiB maximum, and free-list
 search remains linear in the number of holes. Runtime mapping growth, low-RAM
 behavior, and broader multicore allocator throughput remain open.
+
+A later [runtime-growth follow-up](audit-stage6-heap-growth-2026-09-17.md)
+removes the boot-time 8 MiB mapping ceiling in safe paging contexts. The
+boot-time ceiling above describes the state of this earlier metadata patch.
