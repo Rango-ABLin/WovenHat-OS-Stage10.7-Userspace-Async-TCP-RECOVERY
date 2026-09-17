@@ -28,6 +28,15 @@ contiguous arena; see the [NUMA/x2APIC audit](audit-stage6-numa-2026-09-16.md),
 [lock-order audit](audit-stage6-lock-order-2026-09-16.md) and
 [DMA audit](audit-stage6-dma-2026-09-16.md).
 
+The 2026-09-17 lock follow-up made the file-frame cache IRQ-safe, moved
+fork/dup reference retention outside the process-table lock, and added
+generation-tagged VFS and pipe handles to reject stale slot reuse. The VFS
+registry/open-description conversion remains open because disk-backed reads
+and materialization still span those guards; the I/O transaction must be
+separated before those locks can be converted safely. See the
+[lock-order audit](audit-stage6-lock-order-2026-09-16.md). The full release
+matrix and twice-cycled 2/4-CPU hotplug gates passed after these changes.
+
 ## Stage 10.7 — accepted on 2026-09-16
 
 The imported recovery source is preserved in Git commit `49e789d`. That commit

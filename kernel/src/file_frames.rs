@@ -1,7 +1,7 @@
 //! Physical file pages shared by mappings; cache ownership participates in COW refs.
 use crate::{paging, vfs};
 use core::sync::atomic::{AtomicU64, Ordering};
-use spin::Mutex;
+use crate::irq_lock::IrqMutex as Mutex;
 const CAPACITY: usize = 64;
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Key {
@@ -20,7 +20,9 @@ struct Entry {
     age: u64,
 }
 static SNAPSHOTS: AtomicU64 = AtomicU64::new(1);
-static CACHE: Mutex<[Option<Entry>; CAPACITY]> = Mutex::new([None; CAPACITY]);
+// Cache operations can nest paging (rank 10), COW (30), and frame allocation
+// (40). Disk I/O and mapped-page eviction run after dropping this guard.
+static CACHE: Mutex<[Option<Entry>; CAPACITY]> = Mutex::with_rank([None; CAPACITY], 10);
 
 pub fn reclaim_unused() -> usize {
     let mut cache = CACHE.lock();

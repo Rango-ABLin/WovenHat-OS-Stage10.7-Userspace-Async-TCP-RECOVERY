@@ -65,9 +65,35 @@ the complete release matrix was rerun on 2026-09-17. All host tests, 1/2/4-CPU
 debug suites, legacy PIC, 4-CPU release suites, release build, and shell smoke
 passed; `target/release-validation/results.json` retains the result.
 
+The next follow-up placed the file-frame cache under a rank-10 IRQ mutex and
+added call-site lines to non-LIFO lock diagnostics. Fork and descriptor
+duplication now retain VFS/pipe references outside `PROCESS_TABLE` and
+revalidate the source descriptor before publication. Open-file descriptions
+and anonymous pipes now carry non-wrapping slot epochs, so a close/reuse race
+cannot turn a stale kernel handle into a reference to a different object.
+Pipe creation also reserves both descriptor slots before publishing either
+end and releases the new pipe on failure.
+
+The final follow-up passed `python scripts/test-release.py`: warning-denying
+kernel/host Clippy, host tests, memory/storage/network QEMU suites on 1/2/4
+CPUs, legacy PIC, 4-CPU release suites, release build, and shell/SMP smoke.
+`target/release-validation/results.json` records the gate results. Dedicated
+hotplug cycles passed twice on both 2 and 4 CPUs; their serial evidence is in
+`audit-artifacts/stage6-hotplug-*`.
+
+A trial VFS IRQ-lock conversion exposed an existing slow-I/O boundary:
+disk-backed node materialization and descriptor reads can run while VFS
+registry/open-description guards are held. That conversion was withdrawn;
+these guards remain compatibility spin mutexes until disk I/O is split into
+an unlocked transaction with node-generation/version revalidation and shared
+offset serialization. The file-frame cache conversion is independent of this
+boundary. The VFS file-size path now explicitly drops its nested registry
+guard before the open-description guard.
+
 This closes the bounded lock-order coverage gap for the audited scheduler,
 process, paging, COW, frame-allocation, pager, async-operation, completion-port,
 file/block/network worker, pipe, IPC namespace, WovenGuard lineage, audit, ATA,
-and isolated catalog domains. VFS/file-frame and other subsystem locks still
-use compatibility mutexes while their cross-lock ordering is being separated;
+file-frame cache, and isolated catalog domains. VFS and other subsystem locks
+still use compatibility mutexes while their I/O and cross-lock ordering is
+being separated;
 priority inheritance remains separate Stage 6 work.

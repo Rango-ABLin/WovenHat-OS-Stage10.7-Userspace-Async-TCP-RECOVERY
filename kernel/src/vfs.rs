@@ -604,11 +604,15 @@ static REGISTRY: Mutex<Registry> = Mutex::new(Registry::boot());
 /// (including across fork) can refer to the same description so that the
 /// file offset is shared, matching POSIX semantics.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub struct OpenFileId(usize);
+pub struct OpenFileId {
+    slot: usize,
+    epoch: u64,
+}
 
 struct OpenFileDescription {
     node: usize,
     generation: u64,
+    epoch: u64,
     offset: usize,
     refcount: u32,
     occupied: bool,
@@ -619,6 +623,7 @@ impl OpenFileDescription {
         Self {
             node: 0,
             generation: 0,
+            epoch: 0,
             offset: 0,
             refcount: 0,
             occupied: false,
@@ -628,12 +633,14 @@ impl OpenFileDescription {
 
 struct OpenFileTable {
     entries: [OpenFileDescription; MAX_OPEN_FILES],
+    generations: [u64; MAX_OPEN_FILES],
 }
 
 impl OpenFileTable {
     const fn empty() -> Self {
         Self {
             entries: [const { OpenFileDescription::empty() }; MAX_OPEN_FILES],
+            generations: [0; MAX_OPEN_FILES],
         }
     }
 
@@ -641,22 +648,28 @@ impl OpenFileTable {
         let slot = self
             .entries
             .iter()
-            .position(|entry| !entry.occupied)
+            .enumerate()
+            .position(|(slot, entry)| !entry.occupied && self.generations[slot] < u64::MAX)
             .ok_or(Error::Full)?;
+        // Keep slot reuse distinguishable from stale file-table snapshots.
+        // Exhausted generations retire the slot rather than wrapping.
+        let epoch = self.generations[slot].checked_add(1).ok_or(Error::Full)?;
+        self.generations[slot] = epoch;
         self.entries[slot] = OpenFileDescription {
             node,
             generation,
+            epoch,
             offset: 0,
             refcount: 1,
             occupied: true,
         };
-        Ok(OpenFileId(slot))
+        Ok(OpenFileId { slot, epoch })
     }
 
     fn get_mut(&mut self, id: OpenFileId) -> Result<&mut OpenFileDescription, Error> {
         self.entries
-            .get_mut(id.0)
-            .filter(|entry| entry.occupied && entry.refcount > 0)
+            .get_mut(id.slot)
+            .filter(|entry| entry.occupied && entry.refcount > 0 && entry.epoch == id.epoch)
             .ok_or(Error::InvalidDescriptor)
     }
 
@@ -669,8 +682,8 @@ impl OpenFileTable {
     fn drop_id(&mut self, id: OpenFileId) -> Result<(), Error> {
         let entry = self
             .entries
-            .get_mut(id.0)
-            .filter(|entry| entry.occupied)
+            .get_mut(id.slot)
+            .filter(|entry| entry.occupied && entry.epoch == id.epoch)
             .ok_or(Error::InvalidDescriptor)?;
         if entry.refcount == 0 {
             return Err(Error::InvalidDescriptor);
@@ -993,8 +1006,10 @@ pub fn read_mapping_at(
 pub fn file_size(id: OpenFileId) -> Result<usize, Error> {
     let mut table = OPEN_FILES.lock();
     let index = table.get_mut(id)?.node;
-    REGISTRY
-        .lock()
+    // Keep the inner guard in a named binding. A chained temporary in the
+    // return expression outlives `table` during function teardown.
+    let registry = REGISTRY.lock();
+    registry
         .nodes
         .get(index)
         .filter(|node| node.occupied && node.kind == NodeKind::File)
@@ -1321,6 +1336,18 @@ pub fn self_test() -> bool {
     let _ = close_open_file(shared);
     let _ = close_open_file(writer);
 
+    // Reusing an open-description slot must not revive an older kernel handle.
+    let stale_handle_rejected = match open("/tmp/vfs-self-test") {
+        Ok(reused) => {
+            let rejected = reused != writer
+                && clone_open_file(writer) == Err(Error::InvalidDescriptor)
+                && file_size(writer) == Err(Error::InvalidDescriptor);
+            let _ = close_open_file(reused);
+            rejected
+        }
+        Err(_) => false,
+    };
+
     // After closing all clones the description table should release the slots.
     let cleaned = open_file_description_count() == 0;
 
@@ -1346,6 +1373,7 @@ pub fn self_test() -> bool {
         && dir_open_rejected
         && handle_survives
         && restored
+        && stale_handle_rejected
         && cleaned
         && boot_nodes
 }

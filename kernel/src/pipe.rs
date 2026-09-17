@@ -12,6 +12,12 @@ const MAX_PIPES: usize = 32;
 const MAX_WAITERS: usize = 32;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+pub struct PipeId {
+    slot: usize,
+    epoch: u64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     Full,
     Invalid,
@@ -19,6 +25,7 @@ pub enum Error {
 }
 
 struct Pipe {
+    epoch: u64,
     data: [u8; PIPE_BUFFER],
     head: usize,
     tail: usize,
@@ -33,6 +40,7 @@ struct Pipe {
 impl Pipe {
     const fn empty() -> Self {
         Self {
+            epoch: 0,
             data: [0; PIPE_BUFFER],
             head: 0,
             tail: 0,
@@ -48,22 +56,28 @@ impl Pipe {
 
 struct Table {
     pipes: [Pipe; MAX_PIPES],
+    generations: [u64; MAX_PIPES],
 }
 
 impl Table {
     const fn new() -> Self {
         Self {
             pipes: [const { Pipe::empty() }; MAX_PIPES],
+            generations: [0; MAX_PIPES],
         }
     }
 
-    fn alloc(&mut self) -> Result<usize, Error> {
+    fn alloc(&mut self) -> Result<PipeId, Error> {
         let slot = self
             .pipes
             .iter()
-            .position(|p| !p.occupied)
+            .enumerate()
+            .position(|(slot, p)| !p.occupied && self.generations[slot] < u64::MAX)
             .ok_or(Error::Full)?;
+        let epoch = self.generations[slot].checked_add(1).ok_or(Error::Full)?;
+        self.generations[slot] = epoch;
         self.pipes[slot] = Pipe {
+            epoch,
             data: [0; PIPE_BUFFER],
             head: 0,
             tail: 0,
@@ -74,7 +88,19 @@ impl Table {
             read_waiters: [None; MAX_WAITERS],
             write_waiters: [None; MAX_WAITERS],
         };
-        Ok(slot)
+        Ok(PipeId { slot, epoch })
+    }
+
+    fn get(&self, id: PipeId) -> Result<&Pipe, Error> {
+        self.pipes.get(id.slot)
+            .filter(|pipe| pipe.occupied && pipe.epoch == id.epoch)
+            .ok_or(Error::Invalid)
+    }
+
+    fn get_mut(&mut self, id: PipeId) -> Result<&mut Pipe, Error> {
+        self.pipes.get_mut(id.slot)
+            .filter(|pipe| pipe.occupied && pipe.epoch == id.epoch)
+            .ok_or(Error::Invalid)
     }
 
     fn push_waiter(slots: &mut [Option<TaskId>; MAX_WAITERS], id: TaskId) {
@@ -95,11 +121,8 @@ impl Table {
         out
     }
 
-    fn try_write(&mut self, id: usize, buf: &[u8]) -> Result<(usize, bool), Error> {
-        let pipe = self.pipes.get_mut(id).ok_or(Error::Invalid)?;
-        if !pipe.occupied {
-            return Err(Error::Invalid);
-        }
+    fn try_write(&mut self, id: PipeId, buf: &[u8]) -> Result<(usize, bool), Error> {
+        let pipe = self.get_mut(id)?;
         if pipe.readers == 0 {
             return Err(Error::Closed);
         }
@@ -114,12 +137,9 @@ impl Table {
         Ok((written, need_block && written == 0))
     }
 
-    fn try_read(&mut self, id: usize, buf: &mut [u8]) -> Result<(usize, bool, bool), Error> {
+    fn try_read(&mut self, id: PipeId, buf: &mut [u8]) -> Result<(usize, bool, bool), Error> {
         // returns (n, should_block, eof)
-        let pipe = self.pipes.get_mut(id).ok_or(Error::Invalid)?;
-        if !pipe.occupied {
-            return Err(Error::Invalid);
-        }
+        let pipe = self.get_mut(id)?;
         if pipe.len == 0 {
             if pipe.writers == 0 {
                 return Ok((0, false, true));
@@ -145,12 +165,12 @@ fn wake_list(waiters: [Option<TaskId>; MAX_WAITERS]) {
     }
 }
 
-pub fn create() -> Result<usize, Error> {
+pub fn create() -> Result<PipeId, Error> {
     TABLE.lock().alloc()
 }
 
 /// Blocking write: waits until at least one byte is written or the pipe is closed.
-pub fn write(id: usize, buf: &[u8]) -> Result<usize, Error> {
+pub fn write(id: PipeId, buf: &[u8]) -> Result<usize, Error> {
     if buf.is_empty() {
         return Ok(0);
     }
@@ -161,9 +181,7 @@ pub fn write(id: usize, buf: &[u8]) -> Result<usize, Error> {
             let mut table = TABLE.lock();
             let result = table.try_write(id, &buf[total..])?;
             if result.1 {
-                if let Some(pipe) = table.pipes.get_mut(id) {
-                    Table::push_waiter(&mut pipe.write_waiters, task_id);
-                }
+                Table::push_waiter(&mut table.get_mut(id)?.write_waiters, task_id);
             }
             result
         };
@@ -171,9 +189,7 @@ pub fn write(id: usize, buf: &[u8]) -> Result<usize, Error> {
             total += written;
             let waiters = {
                 let mut table = TABLE.lock();
-                table
-                    .pipes
-                    .get_mut(id)
+                table.get_mut(id)
                     .map(|p| Table::take_waiters(&mut p.read_waiters))
                     .unwrap_or([None; MAX_WAITERS])
             };
@@ -185,11 +201,8 @@ pub fn write(id: usize, buf: &[u8]) -> Result<usize, Error> {
         if block {
             let still_block = {
                 let table = TABLE.lock();
-                table
-                    .pipes
-                    .get(id)
-                    .map(|p| p.occupied && p.readers > 0 && p.len >= PIPE_BUFFER)
-                    .unwrap_or(false)
+                table.get(id)
+                    .is_ok_and(|p| p.readers > 0 && p.len >= PIPE_BUFFER)
             };
             if !still_block {
                 continue;
@@ -210,7 +223,7 @@ pub fn write(id: usize, buf: &[u8]) -> Result<usize, Error> {
 }
 
 /// Blocking read: waits for data or EOF (all writers closed).
-pub fn read(id: usize, buf: &mut [u8]) -> Result<usize, Error> {
+pub fn read(id: PipeId, buf: &mut [u8]) -> Result<usize, Error> {
     if buf.is_empty() {
         return Ok(0);
     }
@@ -220,18 +233,14 @@ pub fn read(id: usize, buf: &mut [u8]) -> Result<usize, Error> {
             let mut table = TABLE.lock();
             let result = table.try_read(id, buf)?;
             if result.1 {
-                if let Some(pipe) = table.pipes.get_mut(id) {
-                    Table::push_waiter(&mut pipe.read_waiters, task_id);
-                }
+                Table::push_waiter(&mut table.get_mut(id)?.read_waiters, task_id);
             }
             result
         };
         if n > 0 {
             let waiters = {
                 let mut table = TABLE.lock();
-                table
-                    .pipes
-                    .get_mut(id)
+                table.get_mut(id)
                     .map(|p| Table::take_waiters(&mut p.write_waiters))
                     .unwrap_or([None; MAX_WAITERS])
             };
@@ -244,11 +253,8 @@ pub fn read(id: usize, buf: &mut [u8]) -> Result<usize, Error> {
         if block {
             let still_block = {
                 let table = TABLE.lock();
-                table
-                    .pipes
-                    .get(id)
-                    .map(|p| p.occupied && p.len == 0 && p.writers > 0)
-                    .unwrap_or(false)
+                table.get(id)
+                    .is_ok_and(|p| p.len == 0 && p.writers > 0)
             };
             if !still_block {
                 continue;
@@ -260,32 +266,24 @@ pub fn read(id: usize, buf: &mut [u8]) -> Result<usize, Error> {
     }
 }
 
-pub fn clone_reader(id: usize) -> Result<(), Error> {
+pub fn clone_reader(id: PipeId) -> Result<(), Error> {
     let mut table = TABLE.lock();
-    let pipe = table
-        .pipes
-        .get_mut(id)
-        .filter(|p| p.occupied)
-        .ok_or(Error::Invalid)?;
-    pipe.readers = pipe.readers.saturating_add(1);
+    let pipe = table.get_mut(id)?;
+    pipe.readers = pipe.readers.checked_add(1).ok_or(Error::Full)?;
     Ok(())
 }
 
-pub fn clone_writer(id: usize) -> Result<(), Error> {
+pub fn clone_writer(id: PipeId) -> Result<(), Error> {
     let mut table = TABLE.lock();
-    let pipe = table
-        .pipes
-        .get_mut(id)
-        .filter(|p| p.occupied)
-        .ok_or(Error::Invalid)?;
-    pipe.writers = pipe.writers.saturating_add(1);
+    let pipe = table.get_mut(id)?;
+    pipe.writers = pipe.writers.checked_add(1).ok_or(Error::Full)?;
     Ok(())
 }
 
-pub fn close_reader(id: usize) {
+pub fn close_reader(id: PipeId) {
     let waiters = {
         let mut table = TABLE.lock();
-        let Some(pipe) = table.pipes.get_mut(id).filter(|p| p.occupied) else {
+        let Ok(pipe) = table.get_mut(id) else {
             return;
         };
         pipe.readers = pipe.readers.saturating_sub(1);
@@ -298,10 +296,10 @@ pub fn close_reader(id: usize) {
     wake_list(waiters);
 }
 
-pub fn close_writer(id: usize) {
+pub fn close_writer(id: PipeId) {
     let waiters = {
         let mut table = TABLE.lock();
-        let Some(pipe) = table.pipes.get_mut(id).filter(|p| p.occupied) else {
+        let Ok(pipe) = table.get_mut(id) else {
             return;
         };
         pipe.writers = pipe.writers.saturating_sub(1);
@@ -330,7 +328,26 @@ pub fn self_test() -> bool {
     // EOF after writers closed
     let eof = read(id, &mut buf) == Ok(0);
     close_reader(id);
-    ok && eof
+    let reuse_safe = match create() {
+        Ok(reused) => {
+            let stale_rejected = reused != id
+                && clone_reader(id) == Err(Error::Invalid)
+                && clone_writer(id) == Err(Error::Invalid)
+                && read(id, &mut buf) == Err(Error::Invalid)
+                && write(id, b"x") == Err(Error::Invalid);
+            // A delayed close from the retired epoch must not touch the new pipe.
+            close_reader(id);
+            close_writer(id);
+            let fresh_intact = write(reused, b"y") == Ok(1)
+                && read(reused, &mut buf[..1]) == Ok(1)
+                && buf[0] == b'y';
+            close_writer(reused);
+            close_reader(reused);
+            stale_rejected && fresh_intact
+        }
+        Err(_) => false,
+    };
+    ok && eof && reuse_safe
 }
 
 #[allow(dead_code)]

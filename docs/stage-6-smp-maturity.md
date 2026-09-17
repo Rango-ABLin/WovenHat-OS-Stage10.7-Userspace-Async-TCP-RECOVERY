@@ -28,7 +28,7 @@ Stage 6 turns the Stage-5 CPU-owned scheduler into a bounded multicore scheduler
     path while Ready; global queue and subsystem locks preserve ownership.
 14. SRAT memory-affinity records tag usable frame ranges; allocations prefer
     the current CPU domain and preserve the domain on reclaimed frames.
-18. Bounded AP offline control evacuates eligible work, parks the target in a
+15. Bounded AP offline control evacuates eligible work, parks the target in a
     scheduler-owned idle checkpoint, masks its local timer, and publishes the
     reduced online mask/count only after the transition is complete.
 16. A parked AP can rejoin the contiguous online prefix using its retained
@@ -37,9 +37,6 @@ Stage 6 turns the Stage-5 CPU-owned scheduler into a bounded multicore scheduler
 17. Interrupt-safe worker locks carry bounded per-CPU nesting/rank checks;
     recursive acquisition, rank inversion, excessive depth, and non-LIFO
     release fail deterministically.
-15. Bounded AP offline control evacuates eligible work, parks the target in a
-    scheduler-owned idle checkpoint, masks its local timer, and publishes the
-    reduced online mask/count only after the transition is complete.
 
 ## Ownership/safety contract
 

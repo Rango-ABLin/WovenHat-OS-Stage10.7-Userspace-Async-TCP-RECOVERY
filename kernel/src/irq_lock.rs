@@ -8,7 +8,7 @@ use x86_64::instructions::interrupts;
 
 #[cfg(not(test))]
 mod lock_order {
-    use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+    use core::sync::atomic::{AtomicU8, AtomicU32, AtomicUsize, Ordering};
 
     const MAX_DEPTH: usize = 8;
     static DEPTH: [AtomicU8; crate::smp::MAX_CPUS] =
@@ -17,15 +17,20 @@ mod lock_order {
         [const { AtomicU8::new(0) }; crate::smp::MAX_CPUS];
     static HELD: [[AtomicUsize; MAX_DEPTH]; crate::smp::MAX_CPUS] =
         [const { [const { AtomicUsize::new(0) }; MAX_DEPTH] }; crate::smp::MAX_CPUS];
+    static HELD_LINE: [[AtomicU32; MAX_DEPTH]; crate::smp::MAX_CPUS] =
+        [const { [const { AtomicU32::new(0) }; MAX_DEPTH] }; crate::smp::MAX_CPUS];
 
     pub struct Token {
         cpu: usize,
         address: usize,
         previous_rank: u8,
+        line: u32,
     }
 
+    #[track_caller]
     pub fn enter(address: usize, rank: u8) -> Token {
         let cpu = crate::smp::lock_cpu_index();
+        let line = core::panic::Location::caller().line();
         let previous_rank = HIGHEST_RANK[cpu].load(Ordering::Relaxed);
         if rank != 0 && previous_rank != 0 && rank < previous_rank {
             panic!(
@@ -45,22 +50,27 @@ mod lock_order {
             }
         }
         HELD[cpu][depth].store(address, Ordering::Relaxed);
+        HELD_LINE[cpu][depth].store(line, Ordering::Relaxed);
         DEPTH[cpu].store((depth + 1) as u8, Ordering::Relaxed);
         if rank > previous_rank {
             HIGHEST_RANK[cpu].store(rank, Ordering::Relaxed);
         }
-        Token { cpu, address, previous_rank }
+        Token { cpu, address, previous_rank, line }
     }
 
     pub fn exit(token: Token) {
         let depth = DEPTH[token.cpu].load(Ordering::Relaxed) as usize;
         assert!(depth != 0, "IrqMutex lock-order underflow");
-        assert_eq!(
-            HELD[token.cpu][depth - 1].load(Ordering::Relaxed),
-            token.address,
-            "IrqMutex guards must be released in nesting order"
-        );
+        let held = HELD[token.cpu][depth - 1].load(Ordering::Relaxed);
+        if held != token.address {
+            panic!(
+                "IrqMutex guards must be released in nesting order cpu={} releasing={:#x} at line={} held={:#x} at line={}",
+                token.cpu, token.address, token.line, held,
+                HELD_LINE[token.cpu][depth - 1].load(Ordering::Relaxed)
+            );
+        }
         HELD[token.cpu][depth - 1].store(0, Ordering::Relaxed);
+        HELD_LINE[token.cpu][depth - 1].store(0, Ordering::Relaxed);
         DEPTH[token.cpu].store((depth - 1) as u8, Ordering::Relaxed);
         HIGHEST_RANK[token.cpu].store(token.previous_rank, Ordering::Relaxed);
     }
@@ -88,6 +98,7 @@ impl<T> IrqMutex<T> {
         Self { inner: spin::Mutex::new(value), rank }
     }
 
+    #[track_caller]
     pub fn lock(&self) -> IrqMutexGuard<'_, T> {
         let restore_interrupts = interrupts::are_enabled();
         interrupts::disable();
@@ -104,6 +115,7 @@ impl<T> IrqMutex<T> {
     /// Attempt an interrupt-safe acquisition without spinning. The order
     /// tracker is entered before probing the mutex so an inversion fails at
     /// the call site; a failed probe rolls the tracker state back atomically.
+    #[track_caller]
     pub fn try_lock(&self) -> Option<IrqMutexGuard<'_, T>> {
         let restore_interrupts = interrupts::are_enabled();
         interrupts::disable();
