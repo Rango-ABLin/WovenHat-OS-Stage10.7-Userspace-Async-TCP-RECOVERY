@@ -43,7 +43,14 @@ updates may nest under the VFS guards at rank 10.
 
 The global heap's metadata guard is rank 50 and disables local interrupts
 during allocation and deallocation. Boot-time heap page mapping occurs before
-acquiring that guard, preserving the paging (10) to heap (50) order.
+acquiring that guard, preserving the paging (10) to heap (50) order. Its eager
+mapped size is one sixteenth of available physical memory, clamped to 256 KiB
+through 8 MiB. The allocator tracks 2,048 live objects, retains alignment
+padding with its allocation, coalesces freed intervals, and reserves enough
+free-list slots for every possible hole at that live-object bound. Kernel
+range mapping rolls back newly mapped pages on a partial failure. Later heap
+growth still requires a design that can honor lock order when allocation
+occurs under paging, frame, process, or audit guards.
 The swap-state guard is rank 40 and releases before ATA transfers. Device,
 keyboard decoder, journal-intent, mount-record, and key-vault metadata guards
 are rank 10; none performs a blocking transfer while held. Keyboard captures

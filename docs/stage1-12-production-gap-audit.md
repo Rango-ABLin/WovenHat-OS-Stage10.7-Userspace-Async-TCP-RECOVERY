@@ -23,3 +23,8 @@ paths and scheduler behavior, not the terminal or shell metadata guards.
 The socket runtime and VirtIO transport now use explicit ranks 20 and 30;
 every current kernel `IrqMutex` construction has a declared rank. Broader
 lock-path stress and priority inheritance remain open.
+
+The heap follow-up scales eager mapping with RAM up to 8 MiB, raises live
+metadata capacity to 2,048, preserves alignment padding, coalesces frees, and
+rolls back partial kernel mappings. Runtime growth beyond the pre-mapped region
+and removal of the fixed live-object table remain open Stage 6 work.

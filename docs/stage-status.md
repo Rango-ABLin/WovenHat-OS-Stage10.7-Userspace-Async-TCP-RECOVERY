@@ -40,8 +40,14 @@ matrix and twice-cycled 2/4-CPU hotplug gates passed after these changes.
 The pipe follow-up also uses scheduler-latched wakeups and rejects full waiter
 tables, closing a lost-wakeup window under concurrent readers and writers.
 The global heap metadata lock is now rank-50 IRQ-safe; page mapping happens
-before that guard is taken during boot. Its full release and 2/4-CPU hotplug
-gates passed, while heap capacity remains bounded.
+before that guard is taken during boot. Its earlier full release and 2/4-CPU
+hotplug gates passed. The follow-up makes boot capacity RAM-scaled from
+256 KiB to 8 MiB, raises live-allocation metadata to 2,048 entries, recovers
+alignment padding, and coalesces freed intervals. A partial kernel map now
+rolls back. Runtime growth beyond the eager mapping remains open.
+See the [Stage 6 heap audit](audit-stage6-heap-2026-09-17.md).
+The final heap change passed the full release matrix and twice-cycled 2/4-CPU
+hotplug gates.
 The bounded device, keyboard decoder, journal, swap-state, mount-record, and
 key-vault tables now use IRQ-safe locks. Keyboard input preserves the caller's
 pre-lock interrupt state for early-boot polling; Stage 1-5 journal, Stage 12.3

@@ -8,7 +8,9 @@ use crate::irq_lock::{IrqMutex, IrqMutexGuard};
 
 const FRAME_SIZE: u64 = Size4KiB::SIZE;
 const MAX_USABLE_REGIONS: usize = 128;
-const MAX_RECLAIMED_FRAMES: usize = 1024;
+// Covers a full rollback of the maximum 8 MiB boot heap mapping (2,048 data
+// frames), plus page-table and earlier reclaimed frames during initialization.
+const MAX_RECLAIMED_FRAMES: usize = 4096;
 
 // Lock order: PAGING (10) -> COW_TABLE (30) -> ALLOCATOR (40).
 static ALLOCATOR: IrqMutex<PhysicalFrameAllocator> =

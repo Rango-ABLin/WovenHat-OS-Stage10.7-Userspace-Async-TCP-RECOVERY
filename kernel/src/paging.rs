@@ -252,15 +252,49 @@ pub fn mapping_self_test() -> bool {
     // the page is unmapped.
     let value = unsafe { pointer.read_volatile() };
 
-    let Ok((_frame, flush)) = mapper.unmap(page) else {
+    let Ok((frame, flush)) = mapper.unmap(page) else {
         return false;
     };
     flush.flush();
     crate::smp::shootdown();
 
-    let passed = value == TEST_VALUE && mapper.translate_addr(page.start_address()).is_none();
+    let released = allocator.deallocate_frame(frame);
+    let passed = released
+        && value == TEST_VALUE
+        && mapper.translate_addr(page.start_address()).is_none();
     paging.mapping_test_passed = passed;
     passed
+}
+
+/// A failure halfway through a kernel mapping must leave every newly mapped
+/// page absent and preserve a page that was already present in the range.
+pub fn map_range_rollback_self_test() -> bool {
+    let second = TEST_PAGE_ADDRESS + Size4KiB::SIZE;
+    if map_range(second, Size4KiB::SIZE as usize).is_err() {
+        return false;
+    }
+    let rejected = matches!(
+        map_range(TEST_PAGE_ADDRESS, 2 * Size4KiB::SIZE as usize),
+        Err(MapRangeError::AlreadyMapped)
+    );
+    let (first_absent, second_present, frame) = {
+        let mut paging = PAGING.lock();
+        let Some(mapper) = paging.mapper.as_mut() else {
+            return false;
+        };
+        let first_page = Page::<Size4KiB>::containing_address(VirtAddr::new(TEST_PAGE_ADDRESS));
+        let second_page = Page::<Size4KiB>::containing_address(VirtAddr::new(second));
+        let first_absent = mapper.translate_addr(first_page.start_address()).is_none();
+        let second_present = mapper.translate_addr(second_page.start_address()).is_some();
+        let Ok((frame, flush)) = mapper.unmap(second_page) else {
+            return false;
+        };
+        flush.flush();
+        (first_absent, second_present, frame)
+    };
+    crate::smp::shootdown();
+    let released = memory::deallocate_frame(frame);
+    rejected && first_absent && second_present && released
 }
 
 pub fn map_range(start: u64, size: usize) -> Result<(), MapRangeError> {
@@ -312,21 +346,39 @@ fn map_range_with_flags(
     };
     let mut allocator = memory::allocator();
 
+    let mut mapped_pages = 0;
     for page in Page::range_inclusive(start_page, end_page) {
-        if mapper.translate_addr(page.start_address()).is_some() {
-            return Err(MapRangeError::AlreadyMapped);
+        let failure = if mapper.translate_addr(page.start_address()).is_some() {
+            Some(MapRangeError::AlreadyMapped)
+        } else if let Some(frame) = allocator.allocate_frame() {
+            // SAFETY: Each page is checked to be unmapped and each frame comes
+            // uniquely from the physical allocator. Both allocators are locked.
+            match unsafe { mapper.map_to(page, frame, flags, &mut *allocator) } {
+                Ok(flush) => {
+                    flush.flush();
+                    crate::smp::shootdown();
+                    mapped_pages += 1;
+                    None
+                }
+                Err(_) => {
+                    let _ = allocator.deallocate_frame(frame);
+                    Some(MapRangeError::MappingFailed)
+                }
+            }
+        } else {
+            Some(MapRangeError::OutOfFrames)
+        };
+
+        if let Some(error) = failure {
+            for rollback_page in Page::range_inclusive(start_page, end_page).take(mapped_pages) {
+                if let Ok((frame, flush)) = mapper.unmap(rollback_page) {
+                    flush.flush();
+                    crate::smp::shootdown();
+                    let _ = allocator.deallocate_frame(frame);
+                }
+            }
+            return Err(error);
         }
-
-        let frame = allocator
-            .allocate_frame()
-            .ok_or(MapRangeError::OutOfFrames)?;
-
-        // SAFETY: Each page is checked to be unmapped and each frame comes
-        // uniquely from the physical allocator. Both allocators are locked.
-        let flush = unsafe { mapper.map_to(page, frame, flags, &mut *allocator) }
-            .map_err(|_| MapRangeError::MappingFailed)?;
-        flush.flush();
-        crate::smp::shootdown();
     }
 
     Ok(())

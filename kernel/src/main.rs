@@ -198,6 +198,10 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         console.println("PAGING MAP/WRITE/UNMAP: FAILED");
         halt();
     }
+    if !paging::map_range_rollback_self_test() {
+        console.println("PAGING MAP ROLLBACK: FAILED");
+        halt();
+    }
 
     serial::init();
 
@@ -266,7 +270,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     }
 
     if heap::self_test() {
-        console.println("KERNEL HEAP: 256 KIB OK");
+        console.println("KERNEL HEAP: CAPACITY/FRAGMENTATION OK");
+        serial::write_line(format_args!("[HEAP] mapped={} bytes", heap::stats().size));
     } else {
         console.println("KERNEL HEAP: SELF TEST FAILED");
         halt();
