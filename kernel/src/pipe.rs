@@ -3,7 +3,7 @@
 //! Empty reads block while writers exist; full writes block while readers
 //! exist. Closing an end wakes the opposite waiters. No signal interruption.
 
-use spin::Mutex;
+use crate::irq_lock::IrqMutex as Mutex;
 
 use crate::task::{self, TaskId};
 
@@ -137,7 +137,7 @@ impl Table {
     }
 }
 
-static TABLE: Mutex<Table> = Mutex::new(Table::new());
+static TABLE: Mutex<Table> = Mutex::with_rank(Table::new(), 10);
 
 fn wake_list(waiters: [Option<TaskId>; MAX_WAITERS]) {
     for id in waiters.into_iter().flatten() {

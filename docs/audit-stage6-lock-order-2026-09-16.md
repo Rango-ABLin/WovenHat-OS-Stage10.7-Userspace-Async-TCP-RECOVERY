@@ -20,6 +20,7 @@ scheduler (10) -> process table (20)
 paging (10) -> COW table (30) -> physical-frame allocator (40)
 pager queue/state (10) -> scheduler (10)
 teardown registries (notifications, threads, async events) (10)
+pipe table (10) -> scheduler wake/block handoff
 ```
 
 The tracker is active in the freestanding kernel. Host test doubles implement
@@ -51,6 +52,6 @@ occur only after the process-table guard has been released.
 
 This closes the bounded lock-order coverage gap for the audited scheduler,
 process, paging, COW, frame-allocation, pager, async-operation, completion-port,
-and file/block/network worker domains. Locks in other subsystems still use their
+and file/block/network worker, and pipe domains. Locks in other subsystems still use their
 existing compatibility mutexes, and priority inheritance remains separate
 Stage 6 work.
