@@ -27,7 +27,9 @@ lock-path stress and priority inheritance remain open.
 The heap follow-up scales eager mapping with RAM up to 8 MiB, raises live
 metadata capacity to 2,048, preserves alignment padding, coalesces frees, and
 rolls back partial kernel mappings. Runtime growth beyond the pre-mapped region
-and removal of the fixed live-object table remain open Stage 6 work.
+remains open Stage 6 work. Per-span headers and an in-place free list now
+remove the fixed live-object and free-interval tables; a 4,096-object QEMU
+probe and mixed-alignment host stress exercise the replacement.
 Frame reclamation now uses per-region allocation bitmaps: returns beyond the
 4,096-entry hot cache remain reusable, and double frees are rejected. The
 4,352-frame QEMU probe covers cache overflow; high-RAM scan latency and

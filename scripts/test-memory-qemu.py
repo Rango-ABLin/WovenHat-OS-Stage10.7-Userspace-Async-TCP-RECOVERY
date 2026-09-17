@@ -71,7 +71,7 @@ def main():
             '[S10.4] userspace async block read/write + bounce-buffer teardown: PASSED',
         ]
     else:
-        required = ['[BOOT] ALL VALIDATIONS PASSED', '[S6.MEMORY] reclaimed overflow/double-free: PASSED', f'[SMP] online={args.cpus} expected={args.cpus}', '[SMP] scheduler/barrier: PASSED', '[SMP] acknowledged TLB shootdowns: PASSED', '[SMP] remote stale-translation/refree: PASSED', '[SMP] per-CPU timer preemption: PASSED', '[SMP] automatic rebalancing: PASSED', '[SMP] reschedule IPI: PASSED', '[SMP] migration stress: PASSED']
+        required = ['[BOOT] ALL VALIDATIONS PASSED', '[S6.HEAP] unbounded live metadata: PASSED', '[S6.MEMORY] reclaimed overflow/double-free: PASSED', f'[SMP] online={args.cpus} expected={args.cpus}', '[SMP] scheduler/barrier: PASSED', '[SMP] acknowledged TLB shootdowns: PASSED', '[SMP] remote stale-translation/refree: PASSED', '[SMP] per-CPU timer preemption: PASSED', '[SMP] automatic rebalancing: PASSED', '[SMP] reschedule IPI: PASSED', '[SMP] migration stress: PASSED']
     if result.returncode != 33 or any(marker not in log for marker in required):
         print(log[-10000:], file=sys.stderr)
         print(result.stderr, file=sys.stderr)

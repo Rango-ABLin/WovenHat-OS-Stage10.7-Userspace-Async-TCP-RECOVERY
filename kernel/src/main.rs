@@ -279,6 +279,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         halt();
     }
     #[cfg(feature = "qemu-test")]
+    if !heap::live_metadata_self_test() {
+        serial::write_line(format_args!("[S6.HEAP] unbounded live metadata: FAILED"));
+        qemu_test_exit_failure();
+    }
+    #[cfg(feature = "qemu-test")]
+    serial::write_line(format_args!("[S6.HEAP] unbounded live metadata: PASSED"));
+    #[cfg(feature = "qemu-test")]
     if !memory::reclaimed_overflow_self_test() {
         serial::write_line(format_args!("[S6.MEMORY] reclaimed overflow/double-free: FAILED"));
         qemu_test_exit_failure();

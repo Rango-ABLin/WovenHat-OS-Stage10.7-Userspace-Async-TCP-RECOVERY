@@ -45,16 +45,20 @@ The global heap's metadata guard is rank 50 and disables local interrupts
 during allocation and deallocation. Boot-time heap page mapping occurs before
 acquiring that guard, preserving the paging (10) to heap (50) order. Its eager
 mapped size is one sixteenth of available physical memory, clamped to 256 KiB
-through 8 MiB. The allocator tracks 2,048 live objects, retains alignment
-padding with its allocation, coalesces freed intervals, and reserves enough
-free-list slots for every possible hole at that live-object bound. Kernel
-range mapping rolls back newly mapped pages on a partial failure. Later heap
-growth still requires a design that can honor lock order when allocation
-occurs under paging, frame, process, or audit guards.
+through 8 MiB. The allocator retains alignment padding with each allocation
+and coalesces freed intervals. Kernel range mapping rolls back newly mapped
+pages on a partial failure. Later heap growth still requires a design that
+can honor lock order when allocation occurs under paging, frame, process, or
+audit guards.
 The rank-40 physical-frame allocator stores one allocation bitmap in reserved
 pages at the start of each usable RAM range. Returned frames beyond its 4,096
 entry hot cache remain reusable through a bitmap scan; the bit also rejects
 duplicate returns. Bitmap pages are excluded from allocatable-frame counts.
+The heap now stores each live allocation's span in a header before its
+payload, and stores free-list links inside freed spans. Its rank-50 guard
+serializes those metadata writes; no fixed live-object or free-interval table
+remains. The current mapped-byte ceiling and linear free-list search remain
+separate limits.
 The swap-state guard is rank 40 and releases before ATA transfers. Device,
 keyboard decoder, journal-intent, mount-record, and key-vault metadata guards
 are rank 10; none performs a blocking transfer while held. Keyboard captures

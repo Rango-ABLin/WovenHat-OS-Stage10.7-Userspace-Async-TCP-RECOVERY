@@ -63,6 +63,13 @@ rolls back. Runtime growth beyond the eager mapping remains open.
 See the [Stage 6 heap audit](audit-stage6-heap-2026-09-17.md).
 The final heap change passed the full release matrix and twice-cycled 2/4-CPU
 hotplug gates.
+The heap metadata follow-up replaces the fixed live-object and free-interval
+tables with per-span headers and an in-place coalescing free list. Host tests
+and a 4,096-object QEMU probe cover the former 2,048-object ceiling; mapped
+runtime growth and broad allocator throughput remain open. See the
+[heap metadata audit](audit-stage6-heap-metadata-2026-09-17.md).
+The final metadata source passed the full 33-check release matrix and the
+twice-cycled 2/4-CPU hotplug gates.
 The frame allocator now reserves a bitmap in each usable physical range and
 uses it to track allocations, reject double frees, and recover returned
 frames beyond its 4,096-entry hot cache. See the

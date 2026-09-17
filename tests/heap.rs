@@ -2,10 +2,6 @@
 #![allow(dead_code)]
 extern crate alloc;
 
-mod config {
-    pub const MAX_HEAP_ALLOCATIONS: usize = 2048;
-}
-
 mod memory {
     pub struct Stats { pub remaining_frames: u64 }
     pub fn stats() -> Stats { Stats { remaining_frames: 4096 } }

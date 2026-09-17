@@ -47,3 +47,7 @@ cannot call the rank-10 pager from arbitrary allocation contexts that may
 already hold higher-ranked locks. The fixed live-object table, allocator
 performance under broad multicore workloads, and low-memory hardware
 qualification remain open.
+
+The later [heap-metadata follow-up](audit-stage6-heap-metadata-2026-09-17.md)
+removes both fixed metadata tables. The 2,048-object limit described above is
+historical; mapped heap capacity and runtime growth remain separate limits.
