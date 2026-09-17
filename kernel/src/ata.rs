@@ -1,6 +1,6 @@
 use core::arch::asm;
 
-use spin::Mutex;
+use crate::irq_lock::IrqMutex as Mutex;
 
 use crate::block::{BlockDevice, Error, SECTOR_SIZE};
 
@@ -26,7 +26,10 @@ const LBA28_SECTORS: u64 = 1 << 28;
 
 type BufferedAta = crate::block_cache::CachedDevice<AtaPio, 64>;
 
-static PRIMARY_MASTER: Mutex<Option<BufferedAta>> = Mutex::new(None);
+/// The primary PIO device is serialized for each complete command sequence.
+/// Rank 10 lets block workers own the device while higher-ranked cache or
+/// metadata locks are acquired by callers that need them.
+static PRIMARY_MASTER: Mutex<Option<BufferedAta>> = Mutex::with_rank(None, 10);
 
 pub struct AtaPio {
     sectors: u64,

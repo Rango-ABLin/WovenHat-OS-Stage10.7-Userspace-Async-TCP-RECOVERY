@@ -1,4 +1,4 @@
-use spin::Mutex;
+use crate::irq_lock::IrqMutex as Mutex;
 
 /// Fixed-size, allocation-free WovenGuard security ledger.
 ///
@@ -126,19 +126,17 @@ impl Log {
     }
 }
 
-static LOG: Mutex<Log> = Mutex::new(Log::new());
+/// Fixed-size audit ledger. Rank 40 allows security records to be committed
+/// from scheduler, IPC, and lineage transactions without reversing those
+/// lower-ranked ownership locks.
+static LOG: Mutex<Log> = Mutex::with_rank(Log::new(), 40);
 
-/// Prevent same-CPU interrupt re-entry from deadlocking the audit mutex.
-///
-/// Audit records can be emitted from exception handlers as well as ordinary
-/// task/syscall paths. Keeping local interrupts disabled for the short bounded
-/// critical section makes the ring safe on the BSP and under SMP while the
-/// spin mutex continues to serialize different CPUs.
+/// Commit one bounded ledger operation with local interrupts disabled for the
+/// complete guard lifetime. Audit records can be emitted from exception
+/// handlers as well as ordinary task/syscall paths.
 fn with_log<R>(operation: impl FnOnce(&mut Log) -> R) -> R {
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        let mut log = LOG.lock();
-        operation(&mut log)
-    })
+    let mut log = LOG.lock();
+    operation(&mut log)
 }
 
 pub fn record(actor: u64, action: Action, target: u64, allowed: bool) {

@@ -1,4 +1,4 @@
-use spin::Mutex;
+use crate::irq_lock::IrqMutex as Mutex;
 
 #[derive(Clone, Copy, Default)]
 pub struct Snapshot {
@@ -23,7 +23,9 @@ pub struct Delta {
     pub heap_allocations: u64,
 }
 
-static BASELINE: Mutex<Option<Snapshot>> = Mutex::new(None);
+/// One bounded diagnostic baseline. Capture gathers subsystem snapshots
+/// before this lock is acquired, so the rank-10 guard has no nested children.
+static BASELINE: Mutex<Option<Snapshot>> = Mutex::with_rank(None, 10);
 
 pub fn capture() -> Snapshot {
     let tasks = crate::task::summary();

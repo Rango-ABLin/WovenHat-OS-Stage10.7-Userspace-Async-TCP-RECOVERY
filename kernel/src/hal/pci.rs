@@ -1,6 +1,6 @@
 use core::arch::asm;
 
-use spin::Mutex;
+use crate::irq_lock::IrqMutex as Mutex;
 
 const CONFIG_ADDRESS: u16 = 0x0cf8;
 const CONFIG_DATA: u16 = 0x0cfc;
@@ -67,7 +67,10 @@ impl Inventory {
     }
 }
 
-static INVENTORY: Mutex<Inventory> = Mutex::new(Inventory::new());
+/// PCI inventory is replaced atomically after a complete bus scan. Rank 10
+/// makes readers and replacement interrupt-safe without holding the lock over
+/// port I/O.
+static INVENTORY: Mutex<Inventory> = Mutex::with_rank(Inventory::new(), 10);
 
 pub fn discover() -> Summary {
     let mut inventory = Inventory::new();

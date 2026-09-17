@@ -1,12 +1,13 @@
 //! Bounded WovenFS metadata, checksums, and snapshot records.
-use spin::Mutex;
+use crate::irq_lock::IrqMutex as Mutex;
 
 const MAX: usize = 64;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Metadata { pub path_hash: u64, pub size: u64, pub mode: u32, pub created: u64, pub modified: u64, pub checksum: u64, pub xattrs: [u64; 4] }
 #[derive(Clone, Copy)] struct State { entries: [Option<Metadata>; MAX], len: usize }
 impl State { const fn new() -> Self { Self { entries: [None; MAX], len: 0 } } }
-static STATE: Mutex<State> = Mutex::new(State::new());
+/// Bounded WovenFS metadata registry with IRQ-safe rank tracking.
+static STATE: Mutex<State> = Mutex::with_rank(State::new(), 10);
 fn hash(path: &str) -> u64 { path.bytes().fold(1469598103934665603, |h, b| (h ^ u64::from(b)).wrapping_mul(1099511628211)) }
 pub fn record(path: &str, size: u64, mode: u32, now: u64, data: &[u8]) -> bool {
     let key = hash(path); let checksum = data.iter().fold(0xcbf29ce484222325, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x100000001b3));

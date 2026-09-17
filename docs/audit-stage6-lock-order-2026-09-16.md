@@ -22,6 +22,8 @@ pager queue/state (10) -> scheduler (10)
 teardown registries (notifications, threads, async events) (10)
 pipe table (10) -> scheduler wake/block handoff
 IPC namespace (10) -> WovenGuard lineage (10) -> paging/frame release (10/40)
+diagnostic/audit ledger (40)
+ATA device and isolated catalog registries (10)
 ```
 
 The tracker is active in the freestanding kernel. Host test doubles implement
@@ -60,6 +62,7 @@ rerun after that correction and passed.
 
 This closes the bounded lock-order coverage gap for the audited scheduler,
 process, paging, COW, frame-allocation, pager, async-operation, completion-port,
-file/block/network worker, pipe, IPC namespace, and WovenGuard lineage domains.
-Locks in other subsystems still use their existing compatibility mutexes, and
+file/block/network worker, pipe, IPC namespace, WovenGuard lineage, audit, ATA,
+and isolated catalog domains. VFS/file-frame and other subsystem locks still
+use compatibility mutexes while their cross-lock ordering is being separated;
 priority inheritance remains separate Stage 6 work.
