@@ -37,6 +37,11 @@ Physical non-contiguous hotplug, high APIC-ID, and multi-node NUMA hardware
 qualification remain open.
 The final source passed the complete release matrix and dedicated twice-cycled
 2/4-CPU hotplug gates after this follow-up.
+The cancellation follow-up distinguishes unclaimed requests from AP-owned
+transitions, rearms rejected states, and keeps further hotplug disabled if an
+AP never finishes a claimed transition. Forced AP rejections and unclaimed
+timeouts recover and retry in the 2/4-CPU QEMU gates; broad concurrent-work
+and physical-fault stress remains open.
 
 The 2026-09-17 lock follow-up made the file-frame cache IRQ-safe, moved
 fork/dup reference retention outside the process-table lock, and added

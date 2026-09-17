@@ -48,7 +48,10 @@ def main():
     mask_after = (1 << online_after) - 1
     required = [f'[SMP] online={args.cpus} expected={args.cpus}',
                 '[SMP] topology/NUMA affinity: PASSED',
+                '[S6.HOTPLUG] cancellation: PASSED',
                 '[S6.HOTPLUG] evacuation: PASSED',
+                '[S6.HOTPLUG] rejection recovery: PASSED',
+                '[S6.HOTPLUG] timeout recovery: PASSED',
                 f'[S6.HOTPLUG] offline AP: PASSED online={online_after} mask=0x{mask_after:x}',
                 f'[S6.HOTPLUG] lifecycle: PASSED cycles=2 online={args.cpus} mask=0x{((1 << args.cpus) - 1):x}']
     if args.cpus == 4:

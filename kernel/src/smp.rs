@@ -15,9 +15,12 @@ pub const SPURIOUS_VECTOR: u8 = 0xff;
 static IDS: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(u32::MAX) }; MAX_CPUS];
 static DOMAINS: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(0) }; MAX_CPUS];
 static ONLINE: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
-// 0=idle, 1=offline requested, 2=offline transitioning, 3=rejected,
-// 4=cancelled, 5=offline, 6=online requested, 7=online.
+// 0=initial online, 1=offline requested, 2=offline transitioning,
+// 3=offline rejected, 5=offline, 6=online requested, 7=online,
+// 8=online transitioning, 9=online rejected.
 static OFFLINE_STATE: [AtomicU8; MAX_CPUS] = [const { AtomicU8::new(0) }; MAX_CPUS];
+const HOTPLUG_TIMEOUT_CYCLES: u64 = 5_000_000_000;
+const HOTPLUG_CLAIMED_TIMEOUT_CYCLES: u64 = 10_000_000_000;
 static ACK: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 static SHOOT_LOCK: AtomicBool = AtomicBool::new(false);
@@ -32,6 +35,22 @@ static TIMER_COUNT: AtomicU32 = AtomicU32::new(1_000_000);
 static RESCHEDULE_IPIS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "stage6-hotplug-test")]
 static HOTPLUG_HOLE_DONE: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "stage6-hotplug-test")]
+static FORCE_OFFLINE_REJECT: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "stage6-hotplug-test")]
+static FORCE_ONLINE_REJECT: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "stage6-hotplug-test")]
+static FORCE_OFFLINE_HITS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "stage6-hotplug-test")]
+static FORCE_ONLINE_HITS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "stage6-hotplug-test")]
+static HOLD_OFFLINE_CLAIM: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "stage6-hotplug-test")]
+static HOLD_ONLINE_CLAIM: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "stage6-hotplug-test")]
+static HOLD_OFFLINE_HITS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "stage6-hotplug-test")]
+static HOLD_ONLINE_HITS: AtomicUsize = AtomicUsize::new(0);
 #[repr(align(16))]
 struct Stack(UnsafeCell<[u8; 131072]>);
 // Each AP exclusively owns its bootstrap stack for its entire lifetime.
@@ -91,7 +110,7 @@ pub fn cpu_is_schedulable(cpu: usize) -> bool {
     if !cpu_is_online(cpu) {
         return false;
     }
-    !matches!(OFFLINE_STATE[cpu].load(Ordering::Acquire), 1 | 2 | 6)
+    !matches!(OFFLINE_STATE[cpu].load(Ordering::Acquire), 1 | 2 | 6 | 8)
 }
 
 pub fn schedulable_mask() -> usize {
@@ -129,6 +148,12 @@ impl HotplugRequestGuard {
             .ok()
             .map(|_| Self)
     }
+
+    /// A claimed AP transition has no safe requester-side rollback. Keep new
+    /// requests disabled if hardware never reaches a terminal state.
+    fn poison(self) {
+        core::mem::forget(self);
+    }
 }
 
 impl Drop for HotplugRequestGuard {
@@ -137,12 +162,45 @@ impl Drop for HotplugRequestGuard {
     }
 }
 
+fn cancel_unclaimed(state: &AtomicU8, requested: u8, stable: u8) -> bool {
+    state
+        .compare_exchange(requested, stable, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+}
+
+#[cfg(feature = "stage6-hotplug-test")]
+pub fn hotplug_cancellation_self_test() -> bool {
+    let Some(request) = HotplugRequestGuard::claim() else {
+        return false;
+    };
+    let serialized = HotplugRequestGuard::claim().is_none();
+    drop(request);
+    let retryable = HotplugRequestGuard::claim().is_some();
+    // The same compare-exchange used by requester timeouts may cancel only
+    // unclaimed requests. An AP that won the transition owns completion.
+    let state = AtomicU8::new(1);
+    let offline_cancel = cancel_unclaimed(&state, 1, 7)
+        && state.load(Ordering::Acquire) == 7
+        && state.compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire).is_err();
+    state.store(2, Ordering::Release);
+    let offline_claim = !cancel_unclaimed(&state, 1, 7)
+        && state.load(Ordering::Acquire) == 2;
+    state.store(6, Ordering::Release);
+    let online_cancel = cancel_unclaimed(&state, 6, 5)
+        && state.load(Ordering::Acquire) == 5
+        && state.compare_exchange(6, 8, Ordering::AcqRel, Ordering::Acquire).is_err();
+    state.store(8, Ordering::Release);
+    let online_claim = !cancel_unclaimed(&state, 6, 5)
+        && state.load(Ordering::Acquire) == 8;
+    serialized && retryable && offline_cancel && offline_claim && online_cancel && online_claim
+}
+
 /// Ask an online AP to park after every task that can leave it has been
 /// evacuated. Requests are serialized; CPU slots and APIC identities remain
 /// stable even when the online mask has a hole.
 #[allow(dead_code)] // Management syscall wiring is a later lifecycle stage.
 pub fn request_cpu_offline(cpu: usize) -> bool {
-    let Some(_request) = HotplugRequestGuard::claim() else {
+    let Some(request) = HotplugRequestGuard::claim() else {
         return false;
     };
     if cpu == 0 || !cpu_is_online(cpu) {
@@ -158,19 +216,38 @@ pub fn request_cpu_offline(cpu: usize) -> bool {
     OFFLINE_STATE[cpu].store(1, Ordering::Release);
     if !reschedule_cpu(cpu) {
         serial::write_line(format_args!("[S6.HOTPLUG] reschedule request rejected cpu={}", cpu));
-        let _ = OFFLINE_STATE[cpu].compare_exchange(1, 4, Ordering::AcqRel, Ordering::Acquire);
-        return false;
+        if cancel_unclaimed(&OFFLINE_STATE[cpu], 1, state) {
+            return false;
+        }
     }
     let start = unsafe { core::arch::x86_64::_rdtsc() };
+    let mut timeout_reported = false;
     loop {
         match OFFLINE_STATE[cpu].load(Ordering::Acquire) {
             5 => return true,
-            3 | 4 => return false,
+            3 => {
+                OFFLINE_STATE[cpu].store(state, Ordering::Release);
+                return false;
+            }
             _ => {}
         }
-        if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 5_000_000_000 {
-            serial::write_line(format_args!("[S6.HOTPLUG] offline request timeout cpu={} state={}", cpu, OFFLINE_STATE[cpu].load(Ordering::Acquire)));
-            let _ = OFFLINE_STATE[cpu].compare_exchange(1, 4, Ordering::AcqRel, Ordering::Acquire);
+        let elapsed = unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start);
+        if elapsed >= HOTPLUG_TIMEOUT_CYCLES && !timeout_reported {
+            serial::write_line(format_args!(
+                "[S6.HOTPLUG] offline request timeout cpu={} state={}",
+                cpu, OFFLINE_STATE[cpu].load(Ordering::Acquire)
+            ));
+            if cancel_unclaimed(&OFFLINE_STATE[cpu], 1, state) {
+                return false;
+            }
+            timeout_reported = true;
+        }
+        if elapsed >= HOTPLUG_CLAIMED_TIMEOUT_CYCLES {
+            serial::write_line(format_args!(
+                "[S6.HOTPLUG] claimed offline transition unresolved cpu={} state={}",
+                cpu, OFFLINE_STATE[cpu].load(Ordering::Acquire)
+            ));
+            request.poison();
             return false;
         }
         core::hint::spin_loop();
@@ -182,7 +259,7 @@ pub fn request_cpu_offline(cpu: usize) -> bool {
 /// startup and may fill a hole in the online mask.
 #[allow(dead_code)] // Management syscall wiring is a later lifecycle stage.
 pub fn request_cpu_online(cpu: usize) -> bool {
-    let Some(_request) = HotplugRequestGuard::claim() else {
+    let Some(request) = HotplugRequestGuard::claim() else {
         return false;
     };
     if cpu == 0
@@ -192,24 +269,40 @@ pub fn request_cpu_online(cpu: usize) -> bool {
         return false;
     }
     OFFLINE_STATE[cpu].store(6, Ordering::Release);
-    if !wake_offline_cpu(cpu) {
-        let _ = OFFLINE_STATE[cpu].compare_exchange(6, 4, Ordering::AcqRel, Ordering::Acquire);
+    if !wake_offline_cpu(cpu)
+        && cancel_unclaimed(&OFFLINE_STATE[cpu], 6, 5)
+    {
         return false;
     }
     let start = unsafe { core::arch::x86_64::_rdtsc() };
+    let mut timeout_reported = false;
     loop {
         match OFFLINE_STATE[cpu].load(Ordering::Acquire) {
             7 => return true,
-            3 | 4 => return false,
+            9 => {
+                OFFLINE_STATE[cpu].store(5, Ordering::Release);
+                return false;
+            }
             _ => {}
         }
-        if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 5_000_000_000 {
+        let elapsed = unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start);
+        if elapsed >= HOTPLUG_TIMEOUT_CYCLES && !timeout_reported {
             serial::write_line(format_args!(
                 "[S6.HOTPLUG] online request timeout cpu={} state={}",
                 cpu,
                 OFFLINE_STATE[cpu].load(Ordering::Acquire)
             ));
-            let _ = OFFLINE_STATE[cpu].compare_exchange(6, 4, Ordering::AcqRel, Ordering::Acquire);
+            if cancel_unclaimed(&OFFLINE_STATE[cpu], 6, 5) {
+                return false;
+            }
+            timeout_reported = true;
+        }
+        if elapsed >= HOTPLUG_CLAIMED_TIMEOUT_CYCLES {
+            serial::write_line(format_args!(
+                "[S6.HOTPLUG] claimed online transition unresolved cpu={} state={}",
+                cpu, OFFLINE_STATE[cpu].load(Ordering::Acquire)
+            ));
+            request.poison();
             return false;
         }
         core::hint::spin_loop();
@@ -223,6 +316,12 @@ pub fn offline_checkpoint(cpu: usize) -> bool {
         return false;
     }
     x86_64::instructions::interrupts::disable();
+    #[cfg(feature = "stage6-hotplug-test")]
+    if HOLD_OFFLINE_CLAIM.load(Ordering::Acquire) {
+        HOLD_OFFLINE_HITS.fetch_add(1, Ordering::Release);
+        x86_64::instructions::interrupts::enable();
+        return false;
+    }
     if OFFLINE_STATE[cpu]
         .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
@@ -230,13 +329,20 @@ pub fn offline_checkpoint(cpu: usize) -> bool {
         x86_64::instructions::interrupts::enable();
         return false;
     }
+    #[cfg(feature = "stage6-hotplug-test")]
+    if FORCE_OFFLINE_REJECT.swap(false, Ordering::AcqRel) {
+        FORCE_OFFLINE_HITS.fetch_add(1, Ordering::Release);
+        x86_64::instructions::interrupts::enable();
+        OFFLINE_STATE[cpu].store(3, Ordering::Release);
+        return false;
+    }
     // Claim the transition before changing scheduler ownership. A requester
     // that times out can cancel only state 1; once state 2 is published, the
     // AP owns completion and cannot leave a dead current task online.
     if !task::offline_cpu_checkpoint(cpu) {
         serial::write_line(format_args!("[S6.HOTPLUG] checkpoint rejected cpu={}", cpu));
-        OFFLINE_STATE[cpu].store(3, Ordering::Release);
         x86_64::instructions::interrupts::enable();
+        OFFLINE_STATE[cpu].store(3, Ordering::Release);
         return false;
     }
     // Mask the local timer before withdrawing the CPU from the global online
@@ -261,6 +367,26 @@ pub fn online_checkpoint(cpu: usize) -> bool {
         return false;
     }
     x86_64::instructions::interrupts::disable();
+    #[cfg(feature = "stage6-hotplug-test")]
+    if HOLD_ONLINE_CLAIM.load(Ordering::Acquire) {
+        HOLD_ONLINE_HITS.fetch_add(1, Ordering::Release);
+        x86_64::instructions::interrupts::enable();
+        return false;
+    }
+    if OFFLINE_STATE[cpu]
+        .compare_exchange(6, 8, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        x86_64::instructions::interrupts::enable();
+        return false;
+    }
+    #[cfg(feature = "stage6-hotplug-test")]
+    if FORCE_ONLINE_REJECT.swap(false, Ordering::AcqRel) {
+        FORCE_ONLINE_HITS.fetch_add(1, Ordering::Release);
+        x86_64::instructions::interrupts::enable();
+        OFFLINE_STATE[cpu].store(9, Ordering::Release);
+        return false;
+    }
     // Publish the CPU before creating its live idle TCB, matching AP bootstrap
     // ordering. This prevents the scheduler invariant checker from observing
     // a live task whose affinity refers to a still-offline CPU.
@@ -278,8 +404,8 @@ pub fn online_checkpoint(cpu: usize) -> bool {
         ONLINE[cpu].store(false, Ordering::Release);
         COUNT.fetch_sub(1, Ordering::AcqRel);
         SHOOT_LOCK.store(false, Ordering::Release);
-        OFFLINE_STATE[cpu].store(3, Ordering::Release);
         x86_64::instructions::interrupts::enable();
+        OFFLINE_STATE[cpu].store(9, Ordering::Release);
         false
     }
 }
@@ -306,6 +432,78 @@ pub fn hotplug_hole_worker_probe(expected: usize) -> bool {
         task::yield_now();
     }
     true
+}
+
+#[cfg(feature = "stage6-hotplug-test")]
+pub fn hotplug_rejection_recovery_probe(cpu: usize) -> bool {
+    if cpu == 0 || !cpu_is_schedulable(cpu) {
+        return false;
+    }
+    let count = online_count();
+    let mask = online_mask();
+    let offline_hits = FORCE_OFFLINE_HITS.load(Ordering::Acquire);
+    FORCE_OFFLINE_REJECT.store(true, Ordering::Release);
+    let offline_rejected = !request_cpu_offline(cpu)
+        && FORCE_OFFLINE_HITS.load(Ordering::Acquire) == offline_hits + 1
+        && online_count() == count
+        && online_mask() == mask
+        && cpu_is_schedulable(cpu);
+    FORCE_OFFLINE_REJECT.store(false, Ordering::Release);
+    if !offline_rejected || !request_cpu_offline(cpu) {
+        return false;
+    }
+    let offline_mask = mask & !(1usize << cpu);
+    if online_count() != count - 1 || online_mask() != offline_mask {
+        return false;
+    }
+    let online_hits = FORCE_ONLINE_HITS.load(Ordering::Acquire);
+    FORCE_ONLINE_REJECT.store(true, Ordering::Release);
+    let online_rejected = !request_cpu_online(cpu)
+        && FORCE_ONLINE_HITS.load(Ordering::Acquire) == online_hits + 1
+        && online_count() == count - 1
+        && online_mask() == offline_mask
+        && OFFLINE_STATE[cpu].load(Ordering::Acquire) == 5;
+    FORCE_ONLINE_REJECT.store(false, Ordering::Release);
+    online_rejected
+        && request_cpu_online(cpu)
+        && online_count() == count
+        && online_mask() == mask
+}
+
+#[cfg(feature = "stage6-hotplug-test")]
+pub fn hotplug_timeout_recovery_probe(cpu: usize) -> bool {
+    if cpu == 0 || !cpu_is_schedulable(cpu) {
+        return false;
+    }
+    let count = online_count();
+    let mask = online_mask();
+    let offline_hits = HOLD_OFFLINE_HITS.load(Ordering::Acquire);
+    HOLD_OFFLINE_CLAIM.store(true, Ordering::Release);
+    let offline_cancelled = !request_cpu_offline(cpu)
+        && HOLD_OFFLINE_HITS.load(Ordering::Acquire) > offline_hits
+        && online_count() == count
+        && online_mask() == mask
+        && cpu_is_schedulable(cpu);
+    HOLD_OFFLINE_CLAIM.store(false, Ordering::Release);
+    if !offline_cancelled || !request_cpu_offline(cpu) {
+        return false;
+    }
+    let offline_mask = mask & !(1usize << cpu);
+    if online_count() != count - 1 || online_mask() != offline_mask {
+        return false;
+    }
+    let online_hits = HOLD_ONLINE_HITS.load(Ordering::Acquire);
+    HOLD_ONLINE_CLAIM.store(true, Ordering::Release);
+    let online_cancelled = !request_cpu_online(cpu)
+        && HOLD_ONLINE_HITS.load(Ordering::Acquire) > online_hits
+        && OFFLINE_STATE[cpu].load(Ordering::Acquire) == 5
+        && online_count() == count - 1
+        && online_mask() == offline_mask;
+    HOLD_ONLINE_CLAIM.store(false, Ordering::Release);
+    online_cancelled
+        && request_cpu_online(cpu)
+        && online_count() == count
+        && online_mask() == mask
 }
 pub fn cpu_domain(cpu: usize) -> u32 {
     if cpu < MAX_CPUS {
@@ -432,8 +630,13 @@ pub fn reschedule_cpu(cpu: usize) -> bool {
 }
 
 fn wake_offline_cpu(cpu: usize) -> bool {
-    if cpu >= MAX_CPUS || OFFLINE_STATE[cpu].load(Ordering::Acquire) != 6 {
+    if cpu >= MAX_CPUS {
         return false;
+    }
+    match OFFLINE_STATE[cpu].load(Ordering::Acquire) {
+        8 => return true,
+        6 => {}
+        _ => return false,
     }
     RESCHEDULE_IPIS.fetch_add(1, Ordering::Relaxed);
     x86_64::instructions::interrupts::without_interrupts(|| {

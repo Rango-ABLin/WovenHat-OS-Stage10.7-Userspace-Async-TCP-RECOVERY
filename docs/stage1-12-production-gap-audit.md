@@ -34,3 +34,6 @@ CPU 3 continues to execute work and acknowledge TLB shootdowns. This changes
 the foundation evidence in the Stage 6 row; physical non-contiguous hotplug
 qualification remains open, as do high APIC-ID and multi-node NUMA hardware
 gates. Failed scheduler evacuation is now atomic with respect to task moves.
+Deterministic AP rejection and unclaimed-timeout recovery now pass the 2/4-CPU
+QEMU hotplug gate; claimed-transition hardware-fault and concurrent workload
+stress remain open.

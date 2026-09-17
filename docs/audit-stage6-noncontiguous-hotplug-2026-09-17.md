@@ -43,3 +43,35 @@ NUMA placement are still hardware-only gates. Concurrent hotplug requests
 are rejected while one request is active; broad stress of request
 cancellation, concurrent process creation, and device I/O during a real
 hardware transition remains open.
+
+## Request cancellation and retry follow-up
+
+An AP now claims an offline request with `1 -> 2` and an online request with
+`6 -> 8`. A requester may cancel only the unclaimed state, atomically restoring
+the prior stable online state or offline state `5`. If the AP has claimed the
+operation, the requester waits for success or a terminal rejection rather
+than reporting a cancelled request while the AP can still change topology.
+The AP publishes rejection only after restoring its interrupt state. The
+requester then rearms the stable state, so both operations can be retried.
+If a claimed transition never reaches a terminal state within the second
+deadline, the hotplug control plane stays locked against new requests; this
+contains the uncertainty but requires operator diagnosis of the failed AP.
+
+The QEMU gate uses feature-only hooks to force an AP rejection of each
+operation and to hold each request unclaimed through its timeout. It checks
+the AP actually visited both rejection hooks and both hold hooks, verifies
+the online count/mask stayed stable, and successfully retries offline and
+online operations afterward. These probes run on both 2- and 4-CPU profiles
+before the original tail and middle-CPU lifecycle cycles. The focused logs
+include `[S6.HOTPLUG] rejection recovery: PASSED`, the state-1 and state-6
+timeout records, and `[S6.HOTPLUG] timeout recovery: PASSED`.
+The follow-up source passed all 33 checks in
+`target/release-validation/results.json`, including warning-denying Clippy,
+host tests, 1/2/4-CPU debug QEMU gates, release QEMU gates, and shell smoke.
+The focused follow-up evidence is under
+`audit-artifacts/stage6-hotplug-2cpu-1789635217388184700/` and
+`audit-artifacts/stage6-hotplug-4cpu-1789635182453579800/`.
+
+This covers deterministic cancellation and retry under QEMU. Concurrent
+process creation, device I/O, and physical hardware faults during a claimed
+transition still require stress and hardware qualification.

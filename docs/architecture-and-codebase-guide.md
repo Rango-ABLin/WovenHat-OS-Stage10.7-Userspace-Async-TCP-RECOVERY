@@ -87,6 +87,11 @@ offline/online state. An offline request first plans all Ready-task moves under
 the scheduler lock and commits them only if every task has a legal destination.
 The CPU-owned idle checkpoint revalidates that plan before parking. A parked
 AP retains its bootstrap stack and rejoins its original logical slot.
+The requester cancels only a request the AP has not claimed; claimed offline
+and online transitions use separate states and must reach a terminal result.
+A rejected AP transition is rearmed for retry after AP cleanup. If a claimed
+transition never completes, further hotplug requests remain disabled rather
+than proceeding with uncertain CPU ownership.
 The 4-CPU QEMU gate offlines CPU 1 while CPU 3 remains active, runs a worker on
 CPU 3, and performs an acknowledged shootdown across the resulting hole.
 

@@ -1738,11 +1738,26 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     }
     #[cfg(feature = "stage6-hotplug-test")]
     {
+        if !smp::hotplug_cancellation_self_test() {
+            serial::write_line(format_args!("[S6.HOTPLUG] cancellation: FAILED"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!("[S6.HOTPLUG] cancellation: PASSED"));
         if !task::hotplug_evacuation_atomic_self_test() {
             serial::write_line(format_args!("[S6.HOTPLUG] evacuation: FAILED"));
             qemu_test_exit_failure();
         }
         serial::write_line(format_args!("[S6.HOTPLUG] evacuation: PASSED"));
+        if !smp::hotplug_rejection_recovery_probe(smp::online_count().saturating_sub(1)) {
+            serial::write_line(format_args!("[S6.HOTPLUG] rejection recovery: FAILED"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!("[S6.HOTPLUG] rejection recovery: PASSED"));
+        if !smp::hotplug_timeout_recovery_probe(smp::online_count().saturating_sub(1)) {
+            serial::write_line(format_args!("[S6.HOTPLUG] timeout recovery: FAILED"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!("[S6.HOTPLUG] timeout recovery: PASSED"));
         const CYCLES: usize = 2;
         for cycle in 0..CYCLES {
             let offline_cpu = smp::online_count().saturating_sub(1);
