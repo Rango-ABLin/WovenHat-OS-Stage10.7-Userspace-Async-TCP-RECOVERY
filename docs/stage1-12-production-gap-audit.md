@@ -6,7 +6,7 @@ mistaken for full production completion.
 | Area | Foundation present | Production gaps still open |
 | --- | --- | --- |
 | Stages 1–5 | Boot, memory, paging, scheduler, VFS, userspace, storage; 1/2/4-CPU acceptance; bounded Unicode long-filename create/lookup/delete/rename, NFC name normalization, named listing, mounted import listing, directory growth, bounded VFS uid/gid/mode enforcement, WMD1/WMD2 ownership metadata persistence/import and durable file-intent recovery | Non-QEMU hardware qualification/drivers, DMA storage completion, metadata-table capacity beyond the fixed ABI, full data rollback/checksum replay, unclean-shutdown hardware qualification |
-| Stage 6 | Bounded SMP, TLB shootdowns, 1–4 CPU tests, ACPI SRAT CPU/memory-domain discovery, domain-local placement/rebalancing/allocation, x2APIC MSR path, migratable audited I/O workers, bounded contiguous-prefix AP offline/re-online control, ranked interrupt-safe locks for scheduler/process/paging/COW/frame-allocation/file-frame cache/VFS/heap/swap/FAT32 clean-page cache, async/completion/worker, pipe, IPC, WovenGuard lineage, device/keyboard, journal, mount-record and key-vault domains, generation-tagged VFS/pipe handles, unlocked/revalidated disk-backed VFS reads and materialization, allocator-reserved contiguous VirtIO DMA arena | General multicore userspace, unrestricted concurrent I/O/DMA throughput, multi-node NUMA qualification, non-contiguous hotplug hardware qualification, APIC-ID-above-255 hardware coverage, cross-layer FAT32 mutation transactions and stress qualification, bounded heap capacity, remaining compatibility-mutex lock domains/priority inheritance |
+| Stage 6 | Bounded SMP, TLB shootdowns, 1–4 CPU tests, ACPI SRAT CPU/memory-domain discovery, domain-local placement/rebalancing/allocation, x2APIC MSR path, migratable audited I/O workers, bounded contiguous-prefix AP offline/re-online control, ranked interrupt-safe locks for scheduler/process/paging/COW/frame-allocation/file-frame cache/VFS/heap/swap/FAT32 clean-page cache, async/completion/worker, pipe, IPC, WovenGuard lineage, device/keyboard, journal, mount-record and key-vault domains, generation-tagged VFS/pipe handles, unlocked/revalidated disk-backed VFS reads and materialization, allocator-reserved contiguous VirtIO DMA arena | General multicore userspace, unrestricted concurrent I/O/DMA throughput, multi-node NUMA qualification, non-contiguous hotplug hardware qualification, APIC-ID-above-255 hardware coverage, cross-layer FAT32 mutation transactions and stress qualification, bounded heap capacity, broader cross-layer lock stress/priority inheritance |
 | Stages 7–9 | Isolation, IPC, capability delegation/revocation, WovenGuard, ELF W^X, formal threat model | Dynamic libc/linking, complete signals, scheduler-backed threads |
 | Stage 10 | TCP, completion ports, timer/event foundations, Ring-3 timer/event gate, unified completion path | Broader production driver and hardware qualification |
 | Stage 11 | Process/thread state, notifications, `libwoven`, loader checks, production ASLR | Real scheduler-backed user threads, dynamic relocations, shared libraries, loader TLS, RELRO |
@@ -18,5 +18,8 @@ roadmap requirement has passing evidence or an explicitly accepted design.
 
 Stage 6 lock follow-up: terminal rendering now uses a ranked, IRQ-live local
 preemption guard; shell cwd state uses a short ranked IRQ mutex. The remaining
-compatibility-mutex and priority-inheritance items in the table refer to
-other domains and the broader lock graph.
+lock and priority-inheritance items in the table refer to broader cross-layer
+paths and scheduler behavior, not the terminal or shell metadata guards.
+The socket runtime and VirtIO transport now use explicit ranks 20 and 30;
+every current kernel `IrqMutex` construction has a declared rank. Broader
+lock-path stress and priority inheritance remain open.

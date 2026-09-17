@@ -16,7 +16,7 @@ gates, legacy PIC fallback, 4-CPU release gates, and shell/SMP smoke. See
 General multicore userspace, unrestricted concurrent device/filesystem service
 throughput, multi-node NUMA page-placement qualification, non-contiguous
 hotplug hardware qualification, APIC-ID-above-255 hardware qualification, and
-lock coverage for remaining compatibility mutexes and priority inheritance
+broader cross-layer lock-path qualification and priority inheritance
 remain explicit deferred requirements in the Stage 6 contract. CPU-domain
 placement, audited Ready-state I/O service migration, and the x2APIC MSR transport are
 implemented; bounded contiguous-prefix AP offline/re-online control is also
@@ -61,6 +61,11 @@ tracker updates remain interrupt-atomic. This closes the audited terminal and
 shell compatibility-lock gap, but not the other Stage 6 production gaps above.
 The final source passed the complete release matrix and twice-cycled 2/4-CPU
 hotplug gates; details are in the lock-order audit.
+The network runtime and VirtIO transport now declare ranks 20 and 30 for
+their existing runtime-to-transport nesting. No kernel `IrqMutex::new` call
+sites remain; this is rank coverage, not proof of every cross-subsystem path.
+The ranked network change passed the full release matrix and twice-cycled
+2/4-CPU hotplug gates.
 
 ## Stage 10.7 — accepted on 2026-09-16
 

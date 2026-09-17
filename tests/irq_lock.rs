@@ -32,8 +32,8 @@ use irq_lock::IrqMutex;
 
 #[test]
 fn nested_guards_restore_the_original_interrupt_state() {
-    let outer = IrqMutex::new(0);
-    let inner = IrqMutex::new(0);
+    let outer = IrqMutex::with_rank(0, 0);
+    let inner = IrqMutex::with_rank(0, 0);
     {
         let mut a = outer.lock();
         assert!(!interrupts::are_enabled());
@@ -53,7 +53,7 @@ fn nested_guards_restore_the_original_interrupt_state() {
 #[test]
 fn syscall_context_keeps_interrupts_disabled() {
     interrupts::disable();
-    let mutex = IrqMutex::new(1);
+    let mutex = IrqMutex::with_rank(1, 0);
     assert_eq!(*mutex.lock(), 1);
     assert!(!interrupts::are_enabled());
     interrupts::enable();

@@ -208,7 +208,7 @@ impl Transport {
     }
 }
 
-static TRANSPORT: Mutex<Transport> = Mutex::new(Transport::empty());
+static TRANSPORT: Mutex<Transport> = Mutex::with_rank(Transport::empty(), 30);
 
 pub fn probe() -> ProbeStatus {
     let mut index = 0usize;

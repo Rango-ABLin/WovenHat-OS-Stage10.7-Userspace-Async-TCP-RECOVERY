@@ -166,8 +166,8 @@ to enable IRQs through rendering and restore entry IF afterward. A boot-time
 probe waits for two timer ticks under the local guard and checks task ID,
 depth, and IF restoration. The shell's short current-directory lock is now
 rank-10 IRQ-safe; callers copy cwd before allocation or console output.
-Neither guard spans a deliberate block or task switch. Other compatibility
-locks and priority inheritance remain open Stage 6 work.
+Neither guard spans a deliberate block or task switch. Cross-layer lock
+qualification and priority inheritance remain open Stage 6 work.
 
 The final source passed `python scripts/test-release.py` (warning-denying
 kernel/host Clippy, host tests, 1/2/4-CPU memory/storage/network, legacy PIC,
@@ -175,3 +175,18 @@ kernel/host Clippy, host tests, 1/2/4-CPU memory/storage/network, legacy PIC,
 offline/re-online probes also passed. Evidence is in
 `target/release-validation/results.json` and the dated
 `audit-artifacts/stage6-hotplug-{2,4}cpu-*` directories.
+
+The remaining unranked kernel IRQ-mutex instances were the socket runtime
+and VirtIO-net transport. They now declare ranks 20 and 30, respectively,
+matching the runtime-to-transport packet path. The default unranked
+constructor was removed from kernel code; the host guard test uses an explicit
+rank-zero fixture to continue checking nested IF restoration. This makes all
+current kernel IRQ-mutex construction sites explicit about rank. It does not
+replace stress or proof for every cross-subsystem lock path, and priority
+inheritance remains open.
+
+The ranked network change passed the full `python scripts/test-release.py`
+matrix, including live UDP/TCP exchange at 1, 2, and 4 CPUs and four-CPU
+release mode. Dedicated twice-cycled 2/4-CPU AP hotplug probes passed again.
+The report and dated hotplug logs are retained under `target/release-validation`
+and `audit-artifacts`.

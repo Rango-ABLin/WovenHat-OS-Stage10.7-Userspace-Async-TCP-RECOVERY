@@ -89,8 +89,6 @@ pub struct IrqMutex<T> {
 }
 
 impl<T> IrqMutex<T> {
-    pub const fn new(value: T) -> Self { Self::with_rank(value, 0) }
-
     /// Construct a lock with a monotonic nesting rank. A nonzero rank is
     /// checked against locks already held by this CPU; lower-ranked nesting is
     /// rejected before spinning, making lock-order bugs fail deterministically.

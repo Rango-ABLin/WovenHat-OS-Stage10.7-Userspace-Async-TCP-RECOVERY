@@ -141,8 +141,10 @@ that depth. The timer preemption path checks both this depth and the separate
 I/O depth. It cannot be used in an IRQ handler or around a voluntary switch.
 
 The network request queue, worker identity, generic completion table, socket
-runtime and VirtIO-net transport use this guard. No task may sleep or switch
-while holding it. The worker drops queue/runtime guards before generic completion
+runtime and VirtIO-net transport use this guard. The runtime is rank 20 and
+the transport is rank 30, matching runtime-to-transport packet flow. No task
+may sleep or switch while holding it. The worker drops queue/runtime guards
+before generic completion
 publication or scheduler event waiting. Teardown can follow scheduler -> request
 queue -> socket runtime. Network polling drops runtime before querying the queue;
 transport polling releases its lock before socket-runtime acquisition. Runtime
@@ -151,7 +153,7 @@ packet handling can take runtime -> transport.
 The socket worker remains CPU0-pinned. These changes do not introduce parallel
 smoltcp workers, per-CPU network queues or unrestricted multicore I/O services.
 The existing network runtime remains globally serialized. The guard does not
-make arbitrary legacy subsystem locks safe; broader lock audits remain necessary.
+prove every cross-subsystem lock order; broader path audits remain necessary.
 
 ## Tests and evidence
 

@@ -258,7 +258,7 @@ pub fn init() -> Result<(), InitError> {
     let ping_handle = sockets.add(ping_socket);
 
     RUNTIME.call_once(|| {
-        Mutex::new(Runtime {
+        Mutex::with_rank(Runtime {
             iface,
             device,
             sockets,
@@ -280,7 +280,7 @@ pub fn init() -> Result<(), InitError> {
             ping_handle: Some(ping_handle),
             ping_pending: None,
             ping_sequence: 0,
-        })
+        }, 20)
     });
     Ok(())
 }
