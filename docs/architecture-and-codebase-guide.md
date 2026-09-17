@@ -51,6 +51,10 @@ free-list slots for every possible hole at that live-object bound. Kernel
 range mapping rolls back newly mapped pages on a partial failure. Later heap
 growth still requires a design that can honor lock order when allocation
 occurs under paging, frame, process, or audit guards.
+The rank-40 physical-frame allocator stores one allocation bitmap in reserved
+pages at the start of each usable RAM range. Returned frames beyond its 4,096
+entry hot cache remain reusable through a bitmap scan; the bit also rejects
+duplicate returns. Bitmap pages are excluded from allocatable-frame counts.
 The swap-state guard is rank 40 and releases before ATA transfers. Device,
 keyboard decoder, journal-intent, mount-record, and key-vault metadata guards
 are rank 10; none performs a blocking transfer while held. Keyboard captures

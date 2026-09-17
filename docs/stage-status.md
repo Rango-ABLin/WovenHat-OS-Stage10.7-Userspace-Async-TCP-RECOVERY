@@ -63,6 +63,14 @@ rolls back. Runtime growth beyond the eager mapping remains open.
 See the [Stage 6 heap audit](audit-stage6-heap-2026-09-17.md).
 The final heap change passed the full release matrix and twice-cycled 2/4-CPU
 hotplug gates.
+The frame allocator now reserves a bitmap in each usable physical range and
+uses it to track allocations, reject double frees, and recover returned
+frames beyond its 4,096-entry hot cache. See the
+[frame reclamation audit](audit-stage6-frame-reclamation-2026-09-17.md).
+The QEMU memory gate exercises 4,352 returned frames; physical high-RAM and
+NUMA latency qualification remains open.
+The final frame-reclamation source passed the full 33-check release matrix
+and dedicated twice-cycled 2/4-CPU hotplug gates.
 The bounded device, keyboard decoder, journal, swap-state, mount-record, and
 key-vault tables now use IRQ-safe locks. Keyboard input preserves the caller's
 pre-lock interrupt state for early-boot polling; Stage 1-5 journal, Stage 12.3

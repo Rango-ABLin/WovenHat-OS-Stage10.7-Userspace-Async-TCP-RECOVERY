@@ -123,12 +123,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     let acpi = physical_memory_offset
         .ok_or(hal::acpi::Error::OutOfRange)
         .and_then(|offset| hal::acpi::discover(offset, rsdp_address, &boot_info.memory_regions));
-    let memory_init = match acpi.as_ref() {
-        Ok(summary) => memory::init_with_topology(
+    let memory_init = match (acpi.as_ref(), physical_memory_offset) {
+        (Ok(summary), Some(offset)) => memory::init_with_topology(
             &boot_info.memory_regions,
             &summary.memory_affinities[..summary.memory_affinity_count],
+            offset,
         ),
-        Err(_) => memory::init(&boot_info.memory_regions),
+        (_, Some(offset)) => memory::init(&boot_info.memory_regions, offset),
+        (_, None) => Err(memory::InitError::MissingPhysicalMemoryMapping),
     };
     let boot_info_address = boot_info as *const BootInfo as u64;
 
@@ -276,6 +278,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         console.println("KERNEL HEAP: SELF TEST FAILED");
         halt();
     }
+    #[cfg(feature = "qemu-test")]
+    if !memory::reclaimed_overflow_self_test() {
+        serial::write_line(format_args!("[S6.MEMORY] reclaimed overflow/double-free: FAILED"));
+        qemu_test_exit_failure();
+    }
+    #[cfg(feature = "qemu-test")]
+    serial::write_line(format_args!("[S6.MEMORY] reclaimed overflow/double-free: PASSED"));
 
     // Normal boots are shell-first. Do not make the interactive console wait
     // for the exhaustive storage/network/ring3 validation suite. Those tests

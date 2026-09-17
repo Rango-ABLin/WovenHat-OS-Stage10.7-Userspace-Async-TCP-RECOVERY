@@ -1,4 +1,6 @@
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
+#[cfg(feature = "qemu-test")]
+use alloc::vec::Vec;
 use x86_64::{
     structures::paging::{FrameAllocator, PageSize, PhysFrame, Size4KiB},
     PhysAddr,
@@ -8,8 +10,8 @@ use crate::irq_lock::{IrqMutex, IrqMutexGuard};
 
 const FRAME_SIZE: u64 = Size4KiB::SIZE;
 const MAX_USABLE_REGIONS: usize = 128;
-// Covers a full rollback of the maximum 8 MiB boot heap mapping (2,048 data
-// frames), plus page-table and earlier reclaimed frames during initialization.
+// Hot cache for returns; the per-region bitmap keeps returns beyond this
+// capacity reusable without imposing a total deallocation limit.
 const MAX_RECLAIMED_FRAMES: usize = 4096;
 
 // Lock order: PAGING (10) -> COW_TABLE (30) -> ALLOCATOR (40).
@@ -22,6 +24,8 @@ struct FrameRange {
     next: u64,
     end: u64,
     domain: u32,
+    bitmap: u64,
+    overflow_hint: u64,
 }
 
 impl FrameRange {
@@ -31,6 +35,8 @@ impl FrameRange {
             next: 0,
             end: 0,
             domain: 0,
+            bitmap: 0,
+            overflow_hint: u64::MAX,
         }
     }
 }
@@ -46,6 +52,7 @@ pub struct Stats {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum InitError {
     AlreadyInitialized,
+    MissingPhysicalMemoryMapping,
     TooManyUsableRegions,
     AddressOverflow,
     NoUsableFrames,
@@ -60,6 +67,7 @@ pub(crate) struct PhysicalFrameAllocator {
     reclaimed_frames: [u64; MAX_RECLAIMED_FRAMES],
     reclaimed_domains: [u32; MAX_RECLAIMED_FRAMES],
     reclaimed_count: usize,
+    reclaimed_untracked: u64,
     numa_enabled: bool,
     initialized: bool,
 }
@@ -75,6 +83,7 @@ impl PhysicalFrameAllocator {
             reclaimed_frames: [0; MAX_RECLAIMED_FRAMES],
             reclaimed_domains: [0; MAX_RECLAIMED_FRAMES],
             reclaimed_count: 0,
+            reclaimed_untracked: 0,
             numa_enabled: false,
             initialized: false,
         }
@@ -84,6 +93,7 @@ impl PhysicalFrameAllocator {
         &mut self,
         regions: &[MemoryRegion],
         affinities: &[crate::hal::acpi::MemoryAffinity],
+        physical_memory_offset: u64,
     ) -> Result<(), InitError> {
         if self.initialized {
             return Err(InitError::AlreadyInitialized);
@@ -104,16 +114,38 @@ impl PhysicalFrameAllocator {
                 return Err(InitError::TooManyUsableRegions);
             }
 
+            // Keep one allocation bit per usable frame in pages carved from
+            // this same physical range. The bitmap is reachable through the
+            // bootloader's direct map and never enters the free pool.
             let frames = (end - start) / FRAME_SIZE;
+            let bitmap_bytes = frames.div_ceil(8);
+            let bitmap_pages = bitmap_bytes.div_ceil(FRAME_SIZE);
+            let bitmap_size = bitmap_pages
+                .checked_mul(FRAME_SIZE)
+                .ok_or(InitError::AddressOverflow)?;
+            let alloc_start = start.checked_add(bitmap_size).ok_or(InitError::AddressOverflow)?;
+            if alloc_start >= end {
+                continue;
+            }
+            let bitmap_address = physical_memory_offset
+                .checked_add(start)
+                .ok_or(InitError::AddressOverflow)?;
+            let bitmap_size = usize::try_from(bitmap_size).map_err(|_| InitError::AddressOverflow)?;
+            // SAFETY: Bootloader direct-maps each usable physical range;
+            // bitmap pages have been removed from the allocatable portion.
+            unsafe { core::ptr::write_bytes(bitmap_address as *mut u8, 0, bitmap_size) };
+            let frames = (end - alloc_start) / FRAME_SIZE;
             self.total_frames = self
                 .total_frames
                 .checked_add(frames)
                 .ok_or(InitError::AddressOverflow)?;
             self.ranges[self.range_count] = FrameRange {
-                start,
-                next: start,
+                start: alloc_start,
+                next: alloc_start,
                 end,
                 domain: memory_domain(start, end, affinities),
+                bitmap: bitmap_address,
+                overflow_hint: u64::MAX,
             };
             self.range_count += 1;
         }
@@ -146,21 +178,24 @@ impl PhysicalFrameAllocator {
 
     pub(crate) fn deallocate_frame(&mut self, frame: PhysFrame<Size4KiB>) -> bool {
         let address = frame.start_address().as_u64();
-        if !self.contains(frame)
-            || self.allocated_frames == 0
-            || self.reclaimed_count == self.reclaimed_frames.len()
-            || self.reclaimed_frames[..self.reclaimed_count].contains(&address)
-        {
+        let Some(range) = self.ranges[..self.range_count]
+            .iter_mut()
+            .find(|range| address >= range.start && address < range.next)
+        else {
+            return false;
+        };
+        if !bitmap_get(range, address) || self.allocated_frames == 0 {
             return false;
         }
-
-        self.reclaimed_frames[self.reclaimed_count] = address;
-        self.reclaimed_domains[self.reclaimed_count] = self
-            .ranges[..self.range_count]
-            .iter()
-            .find(|range| address >= range.start && address < range.end)
-            .map_or(0, |range| range.domain);
-        self.reclaimed_count += 1;
+        bitmap_set(range, address, false);
+        if self.reclaimed_count < self.reclaimed_frames.len() {
+            self.reclaimed_frames[self.reclaimed_count] = address;
+            self.reclaimed_domains[self.reclaimed_count] = range.domain;
+            self.reclaimed_count += 1;
+        } else {
+            self.reclaimed_untracked += 1;
+            range.overflow_hint = range.overflow_hint.min(address);
+        }
         self.allocated_frames -= 1;
         true
     }
@@ -201,6 +236,9 @@ impl PhysicalFrameAllocator {
                 }
                 let address = range.next;
                 range.next = range.next.checked_add(bytes)?;
+                for frame in 0..count {
+                    bitmap_set(range, address + frame as u64 * FRAME_SIZE, true);
+                }
                 self.current_range = if range.next >= range.end {
                     (index + 1) % self.range_count
                 } else {
@@ -238,8 +276,38 @@ impl PhysicalFrameAllocator {
                 self.reclaimed_domains[index] = self.reclaimed_domains[last];
             }
             self.reclaimed_count = last;
+            let range = self.ranges[..self.range_count]
+                .iter()
+                .find(|range| address >= range.start && address < range.end)?;
+            bitmap_set(range, address, true);
             self.allocated_frames += 1;
             return PhysFrame::from_start_address(PhysAddr::new(address)).ok();
+        }
+
+        if self.reclaimed_untracked != 0 {
+            for pass in 0..2 {
+                for offset in 0..self.range_count {
+                    let index = (self.current_range + offset) % self.range_count;
+                    let range = &mut self.ranges[index];
+                    if pass == 0
+                        && preferred.is_some_and(|domain| range.domain != domain)
+                    {
+                        continue;
+                    }
+                    let mut address = range.overflow_hint;
+                    while address < range.next {
+                        if !bitmap_get(range, address) {
+                            bitmap_set(range, address, true);
+                            range.overflow_hint = address + FRAME_SIZE;
+                            self.reclaimed_untracked -= 1;
+                            self.allocated_frames += 1;
+                            return PhysFrame::from_start_address(PhysAddr::new(address)).ok();
+                        }
+                        address += FRAME_SIZE;
+                    }
+                    range.overflow_hint = u64::MAX;
+                }
+            }
         }
 
         for pass in 0..2 {
@@ -254,6 +322,7 @@ impl PhysicalFrameAllocator {
                 if range.next < range.end {
                     let address = range.next;
                     range.next += FRAME_SIZE;
+                    bitmap_set(range, address, true);
                     self.current_range = if range.next >= range.end {
                         (index + 1) % self.range_count
                     } else {
@@ -269,6 +338,24 @@ impl PhysicalFrameAllocator {
     }
 }
 
+fn bitmap_get(range: &FrameRange, address: u64) -> bool {
+    let index = ((address - range.start) / FRAME_SIZE) as usize;
+    // SAFETY: The bitmap is reserved direct-mapped RAM, and the allocator
+    // mutex serializes every access to this range's allocation bits.
+    let byte = unsafe { (range.bitmap as *const u8).add(index / 8).read() };
+    byte & (1 << (index % 8)) != 0
+}
+
+fn bitmap_set(range: &FrameRange, address: u64, allocated: bool) {
+    let index = ((address - range.start) / FRAME_SIZE) as usize;
+    // SAFETY: See bitmap_get. The bitmap has one bit for every frame in the
+    // allocatable subrange and remains permanently outside that subrange.
+    let pointer = unsafe { (range.bitmap as *mut u8).add(index / 8) };
+    let previous = unsafe { pointer.read() };
+    let mask = 1 << (index % 8);
+    unsafe { pointer.write(if allocated { previous | mask } else { previous & !mask }) };
+}
+
 // SAFETY: The allocator returns each fully usable 4 KiB frame at most once.
 // Its only instance is protected by `ALLOCATOR`, so cursors cannot race or be
 // cloned/reset while frames are live.
@@ -278,15 +365,16 @@ unsafe impl FrameAllocator<Size4KiB> for PhysicalFrameAllocator {
     }
 }
 
-pub fn init(regions: &[MemoryRegion]) -> Result<(), InitError> {
-    ALLOCATOR.lock().initialize(regions, &[])
+pub fn init(regions: &[MemoryRegion], physical_memory_offset: u64) -> Result<(), InitError> {
+    ALLOCATOR.lock().initialize(regions, &[], physical_memory_offset)
 }
 
 pub fn init_with_topology(
     regions: &[MemoryRegion],
     affinities: &[crate::hal::acpi::MemoryAffinity],
+    physical_memory_offset: u64,
 ) -> Result<(), InitError> {
-    ALLOCATOR.lock().initialize(regions, affinities)
+    ALLOCATOR.lock().initialize(regions, affinities, physical_memory_offset)
 }
 
 pub fn allocate_frame() -> Option<PhysFrame<Size4KiB>> {
@@ -333,6 +421,64 @@ pub fn self_test() -> bool {
         && allocator.contains(second)
         && allocator.contains(third)
         && topology_mapping_valid
+}
+
+/// Exercise returns beyond the small hot cache and verify that every frame
+/// remains reachable through the per-region allocation bitmap.
+#[cfg(feature = "qemu-test")]
+pub fn reclaimed_overflow_self_test() -> bool {
+    const COUNT: usize = MAX_RECLAIMED_FRAMES + 256;
+    if stats().remaining_frames < COUNT as u64 + 32 {
+        return false;
+    }
+    let before = stats().allocated_frames;
+    let mut first = Vec::with_capacity(COUNT);
+    for _ in 0..COUNT {
+        let Some(frame) = allocate_frame() else {
+            for frame in first {
+                let _ = deallocate_frame(frame);
+            }
+            return false;
+        };
+        first.push(frame);
+    }
+    let mut expected: Vec<u64> = first
+        .iter()
+        .map(|frame| frame.start_address().as_u64())
+        .collect();
+    expected.sort_unstable();
+    for frame in first {
+        if !deallocate_frame(frame) {
+            return false;
+        }
+    }
+    let overflow_reached = ALLOCATOR.lock().reclaimed_untracked != 0;
+    if !overflow_reached || stats().allocated_frames != before {
+        return false;
+    }
+    let mut second = Vec::with_capacity(COUNT);
+    for _ in 0..COUNT {
+        let Some(frame) = allocate_frame() else {
+            return false;
+        };
+        second.push(frame);
+    }
+    let mut actual: Vec<u64> = second
+        .iter()
+        .map(|frame| frame.start_address().as_u64())
+        .collect();
+    actual.sort_unstable();
+    let same_frames = expected == actual;
+    let duplicate_rejected = second
+        .first()
+        .copied()
+        .is_some_and(|frame| deallocate_frame(frame) && !deallocate_frame(frame));
+    for frame in second.into_iter().skip(1) {
+        if !deallocate_frame(frame) {
+            return false;
+        }
+    }
+    same_frames && duplicate_rejected && stats().allocated_frames == before
 }
 
 fn align_up(address: u64, alignment: u64) -> Option<u64> {

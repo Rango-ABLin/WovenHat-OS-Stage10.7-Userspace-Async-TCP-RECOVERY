@@ -22,10 +22,12 @@ later page in the same call fails. A boot probe pre-maps the second page of a
 two-page range, verifies that the combined mapping fails with `AlreadyMapped`,
 then checks the first page was rolled back while the second stayed mapped.
 The ordinary map/write/unmap boot probe now returns its test frame as well.
-The reclaimed-frame table holds 4,096 entries, enough to return every data
+The reclaimed-frame hot cache holds 4,096 entries, enough to return every data
 frame from the maximum 8 MiB heap map plus bootstrap page-table and probe
-frames during this early-boot transaction. General runtime frame reclamation
-remains bounded by that table.
+frames during this early-boot transaction. A later
+[frame-reclamation follow-up](audit-stage6-frame-reclamation-2026-09-17.md)
+adds per-region allocation bitmaps, so general runtime returns are no longer
+bounded by the hot cache.
 The rollback probe covers leaf mappings and their data frames; it does not
 prove that a failed page-table allocation returns every intermediate table
 frame. That path remains part of the broader memory-allocator audit.
