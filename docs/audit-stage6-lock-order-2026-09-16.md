@@ -21,6 +21,7 @@ paging (10) -> COW table (30) -> physical-frame allocator (40)
 pager queue/state (10) -> scheduler (10)
 teardown registries (notifications, threads, async events) (10)
 pipe table (10) -> scheduler wake/block handoff
+IPC namespace (10) -> WovenGuard lineage (10) -> paging/frame release (10/40)
 ```
 
 The tracker is active in the freestanding kernel. Host test doubles implement
@@ -50,8 +51,15 @@ after this fix and passed. The same ownership-transfer rule now covers the
 self-exit and wait/reap paths: VFS references and IPC endpoint unregistering
 occur only after the process-table guard has been released.
 
+The 2026-09-17 follow-up converted the IPC namespace and WovenGuard lineage
+registries to the same ranked IRQ-safe mutex. Qualification then caught and
+fixed IPC registration under `PROCESS_TABLE` during userspace spawn and fork;
+all registration rollback paths now release the process-table guard before
+touching IPC. The complete release matrix and both 2/4-CPU hotplug cycles were
+rerun after that correction and passed.
+
 This closes the bounded lock-order coverage gap for the audited scheduler,
 process, paging, COW, frame-allocation, pager, async-operation, completion-port,
-and file/block/network worker, and pipe domains. Locks in other subsystems still use their
-existing compatibility mutexes, and priority inheritance remains separate
-Stage 6 work.
+file/block/network worker, pipe, IPC namespace, and WovenGuard lineage domains.
+Locks in other subsystems still use their existing compatibility mutexes, and
+priority inheritance remains separate Stage 6 work.

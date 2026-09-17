@@ -1,4 +1,4 @@
-use spin::Mutex;
+use crate::irq_lock::IrqMutex as Mutex;
 
 use crate::capability::{Capability, CapabilitySet};
 
@@ -881,22 +881,20 @@ impl LineageRegistry {
     }
 }
 
-static LINEAGES: Mutex<LineageRegistry> = Mutex::new(LineageRegistry::new());
+/// Bounded lineage registry. Rank 10 matches the scheduler-facing
+/// authorization registries and keeps interrupt-driven lifecycle cleanup
+/// safe while allowing higher-ranked memory locks to nest afterward.
+static LINEAGES: Mutex<LineageRegistry> = Mutex::with_rank(LineageRegistry::new(), 10);
 
-/// Execute one lineage-registry operation with local interrupts disabled.
+/// Execute one lineage-registry operation with the ranked IRQ-safe lock.
 ///
 /// Stage 9.2C made lineage lookup/revocation reachable from scheduler lifecycle
-/// paths, including dead-task reaping. Those paths can run from a timer-driven
-/// scheduling interrupt. A plain spin::Mutex is not re-entrant: if an interrupt
-/// preempts this CPU while it owns LINEAGES and the interrupt path tries to lock
-/// LINEAGES again, the CPU spins forever waiting on itself. Disabling local
-/// interrupts for the complete lock lifetime removes that same-CPU re-entrancy
-/// hazard while preserving normal SMP exclusion against other CPUs.
+/// paths, including dead-task reaping. [`Mutex`] disables local interrupts for
+/// the complete guard lifetime, preventing same-CPU re-entrancy while preserving
+/// SMP exclusion and participating in the kernel lock-order audit.
 fn with_lineages<R>(operation: impl FnOnce(&mut LineageRegistry) -> R) -> R {
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        let mut registry = LINEAGES.lock();
-        operation(&mut registry)
-    })
+    let mut registry = LINEAGES.lock();
+    operation(&mut registry)
 }
 
 /// Create a lineage root for already-authorized authority.

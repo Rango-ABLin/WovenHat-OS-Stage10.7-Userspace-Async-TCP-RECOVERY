@@ -20,7 +20,8 @@ lock coverage for remaining compatibility mutexes and priority inheritance
 remain explicit deferred requirements in the Stage 6 contract. CPU-domain
 placement, audited Ready-state I/O service migration, and the x2APIC MSR transport are
 implemented; bounded contiguous-prefix AP offline/re-online control is also
-implemented; interrupt-safe worker locks now enforce bounded rank and nesting
+implemented; interrupt-safe scheduler, IPC, WovenGuard, teardown, and worker
+locks now enforce bounded rank and nesting
 checks, and VirtIO network DMA uses an allocator-reserved physically
 contiguous arena; see the [NUMA/x2APIC audit](audit-stage6-numa-2026-09-16.md),
 [hotplug audit](audit-stage6-hotplug-2026-09-16.md), and

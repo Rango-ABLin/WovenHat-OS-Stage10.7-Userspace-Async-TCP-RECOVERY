@@ -1,6 +1,6 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
-use spin::Mutex;
+use crate::irq_lock::IrqMutex as Mutex;
 
 use crate::paging;
 use crate::capability::{Capability, CapabilitySet};
@@ -1508,7 +1508,10 @@ impl State {
     }
 }
 
-static STATE: Mutex<State> = Mutex::new(State::new());
+/// Global IPC namespace lock. Rank 10 keeps object/handle transactions
+/// interrupt-safe and places IPC alongside the scheduler/teardown registries;
+/// paging and frame release may safely nest at their higher ranks.
+static STATE: Mutex<State> = Mutex::with_rank(State::new(), 10);
 
 pub fn register(owner: u64) -> Result<(), Error> {
     STATE.lock().register(owner)

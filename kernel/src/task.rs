@@ -1314,15 +1314,21 @@ pub fn spawn_user_process(
     let process = create_process(task_id, parent, program.address_space);
     let process_id = process.id;
 
-    let mut processes = process_table_lock();
-    let Some(process_slot) = processes.iter().position(|entry| entry.is_none()) else {
-        let _ = userspace::destroy(program.address_space);
-        return Err(ProcessError::Full);
-    };
+    // IPC registration is a separate rank-10 transaction. Do it before
+    // taking PROCESS_TABLE (rank 20), so process creation never nests a
+    // lower-ranked namespace lock under the process registry.
     if ipc::register(process_id.as_u64()).is_err() {
         let _ = userspace::destroy(program.address_space);
         return Err(ProcessError::Full);
     }
+
+    let mut processes = process_table_lock();
+    let Some(process_slot) = processes.iter().position(|entry| entry.is_none()) else {
+        drop(processes);
+        let _ = ipc::unregister(process_id.as_u64());
+        let _ = userspace::destroy(program.address_space);
+        return Err(ProcessError::Full);
+    };
     scheduler.tasks[task_slot].initialize_user(
         task_slot,
         task_id,
@@ -1373,15 +1379,19 @@ pub fn spawn_user_system_service(
     let task_id = TaskId(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed));
     let process = create_process(task_id, parent, program.address_space);
     let process_id = process.id;
-    let mut processes = process_table_lock();
-    let Some(process_slot) = processes.iter().position(|entry| entry.is_none()) else {
-        let _ = userspace::destroy(program.address_space);
-        return Err(ProcessError::Full);
-    };
+
     if ipc::register(process_id.as_u64()).is_err() {
         let _ = userspace::destroy(program.address_space);
         return Err(ProcessError::Full);
     }
+
+    let mut processes = process_table_lock();
+    let Some(process_slot) = processes.iter().position(|entry| entry.is_none()) else {
+        drop(processes);
+        let _ = ipc::unregister(process_id.as_u64());
+        let _ = userspace::destroy(program.address_space);
+        return Err(ProcessError::Full);
+    };
 
     scheduler.tasks[task_slot].initialize_user(
         task_slot,
@@ -1451,15 +1461,18 @@ pub fn spawn_multicore_user_process(
         let process = create_process(task_id, parent, program.address_space);
         let process_id = process.id;
 
-        let mut processes = process_table_lock();
-        let Some(process_slot) = processes.iter().position(|entry| entry.is_none()) else {
-            let _ = userspace::destroy(program.address_space);
-            return Err(ProcessError::Full);
-        };
         if ipc::register(process_id.as_u64()).is_err() {
             let _ = userspace::destroy(program.address_space);
             return Err(ProcessError::Full);
         }
+
+        let mut processes = process_table_lock();
+        let Some(process_slot) = processes.iter().position(|entry| entry.is_none()) else {
+            drop(processes);
+            let _ = ipc::unregister(process_id.as_u64());
+            let _ = userspace::destroy(program.address_space);
+            return Err(ProcessError::Full);
+        };
 
         scheduler.tasks[task_slot].initialize_user(
             task_slot,
@@ -1531,15 +1544,18 @@ pub fn spawn_pinned_user_process_on(
         let process = create_process(task_id, parent, program.address_space);
         let process_id = process.id;
 
-        let mut processes = process_table_lock();
-        let Some(process_slot) = processes.iter().position(|entry| entry.is_none()) else {
-            let _ = userspace::destroy(program.address_space);
-            return Err(ProcessError::Full);
-        };
         if ipc::register(process_id.as_u64()).is_err() {
             let _ = userspace::destroy(program.address_space);
             return Err(ProcessError::Full);
         }
+
+        let mut processes = process_table_lock();
+        let Some(process_slot) = processes.iter().position(|entry| entry.is_none()) else {
+            drop(processes);
+            let _ = ipc::unregister(process_id.as_u64());
+            let _ = userspace::destroy(program.address_space);
+            return Err(ProcessError::Full);
+        };
 
         scheduler.tasks[task_slot].initialize_user(
             task_slot,
@@ -1601,15 +1617,18 @@ pub fn spawn_migratable_user_probe(
     let process = create_process(task_id, parent, program.address_space);
     let process_id = process.id;
 
-    let mut processes = process_table_lock();
-    let Some(process_slot) = processes.iter().position(|entry| entry.is_none()) else {
-        let _ = userspace::destroy(program.address_space);
-        return Err(ProcessError::Full);
-    };
     if ipc::register(process_id.as_u64()).is_err() {
         let _ = userspace::destroy(program.address_space);
         return Err(ProcessError::Full);
     }
+
+    let mut processes = process_table_lock();
+    let Some(process_slot) = processes.iter().position(|entry| entry.is_none()) else {
+        drop(processes);
+        let _ = ipc::unregister(process_id.as_u64());
+        let _ = userspace::destroy(program.address_space);
+        return Err(ProcessError::Full);
+    };
 
     scheduler.tasks[task_slot].initialize_user(
         task_slot,
@@ -2066,29 +2085,33 @@ pub fn fork_current(frame: crate::syscall::UserForkFrame) -> Result<ProcessId, P
             userspace::destroy_process_address_space(cloned_address_space, parent.memory_mappings);
         return Err(ProcessError::Full);
     };
-    let mut processes = process_table_lock();
-    let Some(process_slot) = processes.iter().position(Option::is_none) else {
-        drop(processes);
-        drop(scheduler);
-        let _ =
-            userspace::destroy_process_address_space(cloned_address_space, parent.memory_mappings);
-        return Err(ProcessError::Full);
-    };
     let child_task_id = TaskId(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed));
     let child_id = ProcessId(NEXT_PROCESS_ID.fetch_add(1, Ordering::Relaxed));
+
+    // Register the child IPC namespace before taking PROCESS_TABLE. The
+    // process table is rank 20 while IPC is rank 10, so reversing this order
+    // would be an audited lock-order inversion during fork.
     if ipc::register(child_id.as_u64()).is_err() {
-        drop(processes);
         drop(scheduler);
         let _ =
             userspace::destroy_process_address_space(cloned_address_space, parent.memory_mappings);
         return Err(ProcessError::Full);
     }
+    let mut processes = process_table_lock();
+    let Some(process_slot) = processes.iter().position(Option::is_none) else {
+        drop(processes);
+        let _ = ipc::unregister(child_id.as_u64());
+        drop(scheduler);
+        let _ =
+            userspace::destroy_process_address_space(cloned_address_space, parent.memory_mappings);
+        return Err(ProcessError::Full);
+    };
     let child_files = match clone_file_table(&parent.files) {
         Ok(files) => files,
         Err(err) => {
-            let _ = ipc::unregister(child_id.as_u64());
             drop(processes);
             drop(scheduler);
+            let _ = ipc::unregister(child_id.as_u64());
             let _ = userspace::destroy_process_address_space(
                 cloned_address_space,
                 parent.memory_mappings,
