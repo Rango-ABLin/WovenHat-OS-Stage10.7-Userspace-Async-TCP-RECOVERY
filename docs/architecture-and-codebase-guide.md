@@ -44,6 +44,11 @@ updates may nest under the VFS guards at rank 10.
 The global heap's metadata guard is rank 50 and disables local interrupts
 during allocation and deallocation. Boot-time heap page mapping occurs before
 acquiring that guard, preserving the paging (10) to heap (50) order.
+The swap-state guard is rank 40 and releases before ATA transfers. Device,
+keyboard decoder, journal-intent, mount-record, and key-vault metadata guards
+are rank 10; none performs a blocking transfer while held. Keyboard captures
+the caller's interrupt state before taking its guard to distinguish normal
+IRQ-driven input from early-boot legacy polling.
 
 This lock split covers the VFS/ATA slow-I/O boundary. FAT32 mutation still
 crosses the storage and VFS layers without one transaction, so unrestricted

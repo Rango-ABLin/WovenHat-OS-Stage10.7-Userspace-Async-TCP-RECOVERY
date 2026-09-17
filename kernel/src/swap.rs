@@ -3,7 +3,7 @@ use crate::{
     config::MAX_SWAP_SLOTS,
 };
 
-use spin::Mutex;
+use crate::irq_lock::IrqMutex as Mutex;
 
 pub const PAGE_SIZE: usize = 4096;
 const SECTORS_PER_PAGE: usize = PAGE_SIZE / SECTOR_SIZE;
@@ -275,7 +275,9 @@ impl State {
     }
 }
 
-static SWAP: Mutex<State> = Mutex::new(State::new());
+// Disk transfers occur after dropping this guard. Paging/COW may own lower
+// ranks when they enter the swap table.
+static SWAP: Mutex<State> = Mutex::with_rank(State::new(), 40);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Stats {

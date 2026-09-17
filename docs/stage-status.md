@@ -42,6 +42,12 @@ tables, closing a lost-wakeup window under concurrent readers and writers.
 The global heap metadata lock is now rank-50 IRQ-safe; page mapping happens
 before that guard is taken during boot. Its full release and 2/4-CPU hotplug
 gates passed, while heap capacity remains bounded.
+The bounded device, keyboard decoder, journal, swap-state, mount-record, and
+key-vault tables now use IRQ-safe locks. Keyboard input preserves the caller's
+pre-lock interrupt state for early-boot polling; Stage 1-5 journal, Stage 12.3
+key-vault, Stage 12.5 mount-record, and normal PS/2 shell gates passed.
+The full release matrix and dedicated twice-cycled 2/4-CPU hotplug gates also
+passed after the keyboard interrupt-state correction.
 
 ## Stage 10.7 — accepted on 2026-09-16
 

@@ -131,3 +131,17 @@ occurs before that guard is taken, so runtime allocation never nests a
 lower-ranked paging lock beneath the heap. The full release matrix passed
 after this change, as did twice-cycled 2/4-CPU hotplug. The 256 KiB heap
 capacity and fixed metadata tables remain separate scalability limits.
+
+The bounded device, keyboard decoder, journal-intent, swap-state,
+mount-record, and key-vault tables now use IRQ mutexes. Swap disk transfers
+remain outside its rank-40 state guard. The keyboard wrapper captures the
+caller's interrupt state before taking its rank-10 decoder guard; otherwise
+the guard itself would make ordinary IRQ-driven input look like early-boot
+legacy polling. Focused QEMU checks for Stage 1-5 journal, Stage 12.3 key
+vault, Stage 12.5 mount records, and normal 4-CPU PS/2 shell input passed.
+The storage page cache, terminal, shell, and other remaining compatibility
+mutexes still need separate slow-path and lock-order review.
+The corrected batch passed `python scripts/test-release.py`, including the
+1/2/4-CPU boot, FAT32, network, legacy PIC, release, and PS/2 shell gates.
+Dedicated twice-cycled 2/4-CPU hotplug passed again. The feature-specific
+journal, key-vault, and mount-record QEMU probes also passed.

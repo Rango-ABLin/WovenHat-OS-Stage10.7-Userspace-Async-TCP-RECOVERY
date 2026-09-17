@@ -1,4 +1,4 @@
-use spin::Mutex;
+use crate::irq_lock::IrqMutex as Mutex;
 
 use core::{
     arch::asm,
@@ -13,7 +13,7 @@ const STATUS_PORT: u16 = 0x64;
 const SCANCODE_QUEUE_CAPACITY: usize = 64;
 
 static SCANCODES: ScancodeQueue = ScancodeQueue::new();
-static DECODER: Mutex<Keyboard> = Mutex::new(Keyboard::new());
+static DECODER: Mutex<Keyboard> = Mutex::with_rank(Keyboard::new(), 10);
 
 struct ScancodeQueue {
     buffer: UnsafeCell<[u8; SCANCODE_QUEUE_CAPACITY]>,
@@ -85,12 +85,12 @@ impl Keyboard {
         Self { shift: false }
     }
 
-    pub fn poll(&mut self) -> Option<Key> {
+    fn poll(&mut self, allow_legacy: bool) -> Option<Key> {
         if let Some(scancode) = SCANCODES.pop() {
             return self.decode(scancode);
         }
 
-        if !x86_64::instructions::interrupts::are_enabled() {
+        if allow_legacy {
             return self.poll_legacy();
         }
 
@@ -150,14 +150,18 @@ impl Keyboard {
 }
 
 pub fn poll() -> Option<Key> {
-    DECODER.lock().poll()
+    // IrqMutex masks IF while held; capture the caller's state before taking
+    // it so normal IRQ-driven input does not accidentally poll the PS/2 port.
+    let allow_legacy = !x86_64::instructions::interrupts::are_enabled();
+    DECODER.lock().poll(allow_legacy)
 }
 
 pub fn read_bytes(buffer: &mut [u8]) -> usize {
+    let allow_legacy = !x86_64::instructions::interrupts::are_enabled();
     let mut decoder = DECODER.lock();
     let mut count = 0;
     while count < buffer.len() {
-        let Some(key) = decoder.poll() else {
+        let Some(key) = decoder.poll(allow_legacy) else {
             break;
         };
         let byte = match key {

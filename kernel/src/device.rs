@@ -1,4 +1,4 @@
-use spin::Mutex;
+use crate::irq_lock::IrqMutex as Mutex;
 
 use crate::config::MAX_DEVICES;
 
@@ -64,7 +64,7 @@ impl Registry {
     }
 }
 
-static REGISTRY: Mutex<Registry> = Mutex::new(Registry::new());
+static REGISTRY: Mutex<Registry> = Mutex::with_rank(Registry::new(), 10);
 
 pub fn register(device: Device) -> Result<(), RegisterError> {
     REGISTRY.lock().register(device)

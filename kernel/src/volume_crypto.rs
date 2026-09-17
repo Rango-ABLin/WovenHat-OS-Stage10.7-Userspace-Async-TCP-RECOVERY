@@ -5,7 +5,7 @@
 //! callers receive a generation-safe handle that can be revoked explicitly.
 
 use poly1305::{universal_hash::{NewUniversalHash, UniversalHash}, Poly1305};
-use spin::Mutex;
+use crate::irq_lock::IrqMutex as Mutex;
 
 pub const KEY_SIZE: usize = 32;
 pub const TAG_SIZE: usize = 16;
@@ -141,7 +141,7 @@ impl KeyVault {
     }
 }
 
-static KEY_VAULT: Mutex<KeyVault> = Mutex::new(KeyVault::new());
+static KEY_VAULT: Mutex<KeyVault> = Mutex::with_rank(KeyVault::new(), 10);
 
 fn nonce_bytes(nonce: u64) -> [u8; 12] {
     let mut bytes = [0u8; 12];
