@@ -139,8 +139,9 @@ caller's interrupt state before taking its rank-10 decoder guard; otherwise
 the guard itself would make ordinary IRQ-driven input look like early-boot
 legacy polling. Focused QEMU checks for Stage 1-5 journal, Stage 12.3 key
 vault, Stage 12.5 mount records, and normal 4-CPU PS/2 shell input passed.
-The terminal, shell, and other remaining compatibility mutexes still need
-separate slow-path and lock-order review.
+At this checkpoint, terminal, shell, and other compatibility mutexes still
+needed separate slow-path and lock-order review; the terminal and shell
+follow-up is recorded below.
 The corrected batch passed `python scripts/test-release.py`, including the
 1/2/4-CPU boot, FAT32, network, legacy PIC, release, and PS/2 shell gates.
 Dedicated twice-cycled 2/4-CPU hotplug passed again. The feature-specific
@@ -154,3 +155,23 @@ host test covers this race. The complete release matrix and twice-cycled
 2/4-CPU hotplug passed after the split. Concurrent FAT32 mutation still
 lacks a single cross-layer transaction spanning disk and VFS publication,
 so unrestricted filesystem concurrency remains open.
+
+The terminal's previous plain spin mutex would keep the timer and device IRQs
+masked for an entire framebuffer scroll or clear if simply changed to an IRQ
+mutex. It now uses a rank-10 `PreemptMutex`: a per-CPU guard suppresses local
+timer task switches while the lock is held, but leaves IRQs live. The per-CPU
+rank stack is updated with IRQs briefly masked so an interrupt cannot see a
+partial update. Terminal syscall writes use the existing I/O-depth wrapper
+to enable IRQs through rendering and restore entry IF afterward. A boot-time
+probe waits for two timer ticks under the local guard and checks task ID,
+depth, and IF restoration. The shell's short current-directory lock is now
+rank-10 IRQ-safe; callers copy cwd before allocation or console output.
+Neither guard spans a deliberate block or task switch. Other compatibility
+locks and priority inheritance remain open Stage 6 work.
+
+The final source passed `python scripts/test-release.py` (warning-denying
+kernel/host Clippy, host tests, 1/2/4-CPU memory/storage/network, legacy PIC,
+4-CPU release, and normal shell/PS/2 smoke). Twice-cycled 2/4-CPU AP
+offline/re-online probes also passed. Evidence is in
+`target/release-validation/results.json` and the dated
+`audit-artifacts/stage6-hotplug-{2,4}cpu-*` directories.

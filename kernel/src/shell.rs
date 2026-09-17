@@ -9,7 +9,7 @@ use crate::{
     memory, network, paging, storage, swap, syscall, task, terminal, timer, userspace, vfs,
     virtio_net,
 };
-use spin::Once;
+use crate::irq_lock::{IrqMutex, IrqMutexGuard};
 
 const PROMPT_PREFIX: &str = "wovenhat:";
 const COMMAND_CAPACITY: usize = 128;
@@ -44,12 +44,21 @@ impl ShellState {
     }
 }
 
-static STATE: Once<spin::Mutex<ShellState>> = Once::new();
+static STATE: IrqMutex<ShellState> = IrqMutex::with_rank(ShellState::new(), 10);
 
-fn state() -> spin::MutexGuard<'static, ShellState> {
-    STATE
-        .call_once(|| spin::Mutex::new(ShellState::new()))
-        .lock()
+fn state() -> IrqMutexGuard<'static, ShellState> {
+    STATE.lock()
+}
+
+fn cwd_owned() -> alloc::string::String {
+    let mut bytes = [0u8; CWD_CAPACITY];
+    let length = {
+        let state = state();
+        let cwd = state.cwd_str().as_bytes();
+        bytes[..cwd.len()].copy_from_slice(cwd);
+        cwd.len()
+    };
+    alloc::string::String::from(core::str::from_utf8(&bytes[..length]).unwrap_or("/"))
 }
 
 pub struct Shell {
@@ -67,7 +76,8 @@ impl Shell {
 
     pub fn print_prompt(&self, console: &mut Console<'_>) {
         console.print(PROMPT_PREFIX);
-        console.print(state().cwd_str());
+        let cwd = cwd_owned();
+        console.print(&cwd);
         console.print("> ");
     }
 
@@ -193,7 +203,7 @@ impl Shell {
                 if authorize(Capability::FileRead, console) {
                     let path_buf;
                     let path = if arg.is_empty() {
-                        path_buf = alloc::string::String::from(state().cwd_str());
+                        path_buf = cwd_owned();
                         path_buf.as_str()
                     } else {
                         arg
@@ -264,7 +274,8 @@ impl Shell {
             }
             "pwd" => {
                 if authorize(Capability::FileRead, console) {
-                    console.println(state().cwd_str());
+                    let cwd = cwd_owned();
+                    console.println(&cwd);
                 }
             }
             "msynctest" => {
@@ -1665,7 +1676,7 @@ fn shell_resolve(path: &str) -> Option<alloc::string::String> {
     let absolute = if path.starts_with('/') {
         alloc::string::String::from(path)
     } else {
-        let cwd = alloc::string::String::from(state().cwd_str());
+        let cwd = cwd_owned();
         let mut joined = alloc::string::String::new();
         if cwd == "/" {
             joined.push('/');

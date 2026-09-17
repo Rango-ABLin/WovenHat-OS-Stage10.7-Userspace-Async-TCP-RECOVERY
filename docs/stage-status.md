@@ -53,6 +53,14 @@ and page-copy sections; physical page loads run after releasing it, with an
 invalidation epoch preventing stale publication. Host, full release, and
 2/4-CPU hotplug gates passed. Cross-layer FAT32 mutation transactions remain
 open for unrestricted concurrent filesystem service.
+The shell current-directory state now has a short rank-10 IRQ guard, with a
+fixed-buffer copy released before console output or allocation. The terminal
+has a rank-10 preemption guard that keeps device IRQs live during rendering,
+and syscall writes restore live IRQs around full-frame operations. Lock-order
+tracker updates remain interrupt-atomic. This closes the audited terminal and
+shell compatibility-lock gap, but not the other Stage 6 production gaps above.
+The final source passed the complete release matrix and twice-cycled 2/4-CPU
+hotplug gates; details are in the lock-order audit.
 
 ## Stage 10.7 — accepted on 2026-09-16
 

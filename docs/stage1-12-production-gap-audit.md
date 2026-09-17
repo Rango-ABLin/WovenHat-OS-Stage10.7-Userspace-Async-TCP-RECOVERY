@@ -15,3 +15,8 @@ mistaken for full production completion.
 For every open item we will add implementation, focused host tests, 1/2/4 CPU
 QEMU tests, and an audit entry. A stage is production-complete only when every
 roadmap requirement has passing evidence or an explicitly accepted design.
+
+Stage 6 lock follow-up: terminal rendering now uses a ranked, IRQ-live local
+preemption guard; shell cwd state uses a short ranked IRQ mutex. The remaining
+compatibility-mutex and priority-inheritance items in the table refer to
+other domains and the broader lock graph.

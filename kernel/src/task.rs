@@ -1682,6 +1682,40 @@ pub fn current_process_id() -> u64 {
 
 static FILE_IO_DEPTH: [AtomicU64; crate::smp::MAX_CPUS] =
     [const { AtomicU64::new(0) }; crate::smp::MAX_CPUS];
+static LOCAL_PREEMPT_DEPTH: [AtomicU64; crate::smp::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::smp::MAX_CPUS];
+
+/// Keep IRQs live while preventing timer-driven task switches across a long
+/// non-IRQ critical section such as framebuffer rendering. Never voluntarily
+/// block or yield while this guard is held.
+pub struct LocalPreemptGuard {
+    cpu: usize,
+    _not_send: core::marker::PhantomData<*mut ()>,
+}
+
+pub fn local_preemption_guard() -> LocalPreemptGuard {
+    let enabled = x86_64::instructions::interrupts::are_enabled();
+    x86_64::instructions::interrupts::disable();
+    let cpu = crate::smp::lock_cpu_index();
+    LOCAL_PREEMPT_DEPTH[cpu].fetch_add(1, Ordering::AcqRel);
+    if enabled {
+        x86_64::instructions::interrupts::enable();
+    }
+    LocalPreemptGuard { cpu, _not_send: core::marker::PhantomData }
+}
+
+impl Drop for LocalPreemptGuard {
+    fn drop(&mut self) {
+        let enabled = x86_64::instructions::interrupts::are_enabled();
+        x86_64::instructions::interrupts::disable();
+        let previous = LOCAL_PREEMPT_DEPTH[self.cpu].fetch_sub(1, Ordering::AcqRel);
+        assert!(previous > 0, "local preemption guard underflow");
+        if enabled {
+            x86_64::instructions::interrupts::enable();
+        }
+    }
+}
+
 /// Keep device interrupts live while preventing another task on this CPU from
 /// being scheduled onto an I/O lock owned by the current task. The depth is
 /// per-CPU so unrelated CPUs remain schedulable. No process/cache lock spans
@@ -1708,6 +1742,22 @@ pub fn file_fault_io_self_test() -> bool {
     let enabled = x86_64::instructions::interrupts::are_enabled();
     let cpu = crate::smp::cpu_index();
     let id = current_task_id();
+    let local_guard_passed = {
+        let guard = local_preemption_guard();
+        let state = x86_64::instructions::interrupts::are_enabled() == enabled
+            && LOCAL_PREEMPT_DEPTH[cpu].load(Ordering::Acquire) == 1;
+        if enabled {
+            let start = timer::ticks();
+            while timer::ticks().wrapping_sub(start) < 2 {
+                x86_64::instructions::hlt();
+            }
+        }
+        let stayed = current_task_id() == id;
+        drop(guard);
+        state && stayed
+            && LOCAL_PREEMPT_DEPTH[cpu].load(Ordering::Acquire) == 0
+            && x86_64::instructions::interrupts::are_enabled() == enabled
+    };
     let passed = file_fault_io(|| {
         let start = timer::ticks();
         while timer::ticks().wrapping_sub(start) < 2 {
@@ -1717,7 +1767,8 @@ pub fn file_fault_io_self_test() -> bool {
             && current_task_id() == id
             && FILE_IO_DEPTH[cpu].load(Ordering::Acquire) == 1
     });
-    passed
+    local_guard_passed
+        && passed
         && x86_64::instructions::interrupts::are_enabled() == enabled
         && FILE_IO_DEPTH[cpu].load(Ordering::Acquire) == 0
 }
@@ -3409,7 +3460,9 @@ pub fn tick() {
 }
 pub fn preempt_from_interrupt() {
     let cpu = crate::smp::cpu_index();
-    if FILE_IO_DEPTH[cpu].load(Ordering::Acquire) != 0 {
+    if FILE_IO_DEPTH[cpu].load(Ordering::Acquire) != 0
+        || LOCAL_PREEMPT_DEPTH[cpu].load(Ordering::Acquire) != 0
+    {
         return;
     }
     if !PREEMPTION_REQUESTED[cpu].swap(false, Ordering::AcqRel) {

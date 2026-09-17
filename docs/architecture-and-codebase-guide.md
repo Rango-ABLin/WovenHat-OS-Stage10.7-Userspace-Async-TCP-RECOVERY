@@ -55,6 +55,16 @@ copying, publication, and invalidation. A miss loads the 4 KiB page after
 dropping that guard. Invalidation advances an epoch; a load that spans an
 invalidation returns an I/O error instead of republishing stale cache data.
 
+The shell's current-directory state is a short rank-10 IRQ-mutex section. It
+copies the path into a fixed buffer before allocation or console output. The
+global framebuffer terminal instead uses a rank-10 preemption mutex: it
+prevents a local task switch while held but leaves device interrupts live
+during long scroll and clear operations. Its rank-tracker updates briefly
+mask local interrupts so an IRQ cannot observe a partial held-lock stack.
+The terminal is never called from an IRQ handler and must not block or yield
+while its rendering guard is held. Syscall writes use `file_fault_io` to
+restore live interrupts around rendering even when syscall entry had IF=0.
+
 This lock split covers the VFS/ATA slow-I/O boundary. FAT32 mutation still
 crosses the storage and VFS layers without one transaction, so unrestricted
 concurrent filesystem operations remain a separate production requirement.
@@ -123,6 +133,12 @@ mutex. Its guard releases the mutex before restoring the original interrupt
 state and cannot be transferred to another thread. Nested guards preserve IF=0.
 This addresses same-CPU preemption deadlock, which a plain spin mutex cannot
 prevent even when the workload runs on only one CPU.
+
+`irq_lock::PreemptMutex` is reserved for CPU-only sections that need live
+interrupts. It increments a per-CPU no-preempt depth before acquiring the
+spin mutex, and its guard releases the mutex and rank token before decrementing
+that depth. The timer preemption path checks both this depth and the separate
+I/O depth. It cannot be used in an IRQ handler or around a voluntary switch.
 
 The network request queue, worker identity, generic completion table, socket
 runtime and VirtIO-net transport use this guard. No task may sleep or switch

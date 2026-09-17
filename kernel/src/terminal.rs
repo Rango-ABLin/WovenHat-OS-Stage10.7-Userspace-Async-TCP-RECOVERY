@@ -2,13 +2,14 @@
 //!
 //! The boot/kernel debug console remains a local `Console`, but user processes
 //! need a system-wide stdout/stderr sink. This module keeps only raw framebuffer
-//! metadata and serializes rendering through a spin mutex. Foreground ownership
+//! metadata and serializes rendering through a preemption-safe mutex that keeps
+//! device interrupts live during full-frame clear and scroll. Foreground ownership
 //! also prevents the kernel debug shell from stealing PS/2 input while `/bin/sh`
 //! is running.
 
 use bootloader_api::info::{FrameBufferInfo, PixelFormat};
 use core::sync::atomic::{AtomicU64, Ordering};
-use spin::Mutex;
+use crate::irq_lock::PreemptMutex as Mutex;
 
 use crate::console::glyph;
 
@@ -243,7 +244,7 @@ impl State {
     }
 }
 
-static TERMINAL: Mutex<State> = Mutex::new(State::empty());
+static TERMINAL: Mutex<State> = Mutex::with_rank(State::empty(), 10);
 static FOREGROUND_PID: AtomicU64 = AtomicU64::new(NO_FOREGROUND);
 
 pub fn init(buffer: &mut [u8], info: FrameBufferInfo) {
@@ -251,7 +252,7 @@ pub fn init(buffer: &mut [u8], info: FrameBufferInfo) {
 }
 
 pub fn write_bytes(bytes: &[u8]) {
-    TERMINAL.lock().write(bytes);
+    crate::task::file_fault_io(|| TERMINAL.lock().write(bytes));
 }
 
 pub fn set_cursor_position(x: usize, y: usize) {
@@ -270,7 +271,7 @@ pub fn cursor_position() -> (usize, usize) {
 
 #[allow(dead_code)]
 pub fn clear() {
-    TERMINAL.lock().clear();
+    crate::task::file_fault_io(|| TERMINAL.lock().clear());
 }
 
 pub fn set_foreground(pid: u64) {
