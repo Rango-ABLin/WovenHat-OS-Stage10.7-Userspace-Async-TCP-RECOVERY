@@ -36,6 +36,8 @@ and materialization still span those guards; the I/O transaction must be
 separated before those locks can be converted safely. See the
 [lock-order audit](audit-stage6-lock-order-2026-09-16.md). The full release
 matrix and twice-cycled 2/4-CPU hotplug gates passed after these changes.
+The pipe follow-up also uses scheduler-latched wakeups and rejects full waiter
+tables, closing a lost-wakeup window under concurrent readers and writers.
 
 ## Stage 10.7 — accepted on 2026-09-16
 

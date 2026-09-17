@@ -97,3 +97,15 @@ file-frame cache, and isolated catalog domains. VFS and other subsystem locks
 still use compatibility mutexes while their I/O and cross-lock ordering is
 being separated;
 priority inheritance remains separate Stage 6 work.
+
+The subsequent pipe wait audit found a wake/block race in `wake_task` plus
+`block_current`: a peer could wake a still-running task immediately before it
+blocked, losing the only wakeup. Pipe readers and writers now use the
+scheduler's latched `signal_event`/`wait_for_event` handshake. A full waiter
+table returns `Full` instead of silently dropping a waiter that would then
+sleep forever. The pipe boot self-test covers duplicate registration and the
+bounded waiter capacity.
+The full release matrix passed after this change, including warning-denying
+lint, host tests, 1/2/4-CPU memory/storage/network gates, legacy PIC, 4-CPU
+release gates, and shell smoke. Dedicated 2/4-CPU hotplug passed twice-cycled
+offline/re-online tests again.

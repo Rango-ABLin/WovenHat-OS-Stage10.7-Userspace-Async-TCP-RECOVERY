@@ -103,16 +103,17 @@ impl Table {
             .ok_or(Error::Invalid)
     }
 
-    fn push_waiter(slots: &mut [Option<TaskId>; MAX_WAITERS], id: TaskId) {
+    fn push_waiter(slots: &mut [Option<TaskId>; MAX_WAITERS], id: TaskId) -> bool {
+        if slots.contains(&Some(id)) {
+            return true;
+        }
         for slot in slots.iter_mut() {
             if slot.is_none() {
                 *slot = Some(id);
-                return;
-            }
-            if *slot == Some(id) {
-                return;
+                return true;
             }
         }
+        false
     }
 
     fn take_waiters(slots: &mut [Option<TaskId>; MAX_WAITERS]) -> [Option<TaskId>; MAX_WAITERS] {
@@ -161,7 +162,7 @@ static TABLE: Mutex<Table> = Mutex::with_rank(Table::new(), 10);
 
 fn wake_list(waiters: [Option<TaskId>; MAX_WAITERS]) {
     for id in waiters.into_iter().flatten() {
-        let _ = task::wake_task(id);
+        let _ = task::signal_event(id);
     }
 }
 
@@ -180,8 +181,8 @@ pub fn write(id: PipeId, buf: &[u8]) -> Result<usize, Error> {
         let (written, block) = {
             let mut table = TABLE.lock();
             let result = table.try_write(id, &buf[total..])?;
-            if result.1 {
-                Table::push_waiter(&mut table.get_mut(id)?.write_waiters, task_id);
+            if result.1 && !Table::push_waiter(&mut table.get_mut(id)?.write_waiters, task_id) {
+                return Err(Error::Full);
             }
             result
         };
@@ -207,7 +208,9 @@ pub fn write(id: PipeId, buf: &[u8]) -> Result<usize, Error> {
             if !still_block {
                 continue;
             }
-            task::block_current();
+            // A peer may signal between the condition check and this call.
+            // The scheduler latch consumes that signal instead of sleeping.
+            task::wait_for_event();
             continue;
         }
         if written == 0 {
@@ -232,8 +235,8 @@ pub fn read(id: PipeId, buf: &mut [u8]) -> Result<usize, Error> {
         let (n, block, eof) = {
             let mut table = TABLE.lock();
             let result = table.try_read(id, buf)?;
-            if result.1 {
-                Table::push_waiter(&mut table.get_mut(id)?.read_waiters, task_id);
+            if result.1 && !Table::push_waiter(&mut table.get_mut(id)?.read_waiters, task_id) {
+                return Err(Error::Full);
             }
             result
         };
@@ -259,7 +262,7 @@ pub fn read(id: PipeId, buf: &mut [u8]) -> Result<usize, Error> {
             if !still_block {
                 continue;
             }
-            task::block_current();
+            task::wait_for_event();
             continue;
         }
         return Ok(0);
@@ -313,6 +316,11 @@ pub fn close_writer(id: PipeId) {
 }
 
 pub fn self_test() -> bool {
+    let mut waiters = [None; MAX_WAITERS];
+    let waiter_bound = (0..MAX_WAITERS)
+        .all(|index| Table::push_waiter(&mut waiters, TaskId::from_u64(index as u64)))
+        && Table::push_waiter(&mut waiters, TaskId::from_u64(0))
+        && !Table::push_waiter(&mut waiters, TaskId::from_u64(MAX_WAITERS as u64));
     let Ok(id) = create() else {
         return false;
     };
@@ -347,7 +355,7 @@ pub fn self_test() -> bool {
         }
         Err(_) => false,
     };
-    ok && eof && reuse_safe
+    waiter_bound && ok && eof && reuse_safe
 }
 
 #[allow(dead_code)]
