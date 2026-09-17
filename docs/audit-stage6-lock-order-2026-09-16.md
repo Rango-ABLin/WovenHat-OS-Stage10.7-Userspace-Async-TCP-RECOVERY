@@ -139,9 +139,18 @@ caller's interrupt state before taking its rank-10 decoder guard; otherwise
 the guard itself would make ordinary IRQ-driven input look like early-boot
 legacy polling. Focused QEMU checks for Stage 1-5 journal, Stage 12.3 key
 vault, Stage 12.5 mount records, and normal 4-CPU PS/2 shell input passed.
-The storage page cache, terminal, shell, and other remaining compatibility
-mutexes still need separate slow-path and lock-order review.
+The terminal, shell, and other remaining compatibility mutexes still need
+separate slow-path and lock-order review.
 The corrected batch passed `python scripts/test-release.py`, including the
 1/2/4-CPU boot, FAT32, network, legacy PIC, release, and PS/2 shell gates.
 Dedicated twice-cycled 2/4-CPU hotplug passed again. The feature-specific
 journal, key-vault, and mount-record QEMU probes also passed.
+
+The clean FAT32 page cache no longer holds its mutex while loading a page
+from ATA. Cache hits and 4 KiB publication use a rank-20 IRQ guard; misses
+perform the physical read after dropping it. Invalidation advances an epoch,
+and an in-flight load refuses to publish if that epoch changed. A focused
+host test covers this race. The complete release matrix and twice-cycled
+2/4-CPU hotplug passed after the split. Concurrent FAT32 mutation still
+lacks a single cross-layer transaction spanning disk and VFS publication,
+so unrestricted filesystem concurrency remains open.

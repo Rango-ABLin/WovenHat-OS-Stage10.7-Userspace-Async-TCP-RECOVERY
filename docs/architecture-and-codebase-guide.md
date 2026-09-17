@@ -50,6 +50,11 @@ are rank 10; none performs a blocking transfer while held. Keyboard captures
 the caller's interrupt state before taking its guard to distinguish normal
 IRQ-driven input from early-boot legacy polling.
 
+The clean FAT32 page cache uses a rank-20 IRQ mutex for resident-page lookup,
+copying, publication, and invalidation. A miss loads the 4 KiB page after
+dropping that guard. Invalidation advances an epoch; a load that spans an
+invalidation returns an I/O error instead of republishing stale cache data.
+
 This lock split covers the VFS/ATA slow-I/O boundary. FAT32 mutation still
 crosses the storage and VFS layers without one transaction, so unrestricted
 concurrent filesystem operations remain a separate production requirement.

@@ -39,6 +39,7 @@ pub struct PageCache<const N: usize> {
     hits: u64,
     misses: u64,
     evictions: u64,
+    epoch: u64,
 }
 impl<const N: usize> PageCache<N> {
     pub const fn new() -> Self {
@@ -47,6 +48,7 @@ impl<const N: usize> PageCache<N> {
             hits: 0,
             misses: 0,
             evictions: 0,
+            epoch: 0,
         }
     }
     pub fn stats(&self) -> Stats {
@@ -60,9 +62,91 @@ impl<const N: usize> PageCache<N> {
     }
     /// All entries are clean, so reclamation requires no writeback.
     pub fn invalidate(&mut self) {
+        self.epoch = self.epoch.wrapping_add(1);
         for slot in &mut self.slots {
             slot.valid = false;
         }
+    }
+
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    pub fn validate_read(&self, key: &str, offset: usize, length: usize) -> Result<(), Error> {
+        if key.is_empty() || key.len() > KEY_SIZE || N == 0 || offset.checked_add(length).is_none() {
+            Err(Error::InvalidBuffer)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Read a clean resident page while the caller holds the short cache lock.
+    /// A miss leaves the lock free for physical I/O in the storage layer.
+    pub fn read_cached_page(
+        &mut self,
+        key: &str,
+        page: usize,
+        within: usize,
+        output: &mut [u8],
+    ) -> Option<(usize, usize)> {
+        let Some(index) = self.slots.iter().position(|slot| {
+            slot.valid && slot.page == page && slot.key_len == key.len()
+                && &slot.key[..slot.key_len] == key.as_bytes()
+        }) else {
+            self.misses = self.misses.saturating_add(1);
+            return None;
+        };
+        self.hits = self.hits.saturating_add(1);
+        for slot in self.slots.iter_mut().filter(|slot| slot.valid) {
+            slot.age = slot.age.saturating_add(1);
+        }
+        let slot = &mut self.slots[index];
+        slot.age = 0;
+        let count = slot.length.saturating_sub(within).min(output.len());
+        output[..count].copy_from_slice(&slot.data[within..within + count]);
+        Some((count, slot.length))
+    }
+
+    /// Publish a page only if no cache invalidation occurred during its I/O.
+    pub fn publish_loaded_page(
+        &mut self,
+        key: &str,
+        page: usize,
+        data: &[u8],
+        length: usize,
+        expected_epoch: u64,
+    ) -> Result<bool, Error> {
+        if key.is_empty() || key.len() > KEY_SIZE || N == 0 || length > PAGE_SIZE
+            || data.len() < length
+        {
+            return Err(Error::InvalidBuffer);
+        }
+        if self.epoch != expected_epoch {
+            return Ok(false);
+        }
+        let existing = self.slots.iter().position(|slot| {
+            slot.valid && slot.page == page && slot.key_len == key.len()
+                && &slot.key[..slot.key_len] == key.as_bytes()
+        });
+        let index = existing.or_else(|| self.slots.iter().position(|slot| !slot.valid))
+            .unwrap_or_else(|| self.slots.iter().enumerate().max_by_key(|(_, slot)| slot.age).unwrap().0);
+        if existing.is_none() && self.slots[index].valid {
+            self.evictions = self.evictions.saturating_add(1);
+        }
+        for slot in self.slots.iter_mut().filter(|slot| slot.valid) {
+            slot.age = slot.age.saturating_add(1);
+        }
+        let slot = &mut self.slots[index];
+        slot.valid = false;
+        slot.data.fill(0);
+        slot.data[..length].copy_from_slice(&data[..length]);
+        slot.key[..key.len()].copy_from_slice(key.as_bytes());
+        slot.key_len = key.len();
+        slot.page = page;
+        slot.length = length;
+        slot.age = 0;
+        slot.valid = true;
+        Ok(true)
     }
     pub fn read(
         &mut self,
@@ -209,6 +293,20 @@ pub fn self_test() -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn invalidation_rejects_an_inflight_page_load() {
+        let mut cache = super::PageCache::<1>::new();
+        let epoch = cache.epoch();
+        cache.invalidate();
+        assert!(cache.publish_loaded_page("/file", 0, &[7; 16], 16, epoch) == Ok(false));
+        assert_eq!(cache.stats().resident, 0);
+        let mut bytes = [0; 16];
+        assert_eq!(cache.read_cached_page("/file", 0, 0, &mut bytes), None);
+        assert_eq!(cache.stats().misses, 1);
+        assert!(cache.publish_loaded_page("/file", 0, &[9; 16], 16, cache.epoch()) == Ok(true));
+        assert_eq!(cache.read_cached_page("/file", 0, 0, &mut bytes), Some((16, 16)));
+        assert_eq!(bytes, [9; 16]);
+    }
     #[test]
     fn cross_page_eof_and_hits() {
         assert!(super::boundary_test());

@@ -48,6 +48,11 @@ pre-lock interrupt state for early-boot polling; Stage 1-5 journal, Stage 12.3
 key-vault, Stage 12.5 mount-record, and normal PS/2 shell gates passed.
 The full release matrix and dedicated twice-cycled 2/4-CPU hotplug gates also
 passed after the keyboard interrupt-state correction.
+The FAT32 clean-page cache now uses a rank-20 IRQ mutex only for short metadata
+and page-copy sections; physical page loads run after releasing it, with an
+invalidation epoch preventing stale publication. Host, full release, and
+2/4-CPU hotplug gates passed. Cross-layer FAT32 mutation transactions remain
+open for unrestricted concurrent filesystem service.
 
 ## Stage 10.7 — accepted on 2026-09-16
 

@@ -1884,9 +1884,10 @@ pub fn sync_all_mounted() -> Result<usize, PersistError> {
         Ok(ok)
     }
 }
-// Lock order: ATA device, then file pages. Never call VFS while holding pages.
-static FILE_PAGES: spin::Mutex<crate::page_cache::PageCache<16>> =
-    spin::Mutex::new(crate::page_cache::PageCache::new());
+// Lock order: ATA device (10), then clean file pages (20). Physical reads
+// release the page-cache guard while retaining ATA serialization.
+static FILE_PAGES: crate::irq_lock::IrqMutex<crate::page_cache::PageCache<16>> =
+    crate::irq_lock::IrqMutex::with_rank(crate::page_cache::PageCache::new(), 20);
 
 pub fn page_cache_stats() -> crate::page_cache::Stats {
     FILE_PAGES.lock().stats()
@@ -1907,10 +1908,47 @@ pub fn read_disk_file(
         return Err(crate::block::Error::DeviceFault);
     }
     let mut disk = block_io::primary_ata();
-    FILE_PAGES.lock().read(path, offset, output, |start, page| {
-        read_disk_page(&mut disk, relative, start, page)
-            .map_err(|_| crate::block::Error::DeviceFault)
-    })
+    FILE_PAGES.lock().validate_read(path, offset, output.len())?;
+    let mut copied = 0usize;
+    while copied < output.len() {
+        let position = offset + copied;
+        let page = position / crate::page_cache::PAGE_SIZE;
+        let within = position % crate::page_cache::PAGE_SIZE;
+        let chunk = (crate::page_cache::PAGE_SIZE - within).min(output.len() - copied);
+        let (count, page_length) = {
+            let mut cache = FILE_PAGES.lock();
+            if let Some(hit) = cache.read_cached_page(
+                path, page, within, &mut output[copied..copied + chunk],
+            ) {
+                hit
+            } else {
+                let epoch = cache.epoch();
+                drop(cache);
+                let mut bytes = [0u8; crate::page_cache::PAGE_SIZE];
+                let length = read_disk_page(
+                    &mut disk, relative, page * crate::page_cache::PAGE_SIZE, &mut bytes,
+                ).map_err(|_| crate::block::Error::DeviceFault)?;
+                if length > crate::page_cache::PAGE_SIZE {
+                    return Err(crate::block::Error::InvalidBuffer);
+                }
+                let published = FILE_PAGES.lock().publish_loaded_page(
+                    path, page, &bytes, length, epoch,
+                )?;
+                if !published {
+                    return Err(crate::block::Error::DeviceFault);
+                }
+                let count = length.saturating_sub(within).min(chunk);
+                output[copied..copied + count]
+                    .copy_from_slice(&bytes[within..within + count]);
+                (count, length)
+            }
+        };
+        copied += count;
+        if count == 0 || page_length < crate::page_cache::PAGE_SIZE {
+            break;
+        }
+    }
+    Ok(copied)
 }
 
 fn read_volume_page(
