@@ -1,0 +1,68 @@
+name: WovenHat Runner Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  environment-test:
+    name: Test CMC-28 Environment
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout WovenHat
+        uses: actions/checkout@v4
+
+      - name: Show runner information
+        shell: powershell
+        run: |
+          Write-Host "=== WovenHat Windows Runner ==="
+          Write-Host "Computer: $env:COMPUTERNAME"
+          Write-Host "User: $env:USERNAME"
+          Write-Host "Workspace: $env:GITHUB_WORKSPACE"
+          Write-Host "Runner: $env:RUNNER_NAME"
+
+      - name: Check Git
+        shell: powershell
+        run: |
+          git --version
+          where.exe git
+
+      - name: Check Python
+        shell: powershell
+        run: |
+          python --version
+          where.exe python
+
+      - name: Check QEMU
+        shell: powershell
+        run: |
+          qemu-system-x86_64 --version
+          where.exe qemu-system-x86_64
+
+      - name: Check Rust
+        shell: powershell
+        run: |
+          rustc --version
+          cargo --version
+          where.exe rustc
+          where.exe cargo
+
+      - name: WovenHat repository check
+        shell: powershell
+        run: |
+          Write-Host "=== Repository root ==="
+          Get-ChildItem
+
+          if (-not (Test-Path ".\Cargo.toml")) {
+              throw "Cargo.toml was not found."
+          }
+
+          if (-not (Test-Path ".\AGENTS.md")) {
+              throw "AGENTS.md was not found."
+          }
+
+          Write-Host "WovenHat repository checkout: OK"
