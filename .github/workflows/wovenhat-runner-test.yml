@@ -46,10 +46,12 @@ jobs:
       - name: Check Rust
         shell: powershell
         run: |
-          rustc --version
-          cargo --version
-          where.exe rustc
-          where.exe cargo
+          Write-Host "Testing existing Rust installation..."
+
+          & "C:\Users\banda\.cargo\bin\rustc.exe" --version
+          & "C:\Users\banda\.cargo\bin\cargo.exe" --version
+
+          Write-Host "Rust direct execution: OK"
 
       - name: WovenHat repository check
         shell: powershell
