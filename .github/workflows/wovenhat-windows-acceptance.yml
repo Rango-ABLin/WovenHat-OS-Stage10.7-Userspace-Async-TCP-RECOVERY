@@ -1,0 +1,106 @@
+name: WovenHat Windows QEMU Acceptance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wovenhat-windows-qemu
+  cancel-in-progress: false
+
+env:
+  CARGO_HOME: C:\actions-runner\cargo
+  RUSTUP_HOME: C:\actions-runner\rust
+
+jobs:
+  acceptance:
+    name: WovenHat Stage 10.7 Full Acceptance
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout exact WovenHat revision
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure runner environment
+        shell: powershell
+        run: |
+          $cargoBin = "C:\actions-runner\cargo\bin"
+          $qemuBin = "C:\Program Files\qemu"
+
+          $cargoBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $qemuBin  | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+          Write-Host "CARGO_HOME=$env:CARGO_HOME"
+          Write-Host "RUSTUP_HOME=$env:RUSTUP_HOME"
+
+      - name: Verify WovenHat build environment
+        shell: powershell
+        run: |
+          Write-Host "=== Runner ==="
+          Write-Host "Computer: $env:COMPUTERNAME"
+          Write-Host "Runner: $env:RUNNER_NAME"
+          Write-Host "Commit: $env:GITHUB_SHA"
+
+          Write-Host "=== Git ==="
+          git --version
+
+          Write-Host "=== Python ==="
+          python --version
+
+          Write-Host "=== QEMU ==="
+          qemu-system-x86_64 --version
+
+          Write-Host "=== Rust ==="
+          rustc --version
+          cargo --version
+          rustup show active-toolchain
+
+          if (-not (Test-Path ".\RUN-STAGE10.7.ps1")) {
+              throw "Authoritative Stage 10.7 gate is missing."
+          }
+
+      - name: Run authoritative WovenHat Stage 10.7 gate
+        shell: powershell
+        run: |
+          powershell.exe `
+            -NoProfile `
+            -ExecutionPolicy Bypass `
+            -File .\RUN-STAGE10.7.ps1
+
+      - name: Show acceptance evidence
+        if: always()
+        shell: powershell
+        run: |
+          Write-Host "=== Audit artifacts ==="
+
+          if (Test-Path ".\audit-artifacts") {
+              Get-ChildItem ".\audit-artifacts" -Recurse -File |
+                  Select-Object FullName, Length, LastWriteTime
+          }
+          else {
+              Write-Warning "No audit-artifacts directory was produced."
+          }
+
+          Write-Host "=== Regression logs ==="
+
+          if (Test-Path ".\target") {
+              Get-ChildItem ".\target" -Recurse -File -Include *.log |
+                  Select-Object FullName, Length, LastWriteTime
+          }
+
+      - name: Upload WovenHat acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wovenhat-stage10-7-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            audit-artifacts/**
+            target/**/*serial*.log
+            target/**/*qemu*.log
+          if-no-files-found: warn
+          retention-days: 30
