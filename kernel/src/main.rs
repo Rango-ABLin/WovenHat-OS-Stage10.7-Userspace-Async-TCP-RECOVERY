@@ -69,6 +69,8 @@ mod wifi80211;
 mod wifi_scan;
 #[cfg(feature = "stage13-9-test")]
 mod wifi_link;
+#[cfg(feature = "stage13-9-test")]
+mod wifi_rsn;
 mod memory;
 mod network;
 #[cfg(feature = "stage13-3-test")]
@@ -331,6 +333,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         }
         serial::write_line(format_args!(
             "[S13.9D] Open System authentication + association: PASSED"
+        ));
+        if !wifi_rsn::self_test() {
+            serial::write_line(format_args!(
+                "[S13.9E] RSN + EAPOL-Key protocol foundation: FAILED"
+            ));
+            halt();
+        }
+        serial::write_line(format_args!(
+            "[S13.9E] RSN + EAPOL-Key protocol foundation: PASSED"
         ));
         if !wifi_scan::self_test() {
             serial::write_line(format_args!(
