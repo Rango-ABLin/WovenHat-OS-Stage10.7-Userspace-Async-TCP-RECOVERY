@@ -38,7 +38,7 @@ mod console;
 mod completion_queue;
 mod completion_port;
 mod device;
-#[cfg(feature = "stage13-1-test")]
+#[cfg(any(feature = "stage13-1-test", feature = "stage13-2-test", feature = "stage13-3-test", feature = "stage13-4-test", feature = "stage13-5-test", feature = "stage13-6-test"))]
 mod driver;
 mod journal;
 mod elf;
@@ -58,6 +58,12 @@ mod irq_lock;
 mod keyboard;
 mod memory;
 mod network;
+#[cfg(feature = "stage13-3-test")]
+mod nvme;
+#[cfg(feature = "stage13-4-test")]
+mod ahci;
+#[cfg(any(feature = "stage13-5-test", feature = "stage13-6-test"))]
+mod xhci;
 mod page_cache;
 mod paging;
 mod panic;
@@ -214,7 +220,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     #[cfg(feature = "qemu-test")]
     serial::write_line(format_args!("[S6.PAGING] table allocation rollback: PASSED"));
 
-    let hardware = hal::init();
+    let hardware = hal::init(acpi.as_ref().ok());
     if !hal::acpi::self_test() {
         console.println("ACPI PARSER: VALIDATION FAILED");
         halt();
@@ -1884,6 +1890,148 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     }
     #[cfg(feature = "stage13-1-test")]
     { if !driver::register("pit", device::DeviceKind::Timer) || !driver::bind("pit") || !driver::suspend("pit") || !driver::resume("pit") { serial::write_line(format_args!("[S13.1] driver framework: FAILED")); qemu_test_exit_failure(); } serial::write_line(format_args!("[S13.1] driver framework: PASSED")); qemu_test_exit_success(); }
+    #[cfg(feature = "stage13-2-test")]
+    {
+        let pci_ok = hal::pci::self_test()
+            && hardware.pci.discovered >= u16::from(hardware.pci.recorded)
+            && hardware.pci.recorded != 0;
+        if !pci_ok {
+            serial::write_line(format_args!("[S13.2] PCI/PCIe configuration + inventory: FAILED"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!(
+            "[S13.2] PCI/PCIe configuration + inventory: PASSED devices={} recorded={} segments={} ecam={}",
+            hardware.pci.discovered, hardware.pci.recorded, hardware.pci.segments, hardware.pci.ecam as u8
+        ));
+        qemu_test_exit_success();
+    }
+    #[cfg(feature = "stage13-3-test")]
+    {
+        use block::BlockDevice;
+        if !nvme::self_test() || !nvme::probe() {
+            serial::write_line(format_args!("[S13.3] NVMe controller/queue foundation: FAILED probe"));
+            qemu_test_exit_failure();
+        }
+        let sectors = match nvme::init() {
+            Ok(sectors) => sectors,
+            Err(error) => {
+                serial::write_line(format_args!("[S13.3] NVMe controller/queue foundation: FAILED init {:?}", error));
+                qemu_test_exit_failure();
+            }
+        };
+        let io_ok = nvme::with_controller(|controller| {
+            let mut original = [0_u8; block::SECTOR_SIZE];
+            let mut verify = [0_u8; block::SECTOR_SIZE];
+            let mut pattern = [0_u8; block::SECTOR_SIZE];
+            pattern[..15].copy_from_slice(b"wovenhat-nvme13");
+            if controller.read_sector(0, &mut original).is_err()
+                || controller.write_sector(0, &pattern).is_err()
+                || controller.flush().is_err()
+                || controller.read_sector(0, &mut verify).is_err()
+                || verify != pattern
+            {
+                return false;
+            }
+            controller.write_sector(0, &original).is_ok() && controller.flush().is_ok()
+        })
+        .unwrap_or(false);
+        if !io_ok {
+            serial::write_line(format_args!("[S13.3] NVMe controller/queue foundation: FAILED I/O"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!(
+            "[S13.3] NVMe controller/queue foundation: PASSED sectors={}",
+            sectors
+        ));
+        qemu_test_exit_success();
+    }
+    #[cfg(feature = "stage13-4-test")]
+    {
+        use block::BlockDevice;
+        if !ahci::self_test() || !ahci::probe() {
+            serial::write_line(format_args!("[S13.4] AHCI/SATA DMA block I/O: FAILED probe"));
+            qemu_test_exit_failure();
+        }
+        let sectors = match ahci::init() {
+            Ok(sectors) => sectors,
+            Err(error) => {
+                serial::write_line(format_args!("[S13.4] AHCI/SATA DMA block I/O: FAILED init {:?}", error));
+                qemu_test_exit_failure();
+            }
+        };
+        let io_ok = ahci::with_controller(|controller| {
+            let mut original = [0_u8; block::SECTOR_SIZE];
+            let mut verify = [0_u8; block::SECTOR_SIZE];
+            let mut pattern = [0_u8; block::SECTOR_SIZE];
+            pattern[..15].copy_from_slice(b"wovenhat-ahci14");
+            if controller.read_sector(0, &mut original).is_err()
+                || controller.write_sector(0, &pattern).is_err()
+                || controller.flush().is_err()
+                || controller.read_sector(0, &mut verify).is_err()
+                || verify != pattern
+            {
+                return false;
+            }
+            controller.write_sector(0, &original).is_ok() && controller.flush().is_ok()
+        })
+        .unwrap_or(false);
+        if !io_ok {
+            serial::write_line(format_args!("[S13.4] AHCI/SATA DMA block I/O: FAILED I/O"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!(
+            "[S13.4] AHCI/SATA DMA block I/O: PASSED sectors={}",
+            sectors
+        ));
+        qemu_test_exit_success();
+    }
+    #[cfg(feature = "stage13-5-test")]
+    {
+        if !xhci::self_test() || !xhci::probe() {
+            serial::write_line(format_args!("[S13.5] xHCI USB core: FAILED probe"));
+            qemu_test_exit_failure();
+        }
+        match xhci::init() {
+            Ok((slots, ports, connected, slot)) => {
+                serial::write_line(format_args!(
+                    "[S13.5] xHCI USB core: PASSED slots={} ports={} connected_port={} slot={}",
+                    slots, ports, connected, slot
+                ));
+                qemu_test_exit_success();
+            }
+            Err(error) => {
+                serial::write_line(format_args!("[S13.5] xHCI USB core: FAILED init {:?}", error));
+                qemu_test_exit_failure();
+            }
+        }
+    }
+    #[cfg(feature = "stage13-6-test")]
+    {
+        if !xhci::self_test() || !xhci::probe() {
+            serial::write_line(format_args!("[S13.6] USB HID: FAILED probe/self-test"));
+            qemu_test_exit_failure();
+        }
+        match xhci::init_hid() {
+            Ok(summary) => {
+                let report = match xhci::poll_hid_report() {
+                    Ok(report) => report,
+                    Err(error) => {
+                        serial::write_line(format_args!("[S13.6] USB HID: FAILED report {:?}", error));
+                        qemu_test_exit_failure();
+                    }
+                };
+                serial::write_line(format_args!(
+                    "[S13.6] USB HID keyboard: PASSED slot={} port={} interface={} endpoint={:#x} max_packet={} report={:02x?}",
+                    summary.slot, summary.port, summary.interface, summary.endpoint, summary.max_packet, report
+                ));
+                qemu_test_exit_success();
+            }
+            Err(error) => {
+                serial::write_line(format_args!("[S13.6] USB HID: FAILED init {:?}", error));
+                qemu_test_exit_failure();
+            }
+        }
+    }
     #[cfg(feature = "stage1-5-test")]
     { if !journal::structural_self_test() { serial::write_line(format_args!("[S1-5] storage journal: FAILED")); qemu_test_exit_failure(); } serial::write_line(format_args!("[S1-5] storage journal: PASSED")); qemu_test_exit_success(); }
     #[cfg(feature = "stage12-2-test")]
