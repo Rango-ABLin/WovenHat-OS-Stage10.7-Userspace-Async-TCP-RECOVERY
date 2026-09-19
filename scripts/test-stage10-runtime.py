@@ -7,10 +7,9 @@ import subprocess
 import sys
 import time
 
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--stage', choices=('10.8', '10.9', '11.1', '11.2', '11.3', '11.4', '11.5', '12.1', '12.2', '12.3', '12.4', '12.5', '13.1', '1-5'), default='10.8')
+    parser.add_argument('--stage', choices=('10.8', '10.9', '11.1', '11.2', '11.3', '11.4', '11.5', '12.1', '12.2', '12.3', '12.4', '12.5', '13.1', '13.2', '13.3', '13.4', '13.5', '13.6', '13.7', '1-5'), default='10.8')
     parser.add_argument('--cpus', type=int, choices=(1, 2, 4), default=1)
     parser.add_argument('--qemu', default=shutil.which('qemu-system-x86_64') or r'C:\Program Files\qemu\qemu-system-x86_64.exe')
     parser.add_argument('--firmware', type=Path)
@@ -36,6 +35,22 @@ def main():
                '-drive', f'if=pflash,format=raw,readonly=on,file={firmware}',
                '-drive', f'if=none,id=boot,format=raw,readonly=on,file={build.stdout.strip()}',
                '-device', 'virtio-blk-pci,drive=boot,bootindex=1']
+    if args.stage in ('13.5', '13.6'):
+        command.extend(['-device', 'qemu-xhci,id=xhci',
+                        '-device', 'usb-kbd,bus=xhci.0'])
+    if args.stage == '13.4':
+        ahci_image = out / 'ahci.img'
+        with ahci_image.open('wb') as image:
+            image.truncate(16 * 1024 * 1024)
+        command.extend(['-drive', f'if=none,id=sata0,format=raw,file={ahci_image}',
+                        '-device', 'ich9-ahci,id=ahci',
+                        '-device', 'ide-hd,drive=sata0,bus=ahci.0'])
+    if args.stage == '13.3':
+        nvme_image = out / 'nvme.img'
+        with nvme_image.open('wb') as image:
+            image.truncate(16 * 1024 * 1024)
+        command.extend(['-drive', f'if=none,id=nvme0,format=raw,file={nvme_image}',
+                        '-device', 'nvme,drive=nvme0,serial=WOVENHAT133'])
     flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
     with (out / 'qemu.log').open('w') as output:
         try:
@@ -57,6 +72,12 @@ def main():
                   '12.1': '[S12.1] VFS boundary: PASSED', '12.2': '[S12.2] WovenFS: PASSED',
                   '12.3': '[S12.3] encryption: PASSED', '12.4': '[S12.4] snapshots: PASSED',
                   '12.5': '[S12.5] storage management: PASSED', '13.1': '[S13.1] driver framework: PASSED',
+                  '13.2': '[S13.2] PCI/PCIe configuration + inventory: PASSED',
+                  '13.3': '[S13.3] NVMe controller/queue foundation: PASSED',
+                  '13.4': '[S13.4] AHCI/SATA DMA block I/O: PASSED',
+                  '13.5': '[S13.5] xHCI USB core: PASSED',
+                  '13.6': '[S13.6] USB HID keyboard: PASSED',
+                  '13.7': '[S13.7] WovenInput unified event framework: PASSED',
                   '1-5': '[S1-5] storage journal: PASSED'}[args.stage])]
     if result.returncode != 33 or any(marker not in log for marker in required):
         print(log[-12000:], file=sys.stderr)
@@ -64,7 +85,6 @@ def main():
         return 1
     print(f'Stage {args.stage}: PASS ({args.cpus} CPU, exit 33). Evidence: {out}')
     return 0
-
 
 if __name__ == '__main__':
     raise SystemExit(main())

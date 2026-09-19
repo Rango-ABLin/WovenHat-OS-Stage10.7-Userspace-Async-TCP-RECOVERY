@@ -27,7 +27,12 @@ pub struct CpuFeatures {
     pub has_sse4_2: bool,
 }
 
-pub fn init() -> HardwareInfo {
+pub fn init(acpi: Option<&acpi::Summary>) -> HardwareInfo {
+    if let Some(summary) = acpi {
+        pci::configure(&summary.mcfg_allocations[..summary.mcfg_allocation_count]);
+    } else {
+        pci::configure(&[]);
+    }
     HardwareInfo {
         cpu_vendor: cpu::detect_vendor(),
         cpu_features: cpu::detect_features(),

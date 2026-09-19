@@ -10,6 +10,9 @@ const SRAT_HEADER_LENGTH: usize = SDT_HEADER_LENGTH + 12;
 const MAX_MADT_ENTRIES: usize = 256;
 const MAX_MADT_ENTRY_LENGTH: usize = u8::MAX as usize;
 const MAX_SRAT_MEMORY_AFFINITIES: usize = 16;
+const MCFG_HEADER_LENGTH: usize = SDT_HEADER_LENGTH + 8;
+const MCFG_ALLOCATION_LENGTH: usize = 16;
+pub const MAX_MCFG_ALLOCATIONS: usize = 8;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -26,6 +29,14 @@ pub struct MemoryAffinity {
     pub domain: u32,
     pub base: u64,
     pub length: u64,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct McfgAllocation {
+    pub base_address: u64,
+    pub segment_group: u16,
+    pub start_bus: u8,
+    pub end_bus: u8,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -52,6 +63,8 @@ pub struct Summary {
     pub fadt: bool,
     pub hpet: bool,
     pub mcfg: bool,
+    pub mcfg_allocations: [McfgAllocation; MAX_MCFG_ALLOCATIONS],
+    pub mcfg_allocation_count: usize,
     pub truncated: bool,
 }
 
@@ -138,7 +151,10 @@ pub fn discover(
             }
             b"FACP" => summary.fadt = true,
             b"HPET" => summary.hpet = true,
-            b"MCFG" => summary.mcfg = true,
+            b"MCFG" => {
+                parse_mcfg(physical_offset, table_address, table.length, regions, &mut summary)?;
+                summary.mcfg = true;
+            }
             b"SRAT" => {
                 if srat_count < srat_tables.len() {
                     srat_tables[srat_count] = (table_address, table.length);
@@ -154,6 +170,60 @@ pub fn discover(
         parse_srat(physical_offset, address, length, regions, &mut summary)?;
     }
     Ok(summary)
+}
+
+
+fn parse_mcfg(
+    physical_offset: u64,
+    address: u64,
+    length: usize,
+    regions: &[MemoryRegion],
+    summary: &mut Summary,
+) -> Result<(), Error> {
+    if length < MCFG_HEADER_LENGTH {
+        return Err(Error::InvalidLength);
+    }
+    let payload = length - MCFG_HEADER_LENGTH;
+    if !payload.is_multiple_of(MCFG_ALLOCATION_LENGTH) {
+        return Err(Error::InvalidLength);
+    }
+    for index in 0..payload / MCFG_ALLOCATION_LENGTH {
+        let entry_address = address
+            .checked_add((MCFG_HEADER_LENGTH + index * MCFG_ALLOCATION_LENGTH) as u64)
+            .ok_or(Error::AddressOverflow)?;
+        let mut entry = [0_u8; MCFG_ALLOCATION_LENGTH];
+        read_physical(physical_offset, entry_address, &mut entry, regions)?;
+        let allocation = decode_mcfg_allocation(&entry)?;
+        if summary.mcfg_allocations[..summary.mcfg_allocation_count]
+            .iter()
+            .any(|existing| existing.segment_group == allocation.segment_group
+                && existing.start_bus <= allocation.end_bus
+                && allocation.start_bus <= existing.end_bus)
+        {
+            return Err(Error::InvalidLength);
+        }
+        if summary.mcfg_allocation_count < summary.mcfg_allocations.len() {
+            summary.mcfg_allocations[summary.mcfg_allocation_count] = allocation;
+            summary.mcfg_allocation_count += 1;
+        } else {
+            summary.truncated = true;
+        }
+    }
+    Ok(())
+}
+
+fn decode_mcfg_allocation(entry: &[u8; MCFG_ALLOCATION_LENGTH]) -> Result<McfgAllocation, Error> {
+    let base_address = read_u64(entry, 0);
+    let segment_group = u16::from_le_bytes([entry[8], entry[9]]);
+    let start_bus = entry[10];
+    let end_bus = entry[11];
+    if base_address == 0 || base_address & ((1 << 20) - 1) != 0 || start_bus > end_bus {
+        return Err(Error::InvalidLength);
+    }
+    let buses = u64::from(end_bus) - u64::from(start_bus) + 1;
+    let bytes = buses.checked_mul(1 << 20).ok_or(Error::AddressOverflow)?;
+    base_address.checked_add(bytes).ok_or(Error::AddressOverflow)?;
+    Ok(McfgAllocation { base_address, segment_group, start_bus, end_bus })
 }
 
 fn parse_srat(
@@ -575,10 +645,26 @@ pub fn self_test() -> bool {
         && topology.memory_affinities[0].base == 0x20_0000
         && topology.memory_affinities[0].length == 0x10_0000;
 
+    let mut mcfg_entry = [0_u8; MCFG_ALLOCATION_LENGTH];
+    mcfg_entry[..8].copy_from_slice(&0xe000_0000_u64.to_le_bytes());
+    mcfg_entry[10] = 0;
+    mcfg_entry[11] = 0xff;
+    let mcfg_valid = decode_mcfg_allocation(&mcfg_entry).is_ok_and(|allocation| {
+        allocation.base_address == 0xe000_0000
+            && allocation.segment_group == 0
+            && allocation.start_bus == 0
+            && allocation.end_bus == 0xff
+    });
+    mcfg_entry[10] = 2;
+    mcfg_entry[11] = 1;
+    let malformed_mcfg_rejected = decode_mcfg_allocation(&mcfg_entry) == Err(Error::InvalidLength);
+
     valid
         && checksum_rejected
         && topology_valid
         && malformed_rejected
         && srat_valid
         && memory_affinity_valid
+        && mcfg_valid
+        && malformed_mcfg_rejected
 }
