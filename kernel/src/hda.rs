@@ -1,4 +1,4 @@
-use core::ptr;
+use core::{ptr, sync::atomic::{compiler_fence, Ordering}};
 
 use crate::{
     hal::pci::{self, Address, BarKind},
@@ -457,6 +457,8 @@ impl HdaController {
             ptr::write_volatile((bdl.virtual_address + 12) as *mut u32, 1);
         }
 
+        compiler_fence(Ordering::Release);
+
         let descriptor_index = u64::from(self.input_streams);
         let stream = self.mmio + SD_BASE + descriptor_index * SD_STRIDE;
 
@@ -600,6 +602,7 @@ impl HdaController {
             ptr::write_volatile((bdl.virtual_address+8) as *mut u32,PCM_BYTES);
             ptr::write_volatile((bdl.virtual_address+12) as *mut u32,1);
         }
+        compiler_fence(Ordering::Release);
         let stream=self.mmio+SD_BASE;
         let ctl=mmio_read32(stream+SD_CTL)?;
         mmio_write32(stream+SD_CTL,ctl&!(1<<1))?;
@@ -629,6 +632,7 @@ impl HdaController {
         for _ in 0..POLL_LIMIT {after=mmio_read32(stream+SD_LPIB)?; if after!=before {break;} core::hint::spin_loop();}
         mmio_write32(stream+SD_CTL,run_ctl&!(1<<1))?;
         if after==before {return Err(InitError::StreamNoProgress);}
+        compiler_fence(Ordering::Acquire);
         let mut changed=0u32;
         for off in 0..PCM_BYTES as usize {
             let v=unsafe{ptr::read_volatile((pcm.virtual_address as *const u8).add(off))};
