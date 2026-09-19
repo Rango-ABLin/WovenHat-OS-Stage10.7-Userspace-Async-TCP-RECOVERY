@@ -80,7 +80,7 @@ def main():
                   '13.5': '[S13.5] xHCI USB core: PASSED',
                   '13.6': '[S13.6] USB HID keyboard: PASSED',
                   '13.7': '[S13.7] WovenInput unified event framework: PASSED',
-                  '13.8': '[S13.8] HDA codec topology: PASSED',
+                  '13.8': '[S13.8] HDA PCM DMA playback: PASSED',
                   '1-5': '[S1-5] storage journal: PASSED'}[args.stage])]
     if result.returncode != 33 or any(marker not in log for marker in required):
         print(log[-12000:], file=sys.stderr)

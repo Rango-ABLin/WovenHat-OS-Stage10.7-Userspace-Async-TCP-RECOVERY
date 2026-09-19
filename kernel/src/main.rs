@@ -2052,6 +2052,27 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                     }
                 }
 
+                match hda::playback_smoke_test() {
+                    Ok(playback) => {
+                        serial::write_line(format_args!(
+                            "[S13.8] HDA PCM DMA playback: PASSED stream={} tag={} converter={} format={:#06x} bytes={} lpib={}=>{}",
+                            playback.stream_index,
+                            playback.stream_tag,
+                            playback.converter_node,
+                            playback.format,
+                            playback.bytes,
+                            playback.position_before,
+                            playback.position_after
+                        ));
+                    }
+                    Err(error) => {
+                        serial::write_line(format_args!(
+                            "[S13.8] HDA PCM DMA playback: FAILED {:?}",
+                            error
+                        ));
+                        qemu_test_exit_failure();
+                    }
+                }
                 serial::write_line(format_args!(
                     "[S13.8] WovenAudio HDA foundation: PASSED playback={} capture={} bidir={} dma64={}",
                     caps.playback_streams,

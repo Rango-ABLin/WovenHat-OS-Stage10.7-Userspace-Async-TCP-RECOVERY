@@ -34,6 +34,7 @@ pub enum InitError {
     MissingController, MissingMemoryBar, MmioUnavailable, PciEnableFailed,
     InvalidCapabilities, ResetTimeout, DmaUnavailable, UnsupportedRingSize,
     CorbResetTimeout, RingStartFailed, CommandTimeout, CodecResponseError, InvalidCodec,
+    MissingOutputConverter, StreamResetTimeout, StreamStartFailed, StreamNoProgress,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,6 +61,17 @@ pub struct TopologySummary {
     pub pin_complexes: u16,
     pub power_widgets: u16,
     pub volume_knobs: u16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlaybackSummary {
+    pub stream_index: u8,
+    pub stream_tag: u8,
+    pub converter_node: u8,
+    pub format: u16,
+    pub bytes: u32,
+    pub position_before: u32,
+    pub position_after: u32,
 }
 struct DmaPage { physical: u64, virtual_address: u64 }
 impl DmaPage {
@@ -220,6 +232,129 @@ impl HdaController {
         }
         Ok(summary)
     }
+    fn first_output_converter(&mut self) -> Result<(u8, u8), InitError> {
+        let codec = self.codec_summary()?;
+        for fg_offset in 0..codec.root_node_count {
+            let fg = codec.root_start_node.wrapping_add(fg_offset);
+            let function_type = self.command(codec.address, fg, 0x0f00, 0x05)?;
+            if function_type & 0xff != 0x01 {
+                continue;
+            }
+            let widgets = self.command(codec.address, fg, 0x0f00, 0x04)?;
+            let widget_start = ((widgets >> 16) & 0xff) as u8;
+            let widget_count = (widgets & 0xff) as u8;
+            for widget_offset in 0..widget_count {
+                let node = widget_start.wrapping_add(widget_offset);
+                let caps = self.command(codec.address, node, 0x0f00, 0x09)?;
+                if ((caps >> 20) & 0x0f) == 0 {
+                    return Ok((codec.address, node));
+                }
+            }
+        }
+        Err(InitError::MissingOutputConverter)
+    }
+
+    fn playback_smoke_test(&mut self) -> Result<PlaybackSummary, InitError> {
+        const SD_BASE: u64 = 0x80;
+        const SD_STRIDE: u64 = 0x20;
+        const SD_CTL: u64 = 0x00;
+        const SD_STS: u64 = 0x03;
+        const SD_LPIB: u64 = 0x04;
+        const SD_CBL: u64 = 0x08;
+        const SD_LVI: u64 = 0x0c;
+        const SD_FMT: u64 = 0x12;
+        const SD_BDPL: u64 = 0x18;
+        const SD_BDPU: u64 = 0x1c;
+
+        const STREAM_TAG: u8 = 1;
+        const PCM_BYTES: u32 = 4096;
+        const PCM_FORMAT: u16 = 0x0011;
+
+        let (codec, converter) = self.first_output_converter()?;
+        if self.output_streams == 0 {
+            return Err(InitError::MissingOutputConverter);
+        }
+
+        let bdl = DmaPage::allocate()?;
+        let pcm = DmaPage::allocate()?;
+
+        let samples = PCM_BYTES as usize / 2;
+        for index in 0..samples {
+            let sample: i16 = if (index / 48) % 2 == 0 { 0x1800 } else { -0x1800 };
+            unsafe {
+                ptr::write_volatile((pcm.virtual_address as *mut i16).add(index), sample);
+            }
+        }
+
+        unsafe {
+            ptr::write_volatile(bdl.virtual_address as *mut u64, pcm.physical);
+            ptr::write_volatile((bdl.virtual_address + 8) as *mut u32, PCM_BYTES);
+            ptr::write_volatile((bdl.virtual_address + 12) as *mut u32, 1);
+        }
+
+        let descriptor_index = u64::from(self.input_streams);
+        let stream = self.mmio + SD_BASE + descriptor_index * SD_STRIDE;
+
+        let ctl = mmio_read32(stream + SD_CTL)?;
+        mmio_write32(stream + SD_CTL, ctl & !(1 << 1))?;
+        mmio_write32(stream + SD_CTL, (ctl & !(1 << 1)) | 1)?;
+        for _ in 0..POLL_LIMIT {
+            if mmio_read32(stream + SD_CTL)? & 1 != 0 { break; }
+            core::hint::spin_loop();
+        }
+        if mmio_read32(stream + SD_CTL)? & 1 == 0 {
+            return Err(InitError::StreamResetTimeout);
+        }
+        mmio_write32(stream + SD_CTL, ctl & !1)?;
+        for _ in 0..POLL_LIMIT {
+            if mmio_read32(stream + SD_CTL)? & 1 == 0 { break; }
+            core::hint::spin_loop();
+        }
+        if mmio_read32(stream + SD_CTL)? & 1 != 0 {
+            return Err(InitError::StreamResetTimeout);
+        }
+
+        mmio_write8(stream + SD_STS, 0x1c)?;
+        mmio_write32(stream + SD_CBL, PCM_BYTES)?;
+        mmio_write16(stream + SD_LVI, 0)?;
+        mmio_write16(stream + SD_FMT, PCM_FORMAT)?;
+        mmio_write32(stream + SD_BDPL, bdl.physical as u32)?;
+        mmio_write32(stream + SD_BDPU, (bdl.physical >> 32) as u32)?;
+
+        let _ = self.command(codec, converter, 0x0706, STREAM_TAG << 4)?;
+
+        let position_before = mmio_read32(stream + SD_LPIB)?;
+        let run_ctl = (u32::from(STREAM_TAG) << 20) | (1 << 1);
+        mmio_write32(stream + SD_CTL, run_ctl)?;
+        if mmio_read32(stream + SD_CTL)? & (1 << 1) == 0 {
+            return Err(InitError::StreamStartFailed);
+        }
+
+        let mut position_after = position_before;
+        for _ in 0..POLL_LIMIT {
+            position_after = mmio_read32(stream + SD_LPIB)?;
+            if position_after != position_before {
+                break;
+            }
+            core::hint::spin_loop();
+        }
+
+        mmio_write32(stream + SD_CTL, run_ctl & !(1 << 1))?;
+
+        if position_after == position_before {
+            return Err(InitError::StreamNoProgress);
+        }
+
+        Ok(PlaybackSummary {
+            stream_index: descriptor_index as u8,
+            stream_tag: STREAM_TAG,
+            converter_node: converter,
+            format: PCM_FORMAT,
+            bytes: PCM_BYTES,
+            position_before,
+            position_after,
+        })
+    }
     pub fn summary(&self) -> ControllerSummary {
         ControllerSummary { vendor_id:self.pci.vendor_id, device_id:self.pci.device_id, bus:self.pci.bus,
             device:self.pci.device, function:self.pci.function, input_streams:self.input_streams,
@@ -240,6 +375,10 @@ pub fn discover_codec() -> Result<CodecSummary, InitError> {
 
 pub fn discover_topology() -> Result<TopologySummary, InitError> {
     CONTROLLER.lock().as_mut().ok_or(InitError::MissingController)?.topology_summary()
+}
+
+pub fn playback_smoke_test() -> Result<PlaybackSummary, InitError> {
+    CONTROLLER.lock().as_mut().ok_or(InitError::MissingController)?.playback_smoke_test()
 }
 fn find_controller()->Option<pci::Device>{
     for i in 0..64 { if let Some(d)=pci::device(i) { if d.class==AUDIO_CLASS && d.subclass==HDA_SUBCLASS{return Some(d);} } } None

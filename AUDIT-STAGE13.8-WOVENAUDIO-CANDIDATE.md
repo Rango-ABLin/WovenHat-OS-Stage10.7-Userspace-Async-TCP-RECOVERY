@@ -40,3 +40,12 @@ status and reset response accounting.
   selector, pin-complex, power and volume-knob categories
 - rejects empty/meaningless codec topology
 - Stage 13.8 acceptance requires non-empty HDA topology on 1/2/4 CPUs
+
+## PCM DMA playback slice
+- selects the first generic HDA Audio Output Converter discovered from codec topology
+- allocates DMA-visible PCM and Buffer Descriptor List pages
+- programs one output stream descriptor after the input-stream descriptor range
+- uses 48 kHz / 16-bit / stereo bootstrap PCM format
+- assigns stream tag 1 to the converter
+- starts the HDA output DMA engine and verifies LPIB position advancement
+- acceptance requires real DMA consumption; audible host output is not required
