@@ -71,6 +71,8 @@ mod wifi_scan;
 mod wifi_link;
 #[cfg(feature = "stage13-9-test")]
 mod wifi_rsn;
+#[cfg(feature = "stage13-9-test")]
+mod wifi_crypto;
 mod memory;
 mod network;
 #[cfg(feature = "stage13-3-test")]
@@ -342,6 +344,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         }
         serial::write_line(format_args!(
             "[S13.9E] RSN + EAPOL-Key protocol foundation: PASSED"
+        ));
+        if !wifi_crypto::self_test() {
+            serial::write_line(format_args!(
+                "[S13.9F] WPA2 cryptographic foundation: FAILED"
+            ));
+            halt();
+        }
+        serial::write_line(format_args!(
+            "[S13.9F] WPA2 cryptographic foundation: PASSED"
         ));
         if !wifi_scan::self_test() {
             serial::write_line(format_args!(
