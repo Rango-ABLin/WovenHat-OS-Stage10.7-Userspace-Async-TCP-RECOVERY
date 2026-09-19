@@ -67,6 +67,8 @@ mod wifi;
 mod wifi80211;
 #[cfg(feature = "stage13-9-test")]
 mod wifi_scan;
+#[cfg(feature = "stage13-9-test")]
+mod wifi_link;
 mod memory;
 mod network;
 #[cfg(feature = "stage13-3-test")]
@@ -320,6 +322,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         }
         serial::write_line(format_args!(
             "[S13.9C] beacon/probe scan pipeline: PASSED"
+        ));
+        if !wifi_link::self_test() {
+            serial::write_line(format_args!(
+                "[S13.9D] Open System authentication + association: FAILED"
+            ));
+            halt();
+        }
+        serial::write_line(format_args!(
+            "[S13.9D] Open System authentication + association: PASSED"
         ));
         if !wifi_scan::self_test() {
             serial::write_line(format_args!(
