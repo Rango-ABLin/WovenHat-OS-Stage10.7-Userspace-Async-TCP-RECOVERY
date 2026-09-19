@@ -2017,7 +2017,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             qemu_test_exit_failure();
         }
         match woven_audio::init() {
-            Ok(caps) => {
+            Ok(_caps) => {
                 match hda::discover_codec() {
                     Ok(codec) => serial::write_line(format_args!(
                         "[S13.8] HDA codec command transport: PASSED cad={} vendor={:#010x} revision={:#010x} root_start={} root_count={}",
@@ -2052,68 +2052,28 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                     }
                 }
 
-    let mixer = match hda::mixer_smoke_test() {
+        let audio_api = match woven_audio::integration_smoke_test() {
         Ok(summary) => summary,
         Err(error) => {
-            serial::write_line(format_args!("[S13.8] HDA mixer/volume routing: FAILED {:?}", error));
+            serial::write_line(format_args!(
+                "[S13.8] WovenAudio stream/API integration: FAILED {:?}",
+                error
+            ));
             qemu_test_exit_failure();
         }
     };
     serial::write_line(format_args!(
-        "[S13.8] HDA mixer/volume routing: PASSED converter={} pin={} amp={} steps={} offset={} step_size={} mute={} test_gain={}",
-        mixer.converter_node, mixer.pin_node, mixer.amp_node, mixer.gain_steps,
-        mixer.offset, mixer.step_size, mixer.mute_supported, mixer.test_gain
+        "[S13.8] WovenAudio stream/API integration: PASSED playback_stream={} capture_stream={} playback_bytes={} capture_bytes={} rate={} channels={} bits={} gain={} mute={}",
+        audio_api.playback.hardware_stream,
+        audio_api.capture.hardware_stream,
+        audio_api.playback.bytes_transferred,
+        audio_api.capture.bytes_transferred,
+        audio_api.playback.format.sample_rate_hz,
+        audio_api.playback.format.channels,
+        audio_api.playback.format.bits_per_sample,
+        audio_api.mixer.current_gain,
+        audio_api.mixer.mute_supported
     ));
-                match hda::playback_smoke_test() {
-                    Ok(playback) => {
-                        serial::write_line(format_args!(
-                            "[S13.8] HDA PCM DMA playback: PASSED stream={} tag={} converter={} format={:#06x} bytes={} lpib={}=>{}",
-                            playback.stream_index,
-                            playback.stream_tag,
-                            playback.converter_node,
-                            playback.format,
-                            playback.bytes,
-                            playback.position_before,
-                            playback.position_after
-                        ));
-                    }
-                    Err(error) => {
-                        serial::write_line(format_args!(
-                            "[S13.8] HDA PCM DMA playback: FAILED {:?}",
-                            error
-                        ));
-                        qemu_test_exit_failure();
-                    }
-                }
-                match hda::capture_smoke_test() {
-                    Ok(capture) => {
-                        serial::write_line(format_args!(
-                            "[S13.8] HDA PCM DMA capture: PASSED stream={} tag={} converter={} format={:#06x} bytes={} lpib={}=>{} changed={}",
-                            capture.stream_index,
-                            capture.stream_tag,
-                            capture.converter_node,
-                            capture.format,
-                            capture.bytes,
-                            capture.position_before,
-                            capture.position_after,
-                            capture.changed_bytes
-                        ));
-                    }
-                    Err(error) => {
-                        serial::write_line(format_args!(
-                            "[S13.8] HDA PCM DMA capture: FAILED {:?}",
-                            error
-                        ));
-                        qemu_test_exit_failure();
-                    }
-                }
-                serial::write_line(format_args!(
-                    "[S13.8] WovenAudio HDA foundation: PASSED playback={} capture={} bidir={} dma64={}",
-                    caps.playback_streams,
-                    caps.capture_streams,
-                    caps.bidirectional_streams,
-                    caps.dma_64bit as u8
-                ));
                 qemu_test_exit_success();
             }
             Err(error) => {
