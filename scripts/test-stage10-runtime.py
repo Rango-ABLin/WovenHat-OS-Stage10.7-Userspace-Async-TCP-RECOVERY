@@ -81,7 +81,7 @@ def main():
                   '13.6': '[S13.6] USB HID keyboard: PASSED',
                   '13.7': '[S13.7] WovenInput unified event framework: PASSED',
                   '13.8': '[S13.8] WovenAudio stream/API integration: PASSED',
-                  '13.9': '[S13.9B] IEEE 802.11 frame/IE core: PASSED',
+                  '13.9': '[S13.9C] beacon/probe scan pipeline: PASSED',
                   '1-5': '[S1-5] storage journal: PASSED'}[args.stage])]
     if result.returncode != 33 or any(marker not in log for marker in required):
         print(log[-12000:], file=sys.stderr)
