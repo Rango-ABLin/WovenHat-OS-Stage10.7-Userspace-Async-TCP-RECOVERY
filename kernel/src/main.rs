@@ -2018,6 +2018,16 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         }
         match woven_audio::init() {
             Ok(caps) => {
+                match hda::discover_codec() {
+                    Ok(codec) => serial::write_line(format_args!(
+                        "[S13.8] HDA codec command transport: PASSED cad={} vendor={:#010x} revision={:#010x} root_start={} root_count={}",
+                        codec.address, codec.vendor_id, codec.revision_id, codec.root_start_node, codec.root_node_count
+                    )),
+                    Err(error) => {
+                        serial::write_line(format_args!("[S13.8] HDA codec command transport: FAILED {:?}", error));
+                        qemu_test_exit_failure();
+                    }
+                }
                 serial::write_line(format_args!(
                     "[S13.8] WovenAudio HDA foundation: PASSED playback={} capture={} bidir={} dma64={}",
                     caps.playback_streams,
