@@ -38,7 +38,7 @@ mod console;
 mod completion_queue;
 mod completion_port;
 mod device;
-#[cfg(any(feature = "stage13-1-test", feature = "stage13-2-test", feature = "stage13-3-test", feature = "stage13-4-test", feature = "stage13-5-test", feature = "stage13-6-test"))]
+#[cfg(any(feature = "stage13-1-test", feature = "stage13-2-test", feature = "stage13-3-test", feature = "stage13-4-test", feature = "stage13-5-test", feature = "stage13-6-test", feature = "stage13-7-test"))]
 mod driver;
 mod journal;
 mod elf;
@@ -56,13 +56,14 @@ mod interrupts;
 mod ipc;
 mod irq_lock;
 mod keyboard;
+mod woven_input;
 mod memory;
 mod network;
 #[cfg(feature = "stage13-3-test")]
 mod nvme;
 #[cfg(feature = "stage13-4-test")]
 mod ahci;
-#[cfg(any(feature = "stage13-5-test", feature = "stage13-6-test"))]
+#[cfg(any(feature = "stage13-5-test", feature = "stage13-6-test", feature = "stage13-7-test"))]
 mod xhci;
 mod page_cache;
 mod paging;
@@ -2004,6 +2005,18 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 qemu_test_exit_failure();
             }
         }
+    }
+    #[cfg(feature = "stage13-7-test")]
+    {
+        if !woven_input::self_test() || !keyboard::self_test() {
+            serial::write_line(format_args!("[S13.7] WovenInput framework: FAILED"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!(
+            "[S13.7] WovenInput unified event framework: PASSED dropped={}",
+            woven_input::dropped_events()
+        ));
+        qemu_test_exit_success();
     }
     #[cfg(feature = "stage13-6-test")]
     {
