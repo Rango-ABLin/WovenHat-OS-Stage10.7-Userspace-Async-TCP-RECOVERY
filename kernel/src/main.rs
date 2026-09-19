@@ -2021,13 +2021,37 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 match hda::discover_codec() {
                     Ok(codec) => serial::write_line(format_args!(
                         "[S13.8] HDA codec command transport: PASSED cad={} vendor={:#010x} revision={:#010x} root_start={} root_count={}",
-                        codec.address, codec.vendor_id, codec.revision_id, codec.root_start_node, codec.root_node_count
+                        codec.address,
+                        codec.vendor_id,
+                        codec.revision_id,
+                        codec.root_start_node,
+                        codec.root_node_count
                     )),
                     Err(error) => {
                         serial::write_line(format_args!("[S13.8] HDA codec command transport: FAILED {:?}", error));
                         qemu_test_exit_failure();
                     }
                 }
+
+                match hda::discover_topology() {
+                    Ok(topology) => {
+                        serial::write_line(format_args!(
+                            "[S13.8] HDA codec topology: PASSED afg={} widgets={} dac={} adc={} mixers={} selectors={} pins={}",
+                            topology.audio_function_groups,
+                            topology.widgets,
+                            topology.audio_outputs,
+                            topology.audio_inputs,
+                            topology.mixers,
+                            topology.selectors,
+                            topology.pin_complexes
+                        ));
+                    }
+                    Err(error) => {
+                        serial::write_line(format_args!("[S13.8] HDA codec topology: FAILED {:?}", error));
+                        qemu_test_exit_failure();
+                    }
+                }
+
                 serial::write_line(format_args!(
                     "[S13.8] WovenAudio HDA foundation: PASSED playback={} capture={} bidir={} dma64={}",
                     caps.playback_streams,
@@ -2066,7 +2090,28 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 let report = match xhci::poll_hid_report() {
                     Ok(report) => report,
                     Err(error) => {
-                        serial::write_line(format_args!("[S13.6] USB HID: FAILED report {:?}", error));
+                        match hda::discover_topology() {
+                        Ok(topology) => {
+                            serial::write_line(format_args!(
+                                "[S13.8] HDA codec topology: PASSED afg={} widgets={} dac={} adc={} mixers={} selectors={} pins={}",
+                                topology.audio_function_groups,
+                                topology.widgets,
+                                topology.audio_outputs,
+                                topology.audio_inputs,
+                                topology.mixers,
+                                topology.selectors,
+                                topology.pin_complexes
+                            ));
+                        }
+                        Err(error) => {
+                            serial::write_line(format_args!(
+                                "[S13.8] HDA codec topology: FAILED {:?}",
+                                error
+                            ));
+                            qemu_test_exit_failure();
+                        }
+                    }
+                    serial::write_line(format_args!("[S13.6] USB HID: FAILED report {:?}", error));
                         qemu_test_exit_failure();
                     }
                 };

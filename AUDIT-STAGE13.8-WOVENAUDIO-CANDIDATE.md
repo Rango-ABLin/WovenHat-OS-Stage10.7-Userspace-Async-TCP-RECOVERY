@@ -32,3 +32,11 @@ been produced. The polling bootstrap transport now uses a 255-response window.
 This keeps interrupts disabled while allowing bounded multi-verb codec discovery.
 A later interrupt-driven audio transport should explicitly service/clear RIRB
 status and reset response accounting.
+
+## Codec/widget topology slice
+- discovers Audio Function Group nodes through Get Parameter(Function Group Type)
+- discovers widget ranges through Get Parameter(Subordinate Node Count)
+- classifies widget capabilities into DAC/audio-output, ADC/audio-input, mixer,
+  selector, pin-complex, power and volume-knob categories
+- rejects empty/meaningless codec topology
+- Stage 13.8 acceptance requires non-empty HDA topology on 1/2/4 CPUs

@@ -47,6 +47,20 @@ pub struct CodecSummary {
     pub address: u8, pub vendor_id: u32, pub revision_id: u32,
     pub root_start_node: u8, pub root_node_count: u8,
 }
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TopologySummary {
+    pub codec_address: u8,
+    pub audio_function_groups: u8,
+    pub widgets: u16,
+    pub audio_outputs: u16,
+    pub audio_inputs: u16,
+    pub mixers: u16,
+    pub selectors: u16,
+    pub pin_complexes: u16,
+    pub power_widgets: u16,
+    pub volume_knobs: u16,
+}
 struct DmaPage { physical: u64, virtual_address: u64 }
 impl DmaPage {
     fn allocate() -> Result<Self, InitError> {
@@ -163,6 +177,49 @@ impl HdaController {
         Ok(CodecSummary { address, vendor_id, revision_id,
             root_start_node: ((nodes >> 16) & 0xff) as u8, root_node_count: (nodes & 0xff) as u8 })
     }
+
+    fn topology_summary(&mut self) -> Result<TopologySummary, InitError> {
+        let codec = self.codec_summary()?;
+        let mut summary = TopologySummary {
+            codec_address: codec.address,
+            ..TopologySummary::default()
+        };
+
+        for fg_offset in 0..codec.root_node_count {
+            let node = codec.root_start_node.wrapping_add(fg_offset);
+            let function_type = self.command(codec.address, node, 0x0f00, 0x05)?;
+            if function_type & 0xff != 0x01 {
+                continue;
+            }
+            summary.audio_function_groups = summary.audio_function_groups.saturating_add(1);
+
+            let widgets = self.command(codec.address, node, 0x0f00, 0x04)?;
+            let widget_start = ((widgets >> 16) & 0xff) as u8;
+            let widget_count = (widgets & 0xff) as u8;
+
+            for widget_offset in 0..widget_count {
+                let widget_node = widget_start.wrapping_add(widget_offset);
+                let caps = self.command(codec.address, widget_node, 0x0f00, 0x09)?;
+                let widget_type = ((caps >> 20) & 0x0f) as u8;
+                summary.widgets = summary.widgets.saturating_add(1);
+                match widget_type {
+                    0x0 => summary.audio_outputs = summary.audio_outputs.saturating_add(1),
+                    0x1 => summary.audio_inputs = summary.audio_inputs.saturating_add(1),
+                    0x2 => summary.mixers = summary.mixers.saturating_add(1),
+                    0x3 => summary.selectors = summary.selectors.saturating_add(1),
+                    0x4 => summary.pin_complexes = summary.pin_complexes.saturating_add(1),
+                    0x5 => summary.power_widgets = summary.power_widgets.saturating_add(1),
+                    0x6 => summary.volume_knobs = summary.volume_knobs.saturating_add(1),
+                    _ => {}
+                }
+            }
+        }
+
+        if summary.audio_function_groups == 0 || summary.widgets == 0 {
+            return Err(InitError::CodecResponseError);
+        }
+        Ok(summary)
+    }
     pub fn summary(&self) -> ControllerSummary {
         ControllerSummary { vendor_id:self.pci.vendor_id, device_id:self.pci.device_id, bus:self.pci.bus,
             device:self.pci.device, function:self.pci.function, input_streams:self.input_streams,
@@ -179,6 +236,10 @@ pub fn init() -> Result<ControllerSummary, InitError> {
 }
 pub fn discover_codec() -> Result<CodecSummary, InitError> {
     CONTROLLER.lock().as_mut().ok_or(InitError::MissingController)?.codec_summary()
+}
+
+pub fn discover_topology() -> Result<TopologySummary, InitError> {
+    CONTROLLER.lock().as_mut().ok_or(InitError::MissingController)?.topology_summary()
 }
 fn find_controller()->Option<pci::Device>{
     for i in 0..64 { if let Some(d)=pci::device(i) { if d.class==AUDIO_CLASS && d.subclass==HDA_SUBCLASS{return Some(d);} } } None
