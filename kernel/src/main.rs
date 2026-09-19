@@ -2052,6 +2052,18 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                     }
                 }
 
+    let mixer = match hda::mixer_smoke_test() {
+        Ok(summary) => summary,
+        Err(error) => {
+            serial::write_line(format_args!("[S13.8] HDA mixer/volume routing: FAILED {:?}", error));
+            qemu_test_exit_failure();
+        }
+    };
+    serial::write_line(format_args!(
+        "[S13.8] HDA mixer/volume routing: PASSED converter={} pin={} amp={} steps={} offset={} step_size={} mute={} test_gain={}",
+        mixer.converter_node, mixer.pin_node, mixer.amp_node, mixer.gain_steps,
+        mixer.offset, mixer.step_size, mixer.mute_supported, mixer.test_gain
+    ));
                 match hda::playback_smoke_test() {
                     Ok(playback) => {
                         serial::write_line(format_args!(

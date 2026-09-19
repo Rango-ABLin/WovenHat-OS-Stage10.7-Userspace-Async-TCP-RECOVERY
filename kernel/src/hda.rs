@@ -34,7 +34,7 @@ pub enum InitError {
     MissingController, MissingMemoryBar, MmioUnavailable, PciEnableFailed,
     InvalidCapabilities, ResetTimeout, DmaUnavailable, UnsupportedRingSize,
     CorbResetTimeout, RingStartFailed, CommandTimeout, CodecResponseError, InvalidCodec,
-    MissingOutputConverter, MissingInputConverter, StreamResetTimeout, StreamStartFailed, StreamNoProgress, CaptureBufferUnchanged,
+    MissingOutputConverter, MissingInputConverter, MissingOutputPin, MissingAmpControl, AmpStateMismatch, StreamResetTimeout, StreamStartFailed, StreamNoProgress, CaptureBufferUnchanged,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,6 +72,18 @@ pub struct PlaybackSummary {
     pub bytes: u32,
     pub position_before: u32,
     pub position_after: u32,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MixerSummary {
+    pub codec_address: u8,
+    pub converter_node: u8,
+    pub pin_node: u8,
+    pub amp_node: u8,
+    pub gain_steps: u8,
+    pub offset: u8,
+    pub step_size: u8,
+    pub mute_supported: bool,
+    pub test_gain: u8,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CaptureSummary {
@@ -326,6 +338,87 @@ impl HdaController {
         }
         Err(InitError::MissingInputConverter)
     }
+    fn output_route(&mut self) -> Result<(u8, u8, u8), InitError> {
+        let codec = self.codec_summary()?;
+        let (_, converter) = self.first_output_converter()?;
+        let mut output_pins = [0u8; 16];
+        let mut pin_count = 0usize;
+        for fg_offset in 0..codec.root_node_count {
+            let fg = codec.root_start_node.wrapping_add(fg_offset);
+            if self.command(codec.address, fg, 0x0f00, 0x05)? & 0xff != 1 { continue; }
+            let widgets = self.command(codec.address, fg, 0x0f00, 0x04)?;
+            let first = ((widgets >> 16) & 0xff) as u8;
+            let count = (widgets & 0xff) as u8;
+            for off in 0..count {
+                let node = first.wrapping_add(off);
+                let caps = self.command(codec.address, node, 0x0f00, 0x09)?;
+                if ((caps >> 20) & 0x0f) == 4 {
+                    let pin_caps = self.command(codec.address, node, 0x0f00, 0x0c)?;
+                    if pin_caps & (1 << 4) != 0 && pin_count < output_pins.len() {
+                        output_pins[pin_count] = node; pin_count += 1;
+                    }
+                }
+            }
+        }
+        for pin in output_pins[..pin_count].iter().copied() {
+            let ci = self.command(codec.address, pin, 0x0f00, 0x0e)?;
+            let long_form = ci & 0x80 != 0;
+            let count = (ci & 0x7f) as usize;
+            let packed = if long_form { 2usize } else { 4usize };
+            let mut logical = 0usize;
+            let mut request = 0usize;
+            while logical < count {
+                let response = self.command(codec.address, pin, 0x0f02, request as u8)?;
+                for slot in 0..packed {
+                    if logical >= count { break; }
+                    let raw = if long_form { ((response >> (slot * 16)) & 0xffff) as u16 }
+                              else { ((response >> (slot * 8)) & 0xff) as u16 };
+                    let node = if long_form { raw & 0x7fff } else { raw & 0x7f };
+                    if node == u16::from(converter) {
+                        return Ok((codec.address, converter, pin));
+                    }
+                    logical += 1;
+                }
+                request += packed;
+            }
+        }
+        Err(InitError::MissingOutputPin)
+    }
+
+    fn mixer_smoke_test(&mut self) -> Result<MixerSummary, InitError> {
+        let (codec, converter, pin) = self.output_route()?;
+        let converter_caps = self.command(codec, converter, 0x0f00, 0x09)?;
+        let pin_caps = self.command(codec, pin, 0x0f00, 0x09)?;
+        let amp_node = if converter_caps & (1 << 2) != 0 { converter }
+                       else if pin_caps & (1 << 2) != 0 { pin }
+                       else { return Err(InitError::MissingAmpControl); };
+        let caps = self.command(codec, amp_node, 0x0f00, 0x12)?;
+        let mute_supported = caps & (1 << 31) != 0;
+        let gain_steps = ((caps >> 8) & 0x7f) as u8;
+        let offset = (caps & 0x7f) as u8;
+        let step_size = ((caps >> 16) & 0x7f) as u8;
+        let test_gain = if gain_steps == 0 { 0 } else { gain_steps / 2 };
+
+        // Set Amplifier Gain/Mute: output amp, both channels.
+        let set_payload = 0xb000u16 | u16::from(test_gain);
+        let _ = self.command16(codec, amp_node, 0x03, set_payload)?;
+        let left = self.command(codec, amp_node, 0x0b00, 0x00)?;
+        if (left as u8 & 0x7f) != test_gain { return Err(InitError::AmpStateMismatch); }
+
+        if mute_supported {
+            let _ = self.command16(codec, amp_node, 0x03, set_payload | 0x80)?;
+            let muted = self.command(codec, amp_node, 0x0b00, 0x00)?;
+            if muted as u8 & 0x80 == 0 { return Err(InitError::AmpStateMismatch); }
+            let _ = self.command16(codec, amp_node, 0x03, set_payload)?;
+            let unmuted = self.command(codec, amp_node, 0x0b00, 0x00)?;
+            if unmuted as u8 & 0x80 != 0 { return Err(InitError::AmpStateMismatch); }
+        }
+
+        // Explicitly enable the discovered output pin.
+        let _ = self.command(codec, pin, 0x0707, 0x40)?;
+        Ok(MixerSummary { codec_address: codec, converter_node: converter, pin_node: pin,
+            amp_node, gain_steps, offset, step_size, mute_supported, test_gain })
+    }
     fn playback_smoke_test(&mut self) -> Result<PlaybackSummary, InitError> {
         const SD_BASE: u64 = 0x80;
         const SD_STRIDE: u64 = 0x20;
@@ -567,6 +660,9 @@ pub fn discover_topology() -> Result<TopologySummary, InitError> {
     CONTROLLER.lock().as_mut().ok_or(InitError::MissingController)?.topology_summary()
 }
 
+pub fn mixer_smoke_test() -> Result<MixerSummary, InitError> {
+    CONTROLLER.lock().as_mut().ok_or(InitError::MissingController)?.mixer_smoke_test()
+}
 pub fn playback_smoke_test() -> Result<PlaybackSummary, InitError> {
     CONTROLLER.lock().as_mut().ok_or(InitError::MissingController)?.playback_smoke_test()
 }
