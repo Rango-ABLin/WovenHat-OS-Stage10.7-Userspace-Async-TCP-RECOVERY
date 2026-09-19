@@ -38,7 +38,7 @@ mod console;
 mod completion_queue;
 mod completion_port;
 mod device;
-#[cfg(feature = "stage13-1-test")]
+#[cfg(any(feature = "stage13-1-test", feature = "stage13-2-test"))]
 mod driver;
 mod journal;
 mod elf;
@@ -214,7 +214,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     #[cfg(feature = "qemu-test")]
     serial::write_line(format_args!("[S6.PAGING] table allocation rollback: PASSED"));
 
-    let hardware = hal::init();
+    let hardware = hal::init(acpi.as_ref().ok());
     if !hal::acpi::self_test() {
         console.println("ACPI PARSER: VALIDATION FAILED");
         halt();
@@ -1884,6 +1884,21 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     }
     #[cfg(feature = "stage13-1-test")]
     { if !driver::register("pit", device::DeviceKind::Timer) || !driver::bind("pit") || !driver::suspend("pit") || !driver::resume("pit") { serial::write_line(format_args!("[S13.1] driver framework: FAILED")); qemu_test_exit_failure(); } serial::write_line(format_args!("[S13.1] driver framework: PASSED")); qemu_test_exit_success(); }
+    #[cfg(feature = "stage13-2-test")]
+    {
+        let pci_ok = hal::pci::self_test()
+            && hardware.pci.discovered >= u16::from(hardware.pci.recorded)
+            && hardware.pci.recorded != 0;
+        if !pci_ok {
+            serial::write_line(format_args!("[S13.2] PCI/PCIe configuration + inventory: FAILED"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!(
+            "[S13.2] PCI/PCIe configuration + inventory: PASSED devices={} recorded={} segments={} ecam={}",
+            hardware.pci.discovered, hardware.pci.recorded, hardware.pci.segments, hardware.pci.ecam as u8
+        ));
+        qemu_test_exit_success();
+    }
     #[cfg(feature = "stage1-5-test")]
     { if !journal::structural_self_test() { serial::write_line(format_args!("[S1-5] storage journal: FAILED")); qemu_test_exit_failure(); } serial::write_line(format_args!("[S1-5] storage journal: PASSED")); qemu_test_exit_success(); }
     #[cfg(feature = "stage12-2-test")]
