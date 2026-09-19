@@ -38,7 +38,7 @@ mod console;
 mod completion_queue;
 mod completion_port;
 mod device;
-#[cfg(any(feature = "stage13-1-test", feature = "stage13-2-test"))]
+#[cfg(any(feature = "stage13-1-test", feature = "stage13-2-test", feature = "stage13-3-test"))]
 mod driver;
 mod journal;
 mod elf;
@@ -58,6 +58,8 @@ mod irq_lock;
 mod keyboard;
 mod memory;
 mod network;
+#[cfg(feature = "stage13-3-test")]
+mod nvme;
 mod page_cache;
 mod paging;
 mod panic;
@@ -1896,6 +1898,46 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         serial::write_line(format_args!(
             "[S13.2] PCI/PCIe configuration + inventory: PASSED devices={} recorded={} segments={} ecam={}",
             hardware.pci.discovered, hardware.pci.recorded, hardware.pci.segments, hardware.pci.ecam as u8
+        ));
+        qemu_test_exit_success();
+    }
+    #[cfg(feature = "stage13-3-test")]
+    {
+        use block::BlockDevice;
+        if !nvme::self_test() || !nvme::probe() {
+            serial::write_line(format_args!("[S13.3] NVMe controller/queue foundation: FAILED probe"));
+            qemu_test_exit_failure();
+        }
+        let sectors = match nvme::init() {
+            Ok(sectors) => sectors,
+            Err(error) => {
+                serial::write_line(format_args!("[S13.3] NVMe controller/queue foundation: FAILED init {:?}", error));
+                qemu_test_exit_failure();
+            }
+        };
+        let io_ok = nvme::with_controller(|controller| {
+            let mut original = [0_u8; block::SECTOR_SIZE];
+            let mut verify = [0_u8; block::SECTOR_SIZE];
+            let mut pattern = [0_u8; block::SECTOR_SIZE];
+            pattern[..15].copy_from_slice(b"wovenhat-nvme13");
+            if controller.read_sector(0, &mut original).is_err()
+                || controller.write_sector(0, &pattern).is_err()
+                || controller.flush().is_err()
+                || controller.read_sector(0, &mut verify).is_err()
+                || verify != pattern
+            {
+                return false;
+            }
+            controller.write_sector(0, &original).is_ok() && controller.flush().is_ok()
+        })
+        .unwrap_or(false);
+        if !io_ok {
+            serial::write_line(format_args!("[S13.3] NVMe controller/queue foundation: FAILED I/O"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!(
+            "[S13.3] NVMe controller/queue foundation: PASSED sectors={}",
+            sectors
         ));
         qemu_test_exit_success();
     }

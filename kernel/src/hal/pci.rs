@@ -214,6 +214,17 @@ pub fn enable_io_bus_master(bus: u8, device: u8, function: u8) {
     }
 }
 
+/// Enable MMIO decoding and DMA bus mastering for a PCI/PCIe function.
+/// Returns false if the configuration transaction cannot be completed.
+pub fn enable_memory_bus_master(address: Address) -> bool {
+    let _guard = CONFIG_LOCK.lock();
+    let Some(value) = read_config_unlocked(address, 0x04) else {
+        return false;
+    };
+    // PCI command: bit1 memory space, bit2 bus master. Preserve all other bits.
+    write_config_unlocked(address, 0x04, value | 0x0000_0006)
+}
+
 pub fn bar0_io_base(bus: u8, device: u8, function: u8) -> Option<u16> {
     let bar = read_config(Address { segment: 0, bus, device, function }, 0x10)?;
     if bar & 1 == 0 {
