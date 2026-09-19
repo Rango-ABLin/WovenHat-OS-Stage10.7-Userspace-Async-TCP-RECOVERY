@@ -31,6 +31,7 @@ stage13-5-test = ["qemu-test", "kernel/stage13-5-test"]
 stage13-6-test = ["qemu-test", "kernel/stage13-6-test"]
 stage13-7-test = ["qemu-test", "kernel/stage13-7-test"]
 stage13-8-test = ["qemu-test", "kernel/stage13-8-test"]
+stage13-9-test = ["qemu-test", "kernel/stage13-9-test"]
 stage1-5-test = ["qemu-test", "kernel/stage1-5-test"]
 
 [profile.dev]

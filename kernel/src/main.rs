@@ -38,7 +38,7 @@ mod console;
 mod completion_queue;
 mod completion_port;
 mod device;
-#[cfg(any(feature = "stage13-1-test", feature = "stage13-2-test", feature = "stage13-3-test", feature = "stage13-4-test", feature = "stage13-5-test", feature = "stage13-6-test", feature = "stage13-7-test", feature = "stage13-8-test"))]
+#[cfg(any(feature = "stage13-1-test", feature = "stage13-2-test", feature = "stage13-3-test", feature = "stage13-4-test", feature = "stage13-5-test", feature = "stage13-6-test", feature = "stage13-7-test", feature = "stage13-8-test", feature = "stage13-9-test"))]
 mod driver;
 mod journal;
 mod elf;
@@ -61,13 +61,15 @@ mod woven_input;
 mod hda;
 #[cfg(feature = "stage13-8-test")]
 mod woven_audio;
+#[cfg(feature = "stage13-9-test")]
+mod wifi;
 mod memory;
 mod network;
 #[cfg(feature = "stage13-3-test")]
 mod nvme;
 #[cfg(feature = "stage13-4-test")]
 mod ahci;
-#[cfg(any(feature = "stage13-5-test", feature = "stage13-6-test", feature = "stage13-7-test", feature = "stage13-8-test"))]
+#[cfg(any(feature = "stage13-5-test", feature = "stage13-6-test", feature = "stage13-7-test", feature = "stage13-8-test", feature = "stage13-9-test"))]
 mod xhci;
 mod page_cache;
 mod paging;
@@ -283,6 +285,21 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         hardware.pci.truncated as u8,
     ));
     console.println("PCI CONFIGURATION: ENUMERATED");
+    #[cfg(feature = "stage13-9-test")]
+    {
+        let wifi_pci = wifi::discover_pci();
+        if !wifi::self_test() {
+            serial::write_line(format_args!(
+                "[S13.9] WovenWiFi framework + PCI classification: FAILED"
+            ));
+            halt();
+        }
+        serial::write_line(format_args!(
+            "[S13.9] WovenWiFi framework + PCI classification: PASSED network={} wireless_candidates={}",
+            wifi_pci.network_controllers,
+            wifi_pci.wireless_candidates
+        ));
+    }
 
     if heap::init().is_err() {
         console.println("KERNEL HEAP: INITIALIZATION FAILED");
