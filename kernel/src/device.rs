@@ -9,6 +9,7 @@ pub enum DeviceKind {
     Timer,
     Keyboard,
     Block,
+    Audio,
 }
 
 #[derive(Clone, Copy)]

@@ -459,7 +459,7 @@ fn cmd_devices(console: &mut Console<'_>) {
     print_u64(console, device::count() as u64);
     console.newline();
 
-    for name in ["framebuffer-console", "com1", "pit", "ps2-keyboard", "ata0"] {
+    for name in ["framebuffer-console", "com1", "pit", "ps2-keyboard", "ata0", "hda0"] {
         if let Some(dev) = device::find(name) {
             console.print("  ");
             console.print(dev.name);
@@ -470,6 +470,7 @@ fn cmd_devices(console: &mut Console<'_>) {
                 device::DeviceKind::Timer => "timer",
                 device::DeviceKind::Keyboard => "keyboard",
                 device::DeviceKind::Block => "block",
+                device::DeviceKind::Audio => "audio",
             });
             if let Some(irq) = dev.irq {
                 console.print(" irq=");

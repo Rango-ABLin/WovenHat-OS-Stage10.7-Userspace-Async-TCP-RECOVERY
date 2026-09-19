@@ -38,7 +38,7 @@ mod console;
 mod completion_queue;
 mod completion_port;
 mod device;
-#[cfg(any(feature = "stage13-1-test", feature = "stage13-2-test", feature = "stage13-3-test", feature = "stage13-4-test", feature = "stage13-5-test", feature = "stage13-6-test", feature = "stage13-7-test"))]
+#[cfg(any(feature = "stage13-1-test", feature = "stage13-2-test", feature = "stage13-3-test", feature = "stage13-4-test", feature = "stage13-5-test", feature = "stage13-6-test", feature = "stage13-7-test", feature = "stage13-8-test"))]
 mod driver;
 mod journal;
 mod elf;
@@ -57,13 +57,17 @@ mod ipc;
 mod irq_lock;
 mod keyboard;
 mod woven_input;
+#[cfg(feature = "stage13-8-test")]
+mod hda;
+#[cfg(feature = "stage13-8-test")]
+mod woven_audio;
 mod memory;
 mod network;
 #[cfg(feature = "stage13-3-test")]
 mod nvme;
 #[cfg(feature = "stage13-4-test")]
 mod ahci;
-#[cfg(any(feature = "stage13-5-test", feature = "stage13-6-test", feature = "stage13-7-test"))]
+#[cfg(any(feature = "stage13-5-test", feature = "stage13-6-test", feature = "stage13-7-test", feature = "stage13-8-test"))]
 mod xhci;
 mod page_cache;
 mod paging;
@@ -2002,6 +2006,29 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             }
             Err(error) => {
                 serial::write_line(format_args!("[S13.5] xHCI USB core: FAILED init {:?}", error));
+                qemu_test_exit_failure();
+            }
+        }
+    }
+    #[cfg(feature = "stage13-8-test")]
+    {
+        if !hda::self_test() || !woven_audio::self_test() || !hda::probe() {
+            serial::write_line(format_args!("[S13.8] WovenAudio HDA foundation: FAILED probe/self-test"));
+            qemu_test_exit_failure();
+        }
+        match woven_audio::init() {
+            Ok(caps) => {
+                serial::write_line(format_args!(
+                    "[S13.8] WovenAudio HDA foundation: PASSED playback={} capture={} bidir={} dma64={}",
+                    caps.playback_streams,
+                    caps.capture_streams,
+                    caps.bidirectional_streams,
+                    caps.dma_64bit as u8
+                ));
+                qemu_test_exit_success();
+            }
+            Err(error) => {
+                serial::write_line(format_args!("[S13.8] WovenAudio HDA foundation: FAILED init {:?}", error));
                 qemu_test_exit_failure();
             }
         }

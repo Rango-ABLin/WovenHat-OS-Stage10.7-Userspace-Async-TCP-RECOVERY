@@ -9,7 +9,7 @@ import time
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--stage', choices=('10.8', '10.9', '11.1', '11.2', '11.3', '11.4', '11.5', '12.1', '12.2', '12.3', '12.4', '12.5', '13.1', '13.2', '13.3', '13.4', '13.5', '13.6', '13.7', '1-5'), default='10.8')
+    parser.add_argument('--stage', choices=('10.8', '10.9', '11.1', '11.2', '11.3', '11.4', '11.5', '12.1', '12.2', '12.3', '12.4', '12.5', '13.1', '13.2', '13.3', '13.4', '13.5', '13.6', '13.7', '13.8', '1-5'), default='10.8')
     parser.add_argument('--cpus', type=int, choices=(1, 2, 4), default=1)
     parser.add_argument('--qemu', default=shutil.which('qemu-system-x86_64') or r'C:\Program Files\qemu\qemu-system-x86_64.exe')
     parser.add_argument('--firmware', type=Path)
@@ -38,6 +38,8 @@ def main():
     if args.stage in ('13.5', '13.6'):
         command.extend(['-device', 'qemu-xhci,id=xhci',
                         '-device', 'usb-kbd,bus=xhci.0'])
+    if args.stage == '13.8':
+        command.extend(['-device', 'intel-hda,id=hda'])
     if args.stage == '13.4':
         ahci_image = out / 'ahci.img'
         with ahci_image.open('wb') as image:
@@ -78,6 +80,7 @@ def main():
                   '13.5': '[S13.5] xHCI USB core: PASSED',
                   '13.6': '[S13.6] USB HID keyboard: PASSED',
                   '13.7': '[S13.7] WovenInput unified event framework: PASSED',
+                  '13.8': '[S13.8] WovenAudio HDA foundation: PASSED',
                   '1-5': '[S1-5] storage journal: PASSED'}[args.stage])]
     if result.returncode != 33 or any(marker not in log for marker in required):
         print(log[-12000:], file=sys.stderr)
