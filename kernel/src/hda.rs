@@ -34,7 +34,7 @@ pub enum InitError {
     MissingController, MissingMemoryBar, MmioUnavailable, PciEnableFailed,
     InvalidCapabilities, ResetTimeout, DmaUnavailable, UnsupportedRingSize,
     CorbResetTimeout, RingStartFailed, CommandTimeout, CodecResponseError, InvalidCodec,
-    MissingOutputConverter, StreamResetTimeout, StreamStartFailed, StreamNoProgress,
+    MissingOutputConverter, MissingInputConverter, StreamResetTimeout, StreamStartFailed, StreamNoProgress, CaptureBufferUnchanged,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,6 +72,17 @@ pub struct PlaybackSummary {
     pub bytes: u32,
     pub position_before: u32,
     pub position_after: u32,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CaptureSummary {
+    pub stream_index: u8,
+    pub stream_tag: u8,
+    pub converter_node: u8,
+    pub format: u16,
+    pub bytes: u32,
+    pub position_before: u32,
+    pub position_after: u32,
+    pub changed_bytes: u32,
 }
 struct DmaPage { physical: u64, virtual_address: u64 }
 impl DmaPage {
@@ -180,6 +191,46 @@ impl HdaController {
         }
         Err(InitError::CommandTimeout)
     }
+    fn command16(&mut self, codec: u8, node: u8, verb: u8, payload: u16) -> Result<u32, InitError> {
+        if codec > 0x0f || verb > 0x0f {
+            return Err(InitError::InvalidCodec);
+        }
+        let command = (u32::from(codec) << 28)
+            | (u32::from(node) << 20)
+            | (u32::from(verb) << 16)
+            | u32::from(payload);
+        let corb = self.corb.as_ref().ok_or(InitError::DmaUnavailable)?;
+        let rirb = self.rirb.as_ref().ok_or(InitError::DmaUnavailable)?;
+        let current_wp = mmio_read16(self.mmio + REG_CORBWP)? & 0xff;
+        let next_wp = current_wp.wrapping_add(1) & 0xff;
+        unsafe {
+            ptr::write_volatile(
+                (corb.virtual_address as *mut u32).add(next_wp as usize),
+                command,
+            );
+        }
+        mmio_write16(self.mmio + REG_CORBWP, next_wp)?;
+        for _ in 0..POLL_LIMIT {
+            let hardware_wp = mmio_read16(self.mmio + REG_RIRBWP)? & 0xff;
+            if hardware_wp != self.rirb_read {
+                let next = self.rirb_read.wrapping_add(1) & 0xff;
+                let entry = unsafe {
+                    ptr::read_volatile((rirb.virtual_address as *const u64).add(next as usize))
+                };
+                self.rirb_read = next;
+                let response_ex = (entry >> 32) as u32;
+                if response_ex & (1 << 4) != 0 {
+                    continue;
+                }
+                if (response_ex & 0x0f) as u8 != codec {
+                    return Err(InitError::CodecResponseError);
+                }
+                return Ok(entry as u32);
+            }
+            core::hint::spin_loop();
+        }
+        Err(InitError::CommandTimeout)
+    }
     fn codec_summary(&mut self) -> Result<CodecSummary, InitError> {
         let state = mmio_read16(self.mmio + REG_STATESTS)? & 0x7fff;
         let address = (0u8..15).find(|codec| state & (1u16 << codec) != 0).ok_or(InitError::InvalidCodec)?;
@@ -254,6 +305,27 @@ impl HdaController {
         Err(InitError::MissingOutputConverter)
     }
 
+    fn first_input_converter(&mut self) -> Result<(u8, u8), InitError> {
+        let codec = self.codec_summary()?;
+        for fg_offset in 0..codec.root_node_count {
+            let fg = codec.root_start_node.wrapping_add(fg_offset);
+            let function_type = self.command(codec.address, fg, 0x0f00, 0x05)?;
+            if function_type & 0xff != 0x01 {
+                continue;
+            }
+            let widgets = self.command(codec.address, fg, 0x0f00, 0x04)?;
+            let widget_start = ((widgets >> 16) & 0xff) as u8;
+            let widget_count = (widgets & 0xff) as u8;
+            for widget_offset in 0..widget_count {
+                let node = widget_start.wrapping_add(widget_offset);
+                let caps = self.command(codec.address, node, 0x0f00, 0x09)?;
+                if ((caps >> 20) & 0x0f) == 1 {
+                    return Ok((codec.address, node));
+                }
+            }
+        }
+        Err(InitError::MissingInputConverter)
+    }
     fn playback_smoke_test(&mut self) -> Result<PlaybackSummary, InitError> {
         const SD_BASE: u64 = 0x80;
         const SD_STRIDE: u64 = 0x20;
@@ -321,6 +393,7 @@ impl HdaController {
         mmio_write32(stream + SD_BDPL, bdl.physical as u32)?;
         mmio_write32(stream + SD_BDPU, (bdl.physical >> 32) as u32)?;
 
+        let _ = self.command16(codec, converter, 0x02, PCM_FORMAT)?;
         let _ = self.command(codec, converter, 0x0706, STREAM_TAG << 4)?;
 
         let position_before = mmio_read32(stream + SD_LPIB)?;
@@ -355,6 +428,123 @@ impl HdaController {
             position_after,
         })
     }
+    fn capture_smoke_test(&mut self) -> Result<CaptureSummary, InitError> {
+        const SD_BASE:u64=0x80; const SD_CTL:u64=0; const SD_STS:u64=3;
+        const SD_LPIB:u64=4; const SD_CBL:u64=8; const SD_LVI:u64=0x0c;
+        const SD_FMT:u64=0x12; const SD_BDPL:u64=0x18; const SD_BDPU:u64=0x1c;
+        const STREAM_TAG:u8=2; const PCM_BYTES:u32=4096; const PCM_FORMAT:u16=0x0011;
+        const SENTINEL:u8=0xa5;
+
+        let codec=self.codec_summary()?;
+        let mut adc=None;
+        let mut input_pins=[0u8;16];
+        let mut input_pin_count=0usize;
+        for fg_offset in 0..codec.root_node_count {
+            let fg=codec.root_start_node.wrapping_add(fg_offset);
+            if self.command(codec.address,fg,0x0f00,0x05)?&0xff != 1 {continue;}
+            let widgets=self.command(codec.address,fg,0x0f00,0x04)?;
+            let first=((widgets>>16)&0xff) as u8; let count=(widgets&0xff) as u8;
+            for off in 0..count {
+                let node=first.wrapping_add(off);
+                let caps=self.command(codec.address,node,0x0f00,0x09)?;
+                match ((caps>>20)&0x0f) as u8 {
+                    1 if adc.is_none()=>adc=Some(node),
+                    4 if input_pin_count<input_pins.len()=>{
+                        let pc=self.command(codec.address,node,0x0f00,0x0c)?;
+                        if pc&(1<<5)!=0 {input_pins[input_pin_count]=node; input_pin_count+=1;}
+                    }
+                    _=>{}
+                }
+            }
+        }
+        let converter=adc.ok_or(InitError::MissingInputConverter)?;
+        if self.input_streams==0 {return Err(InitError::MissingInputConverter);}
+
+        let ci=self.command(codec.address,converter,0x0f00,0x0e)?;
+        let long_form=ci&0x80!=0; let conn_count=(ci&0x7f) as usize;
+        if conn_count==0 {return Err(InitError::CodecResponseError);}
+        let mut selected_pin=None; let mut selected_index=None;
+        let mut logical=0usize; let mut request=0usize; let mut previous:Option<u16>=None;
+        while logical<conn_count {
+            let response=self.command(codec.address,converter,0x0f02,request as u8)?;
+            let packed=if long_form {2usize}else{4usize};
+            for slot in 0..packed {
+                if logical>=conn_count {break;}
+                let raw=if long_form {((response>>(slot*16))&0xffff) as u16}
+                        else {((response>>(slot*8))&0xff) as u16};
+                let range=if long_form {raw&0x8000!=0}else{raw&0x80!=0};
+                let node=if long_form {raw&0x7fff}else{raw&0x7f};
+                if range {
+                    if let Some(prev)=previous {
+                        let mut n=prev.saturating_add(1);
+                        while n<=node {
+                            for pin in input_pins[..input_pin_count].iter().copied() {
+                                if u16::from(pin)==n && selected_pin.is_none() {
+                                    selected_pin=Some(pin); selected_index=Some(logical as u8);
+                                }
+                            }
+                            if n==u16::MAX {break;} n+=1;
+                        }
+                    }
+                } else {
+                    for pin in input_pins[..input_pin_count].iter().copied() {
+                        if u16::from(pin)==node && selected_pin.is_none() {
+                            selected_pin=Some(pin); selected_index=Some(logical as u8);
+                        }
+                    }
+                }
+                previous=Some(node); logical+=1;
+            }
+            request+=packed;
+        }
+        let input_pin=selected_pin.ok_or(InitError::CodecResponseError)?;
+        let connection_index=selected_index.ok_or(InitError::CodecResponseError)?;
+
+        let bdl=DmaPage::allocate()?; let pcm=DmaPage::allocate()?;
+        unsafe {
+            ptr::write_bytes(pcm.virtual_address as *mut u8,SENTINEL,PCM_BYTES as usize);
+            ptr::write_volatile(bdl.virtual_address as *mut u64,pcm.physical);
+            ptr::write_volatile((bdl.virtual_address+8) as *mut u32,PCM_BYTES);
+            ptr::write_volatile((bdl.virtual_address+12) as *mut u32,1);
+        }
+        let stream=self.mmio+SD_BASE;
+        let ctl=mmio_read32(stream+SD_CTL)?;
+        mmio_write32(stream+SD_CTL,ctl&!(1<<1))?;
+        mmio_write32(stream+SD_CTL,(ctl&!(1<<1))|1)?;
+        for _ in 0..POLL_LIMIT {if mmio_read32(stream+SD_CTL)?&1!=0 {break;} core::hint::spin_loop();}
+        if mmio_read32(stream+SD_CTL)?&1==0 {return Err(InitError::StreamResetTimeout);}
+        mmio_write32(stream+SD_CTL,ctl&!1)?;
+        for _ in 0..POLL_LIMIT {if mmio_read32(stream+SD_CTL)?&1==0 {break;} core::hint::spin_loop();}
+        if mmio_read32(stream+SD_CTL)?&1!=0 {return Err(InitError::StreamResetTimeout);}
+
+        mmio_write8(stream+SD_STS,0x1c)?;
+        mmio_write32(stream+SD_CBL,PCM_BYTES)?; mmio_write16(stream+SD_LVI,0)?;
+        mmio_write16(stream+SD_FMT,PCM_FORMAT)?;
+        mmio_write32(stream+SD_BDPL,bdl.physical as u32)?;
+        mmio_write32(stream+SD_BDPU,(bdl.physical>>32) as u32)?;
+
+        let _=self.command(codec.address,input_pin,0x0707,0x20)?;
+        let _=self.command(codec.address,converter,0x0701,connection_index)?;
+        let _=self.command16(codec.address,converter,0x02,PCM_FORMAT)?;
+        let _=self.command(codec.address,converter,0x0706,STREAM_TAG<<4)?;
+
+        let before=mmio_read32(stream+SD_LPIB)?;
+        let run_ctl=(u32::from(STREAM_TAG)<<20)|(1<<1);
+        mmio_write32(stream+SD_CTL,run_ctl)?;
+        if mmio_read32(stream+SD_CTL)?&(1<<1)==0 {return Err(InitError::StreamStartFailed);}
+        let mut after=before;
+        for _ in 0..POLL_LIMIT {after=mmio_read32(stream+SD_LPIB)?; if after!=before {break;} core::hint::spin_loop();}
+        mmio_write32(stream+SD_CTL,run_ctl&!(1<<1))?;
+        if after==before {return Err(InitError::StreamNoProgress);}
+        let mut changed=0u32;
+        for off in 0..PCM_BYTES as usize {
+            let v=unsafe{ptr::read_volatile((pcm.virtual_address as *const u8).add(off))};
+            if v!=SENTINEL {changed=changed.saturating_add(1);}
+        }
+        if changed==0 {return Err(InitError::CaptureBufferUnchanged);}
+        Ok(CaptureSummary{stream_index:0,stream_tag:STREAM_TAG,converter_node:converter,
+            format:PCM_FORMAT,bytes:PCM_BYTES,position_before:before,position_after:after,changed_bytes:changed})
+    }
     pub fn summary(&self) -> ControllerSummary {
         ControllerSummary { vendor_id:self.pci.vendor_id, device_id:self.pci.device_id, bus:self.pci.bus,
             device:self.pci.device, function:self.pci.function, input_streams:self.input_streams,
@@ -379,6 +569,9 @@ pub fn discover_topology() -> Result<TopologySummary, InitError> {
 
 pub fn playback_smoke_test() -> Result<PlaybackSummary, InitError> {
     CONTROLLER.lock().as_mut().ok_or(InitError::MissingController)?.playback_smoke_test()
+}
+pub fn capture_smoke_test() -> Result<CaptureSummary, InitError> {
+    CONTROLLER.lock().as_mut().ok_or(InitError::MissingController)?.capture_smoke_test()
 }
 fn find_controller()->Option<pci::Device>{
     for i in 0..64 { if let Some(d)=pci::device(i) { if d.class==AUDIO_CLASS && d.subclass==HDA_SUBCLASS{return Some(d);} } } None

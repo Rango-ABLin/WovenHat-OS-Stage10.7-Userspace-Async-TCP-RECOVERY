@@ -2073,6 +2073,28 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                         qemu_test_exit_failure();
                     }
                 }
+                match hda::capture_smoke_test() {
+                    Ok(capture) => {
+                        serial::write_line(format_args!(
+                            "[S13.8] HDA PCM DMA capture: PASSED stream={} tag={} converter={} format={:#06x} bytes={} lpib={}=>{} changed={}",
+                            capture.stream_index,
+                            capture.stream_tag,
+                            capture.converter_node,
+                            capture.format,
+                            capture.bytes,
+                            capture.position_before,
+                            capture.position_after,
+                            capture.changed_bytes
+                        ));
+                    }
+                    Err(error) => {
+                        serial::write_line(format_args!(
+                            "[S13.8] HDA PCM DMA capture: FAILED {:?}",
+                            error
+                        ));
+                        qemu_test_exit_failure();
+                    }
+                }
                 serial::write_line(format_args!(
                     "[S13.8] WovenAudio HDA foundation: PASSED playback={} capture={} bidir={} dma64={}",
                     caps.playback_streams,

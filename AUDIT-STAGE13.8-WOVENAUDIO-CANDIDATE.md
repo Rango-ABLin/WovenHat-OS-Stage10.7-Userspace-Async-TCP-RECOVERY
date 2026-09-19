@@ -49,3 +49,30 @@ status and reset response accounting.
 - assigns stream tag 1 to the converter
 - starts the HDA output DMA engine and verifies LPIB position advancement
 - acceptance requires real DMA consumption; audible host output is not required
+
+## PCM DMA capture slice
+- discovers the first HDA Audio Input Converter (ADC)
+- allocates a capture BDL and DMA PCM page
+- fills the capture page with a sentinel before DMA begins
+- programs input stream descriptor 0 for 48 kHz / 16-bit / stereo
+- assigns stream tag 2 to the ADC
+- requires LPIB position advancement
+- requires DMA to overwrite at least one sentinel byte in the guest capture buffer
+- acceptance remains headless and does not require a host microphone
+
+### Capture routing correction R4
+R3's global stream-tag search incorrectly counted the already-accepted playback
+stream-tag command together with the capture command. R4 avoids global matching:
+it atomically replaces only capture_smoke_test. Capture now discovers an ADC and
+an input-capable pin inside the function, enables the pin, selects ADC connection
+zero, binds stream tag 2, then starts input stream descriptor zero. Acceptance
+remains unchanged: LPIB must advance and DMA must mutate the sentinel buffer.
+
+### Converter-format correction R5
+R4 proved that selecting an input-capable pin and enabling the ADC route was not
+sufficient: input LPIB still remained stationary. The remaining protocol defect
+was converter format programming. SDnFMT configures the controller stream, but
+the HDA codec converter must also receive Set Converter Format. That verb uses
+the 4-bit-verb/16-bit-payload encoding, which the original 12-bit/8-bit command
+helper could not express. R5 adds command16() and programs PCM format 0x0011 on
+both DAC and ADC before assigning stream tags. Acceptance is unchanged.
