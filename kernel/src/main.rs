@@ -206,6 +206,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     }
 
     serial::init();
+    #[cfg(feature = "qemu-test")]
+    if !paging::table_allocation_rollback_self_test() {
+        serial::write_line(format_args!("[S6.PAGING] table allocation rollback: FAILED"));
+        qemu_test_exit_failure();
+    }
+    #[cfg(feature = "qemu-test")]
+    serial::write_line(format_args!("[S6.PAGING] table allocation rollback: PASSED"));
 
     let hardware = hal::init();
     if !hal::acpi::self_test() {

@@ -270,7 +270,13 @@ fn worker_task() -> ! {
         // Submissions to already visited slots latch a scheduler event.
         let mut next_slot = 0;
         while process_one(&mut next_slot) {}
-        task::wait_for_event();
+        // A network-progress signal remains the fast path. The one-tick
+        // deadline is the liveness backstop for SMP hand-off races: a blocked
+        // socket is retried even if readiness changed between the final queue
+        // pass and the scheduler event hand-off. Unlike self-signalling, this
+        // cannot turn WouldBlock into a busy retry loop.
+        let deadline = crate::timer::ticks().saturating_add(1);
+        task::wait_for_event_until(deadline);
     }
 }
 

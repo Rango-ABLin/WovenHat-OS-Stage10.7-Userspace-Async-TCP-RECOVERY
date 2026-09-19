@@ -19,6 +19,9 @@ mod config {
     pub const MAX_ASYNC_NETWORK_REQUESTS: usize = 4;
     pub const MAX_IO_SIZE: usize = 16;
 }
+mod timer {
+    pub fn ticks() -> u64 { 0 }
+}
 mod task {
     use std::sync::atomic::{AtomicU64, Ordering};
     pub type TaskId = u64;
@@ -39,6 +42,7 @@ mod task {
     #[derive(Debug)]
     pub struct Parked;
     pub fn wait_for_event() { std::panic::panic_any(Parked); }
+    pub fn wait_for_event_until(_: u64) { std::panic::panic_any(Parked); }
 }
 mod async_op {
     use std::sync::atomic::{AtomicU64, Ordering};

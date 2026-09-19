@@ -2,7 +2,7 @@ use x86_64::{
     registers::control::{Cr3, Cr3Flags},
     registers::model_specific::{Efer, EferFlags},
     structures::paging::{
-        mapper::TranslateResult, FrameAllocator, Mapper, OffsetPageTable, Page, PageSize,
+        mapper::{MapperFlush, TranslateResult}, FrameAllocator, Mapper, OffsetPageTable, Page, PageSize,
         PageTable, PageTableFlags, PhysFrame, Size4KiB, Translate,
     },
     VirtAddr,
@@ -12,6 +12,8 @@ use crate::{irq_lock::IrqMutex, memory};
 
 const TEST_PAGE_ADDRESS: u64 = 0x4444_4444_0000;
 const TEST_VALUE: u64 = 0x574F_5645_4E48_4154;
+#[cfg(feature = "qemu-test")]
+const TEST_TABLE_FAILURE_ADDRESS: u64 = 0x5555_0000_0000;
 
 /// Maximum number of physical frames currently participating in COW sharing.
 const MAX_COW_FRAMES: usize = 1024;
@@ -131,6 +133,110 @@ pub enum MapRangeError {
     OutOfFrames,
     MappingFailed,
     NotMapped,
+}
+
+/// The x86_64 mapper can allocate a P3, P2, and P1 table before reporting a
+/// later failure. Record those frames so a failed map cannot strand them.
+struct TableFrameRecorder<'a> {
+    allocator: &'a mut memory::PhysicalFrameAllocator,
+    frames: [Option<PhysFrame<Size4KiB>>; 3],
+    count: usize,
+    limit: usize,
+}
+
+impl<'a> TableFrameRecorder<'a> {
+    fn new(allocator: &'a mut memory::PhysicalFrameAllocator, limit: usize) -> Self {
+        Self { allocator, frames: [None; 3], count: 0, limit }
+    }
+}
+
+// SAFETY: Every frame is obtained from the uniquely borrowed physical
+// allocator. The recorder only limits and remembers table-frame allocations.
+unsafe impl FrameAllocator<Size4KiB> for TableFrameRecorder<'_> {
+    fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
+        if self.count >= self.limit || self.count >= self.frames.len() {
+            return None;
+        }
+        let frame = self.allocator.allocate_frame()?;
+        self.frames[self.count] = Some(frame);
+        self.count += 1;
+        Some(frame)
+    }
+}
+
+fn reclaim_failed_tables(
+    mapper: &mut OffsetPageTable<'_>,
+    page: Page<Size4KiB>,
+    frames: [Option<PhysFrame<Size4KiB>>; 3],
+    allocator: &mut memory::PhysicalFrameAllocator,
+) -> bool {
+    let offset = mapper.phys_offset().as_u64();
+    for frame in frames.into_iter().rev().flatten() {
+        let address = frame.start_address().as_u64();
+        let root = mapper.level_4_table_mut();
+        let p4 = &mut root[page.p4_index()];
+        if p4.addr().as_u64() == address {
+            p4.set_unused();
+        } else {
+            if !p4.flags().contains(PageTableFlags::PRESENT)
+                || p4.flags().contains(PageTableFlags::HUGE_PAGE)
+            {
+                return false;
+            }
+            let Some(p3) = page_table_at_mut(offset, p4.addr().as_u64()) else {
+                return false;
+            };
+            let p3_entry = &mut p3[page.p3_index()];
+            if p3_entry.addr().as_u64() == address {
+                p3_entry.set_unused();
+            } else {
+                if !p3_entry.flags().contains(PageTableFlags::PRESENT)
+                    || p3_entry.flags().contains(PageTableFlags::HUGE_PAGE)
+                {
+                    return false;
+                }
+                let Some(p2) = page_table_at_mut(offset, p3_entry.addr().as_u64()) else {
+                    return false;
+                };
+                let p2_entry = &mut p2[page.p2_index()];
+                if p2_entry.addr().as_u64() != address {
+                    return false;
+                }
+                p2_entry.set_unused();
+            }
+        }
+        if !allocator.deallocate_frame(frame) {
+            return false;
+        }
+    }
+    true
+}
+
+fn map_to_reclaim_on_failure(
+    mapper: &mut OffsetPageTable<'_>,
+    page: Page<Size4KiB>,
+    frame: PhysFrame<Size4KiB>,
+    flags: PageTableFlags,
+    allocator: &mut memory::PhysicalFrameAllocator,
+    table_frame_limit: usize,
+) -> Result<MapperFlush<Size4KiB>, MapRangeError> {
+    let (result, frames) = {
+        let mut recorder = TableFrameRecorder::new(allocator, table_frame_limit);
+        // SAFETY: The caller supplied a unique data frame and the recorder
+        // forwards unique table frames from the physical allocator.
+        let result = unsafe { mapper.map_to(page, frame, flags, &mut recorder) };
+        (result, recorder.frames)
+    };
+    match result {
+        Ok(flush) => Ok(flush),
+        Err(_) => {
+            assert!(
+                reclaim_failed_tables(mapper, page, frames, allocator),
+                "failed page-table mapping could not reclaim its tables"
+            );
+            Err(MapRangeError::MappingFailed)
+        }
+    }
 }
 
 struct PagingState {
@@ -297,6 +403,44 @@ pub fn map_range_rollback_self_test() -> bool {
     rejected && first_absent && second_present && released
 }
 
+#[cfg(feature = "qemu-test")]
+pub fn table_allocation_rollback_self_test() -> bool {
+    let before = memory::stats().allocated_frames;
+    let page = Page::<Size4KiB>::containing_address(VirtAddr::new(TEST_TABLE_FAILURE_ADDRESS));
+    let passed = {
+        let mut paging = PAGING.lock();
+        let Some(mapper) = paging.mapper.as_mut() else {
+            return false;
+        };
+        if !mapper.level_4_table()[page.p4_index()].is_unused()
+            || mapper.translate_addr(page.start_address()).is_some()
+        {
+            return false;
+        }
+        let mut allocator = memory::allocator();
+        let mut passed = true;
+        for limit in [1, 2] {
+            let Some(frame) = allocator.allocate_frame() else {
+                return false;
+            };
+            let rejected = map_to_reclaim_on_failure(
+                mapper,
+                page,
+                frame,
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                &mut allocator,
+                limit,
+            ).is_err();
+            passed &= rejected
+                && mapper.level_4_table()[page.p4_index()].is_unused()
+                && mapper.translate_addr(page.start_address()).is_none()
+                && allocator.deallocate_frame(frame);
+        }
+        passed
+    };
+    passed && memory::stats().allocated_frames == before
+}
+
 pub fn map_range(start: u64, size: usize) -> Result<(), MapRangeError> {
     map_range_with_flags(
         start,
@@ -353,7 +497,7 @@ fn map_range_with_flags(
         } else if let Some(frame) = allocator.allocate_frame() {
             // SAFETY: Each page is checked to be unmapped and each frame comes
             // uniquely from the physical allocator. Both allocators are locked.
-            match unsafe { mapper.map_to(page, frame, flags, &mut *allocator) } {
+            match map_to_reclaim_on_failure(mapper, page, frame, flags, &mut allocator, 3) {
                 Ok(flush) => {
                     flush.flush();
                     crate::smp::shootdown();
@@ -456,7 +600,7 @@ fn map_user_range_in_impl(
         let failure = if mapper.translate_addr(page.start_address()).is_some() {
             Some(MapRangeError::AlreadyMapped)
         } else if let Some(frame) = allocator.allocate_frame() {
-            match unsafe { mapper.map_to(page, frame, flags, &mut *allocator) } {
+            match map_to_reclaim_on_failure(&mut mapper, page, frame, flags, &mut allocator, 3) {
                 Ok(flush) => {
                     if synchronize_tlb {
                         if Cr3::read().0 == address_space.level_4_frame {
