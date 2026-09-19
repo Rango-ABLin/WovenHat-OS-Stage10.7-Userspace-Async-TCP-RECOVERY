@@ -38,7 +38,7 @@ mod console;
 mod completion_queue;
 mod completion_port;
 mod device;
-#[cfg(any(feature = "stage13-1-test", feature = "stage13-2-test", feature = "stage13-3-test", feature = "stage13-4-test", feature = "stage13-5-test"))]
+#[cfg(any(feature = "stage13-1-test", feature = "stage13-2-test", feature = "stage13-3-test", feature = "stage13-4-test", feature = "stage13-5-test", feature = "stage13-6-test"))]
 mod driver;
 mod journal;
 mod elf;
@@ -62,7 +62,7 @@ mod network;
 mod nvme;
 #[cfg(feature = "stage13-4-test")]
 mod ahci;
-#[cfg(feature = "stage13-5-test")]
+#[cfg(any(feature = "stage13-5-test", feature = "stage13-6-test"))]
 mod xhci;
 mod page_cache;
 mod paging;
@@ -2001,6 +2001,33 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             }
             Err(error) => {
                 serial::write_line(format_args!("[S13.5] xHCI USB core: FAILED init {:?}", error));
+                qemu_test_exit_failure();
+            }
+        }
+    }
+    #[cfg(feature = "stage13-6-test")]
+    {
+        if !xhci::self_test() || !xhci::probe() {
+            serial::write_line(format_args!("[S13.6] USB HID: FAILED probe/self-test"));
+            qemu_test_exit_failure();
+        }
+        match xhci::init_hid() {
+            Ok(summary) => {
+                let report = match xhci::poll_hid_report() {
+                    Ok(report) => report,
+                    Err(error) => {
+                        serial::write_line(format_args!("[S13.6] USB HID: FAILED report {:?}", error));
+                        qemu_test_exit_failure();
+                    }
+                };
+                serial::write_line(format_args!(
+                    "[S13.6] USB HID keyboard: PASSED slot={} port={} interface={} endpoint={:#x} max_packet={} report={:02x?}",
+                    summary.slot, summary.port, summary.interface, summary.endpoint, summary.max_packet, report
+                ));
+                qemu_test_exit_success();
+            }
+            Err(error) => {
+                serial::write_line(format_args!("[S13.6] USB HID: FAILED init {:?}", error));
                 qemu_test_exit_failure();
             }
         }
