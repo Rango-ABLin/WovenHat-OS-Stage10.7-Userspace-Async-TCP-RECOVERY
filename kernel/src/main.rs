@@ -63,6 +63,8 @@ mod hda;
 mod woven_audio;
 #[cfg(feature = "stage13-9-test")]
 mod wifi;
+#[cfg(feature = "stage13-9-test")]
+mod wifi80211;
 mod memory;
 mod network;
 #[cfg(feature = "stage13-3-test")]
@@ -290,14 +292,23 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         let wifi_pci = wifi::discover_pci();
         if !wifi::self_test() {
             serial::write_line(format_args!(
-                "[S13.9] WovenWiFi framework + PCI classification: FAILED"
+                "[S13.9A] WovenWiFi framework + PCI classification: FAILED"
             ));
             halt();
         }
         serial::write_line(format_args!(
-            "[S13.9] WovenWiFi framework + PCI classification: PASSED network={} wireless_candidates={}",
+            "[S13.9A] WovenWiFi framework + PCI classification: PASSED network={} wireless_candidates={}",
             wifi_pci.network_controllers,
             wifi_pci.wireless_candidates
+        ));
+        if !wifi80211::self_test() {
+            serial::write_line(format_args!(
+                "[S13.9B] IEEE 802.11 frame/IE core: FAILED"
+            ));
+            halt();
+        }
+        serial::write_line(format_args!(
+            "[S13.9B] IEEE 802.11 frame/IE core: PASSED"
         ));
     }
 
