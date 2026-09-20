@@ -77,6 +77,8 @@ mod wifi_crypto;
 mod wifi_wpa2;
 #[cfg(feature = "stage13-9-test")]
 mod wifi_gtk;
+#[cfg(feature = "stage13-9-test")]
+mod wifi_ccmp;
 mod memory;
 mod network;
 #[cfg(feature = "stage13-3-test")]
@@ -375,6 +377,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         }
         serial::write_line(format_args!(
             "[S13.9H] GTK + encrypted key data: PASSED"
+        ));
+        if !wifi_ccmp::self_test() {
+            serial::write_line(format_args!(
+                "[S13.9I] CCMP protected data path: FAILED"
+            ));
+            halt();
+        }
+        serial::write_line(format_args!(
+            "[S13.9I] CCMP protected data path: PASSED"
         ));
         if !wifi_scan::self_test() {
             serial::write_line(format_args!(
