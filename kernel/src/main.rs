@@ -79,6 +79,8 @@ mod wifi_wpa2;
 mod wifi_gtk;
 #[cfg(feature = "stage13-9-test")]
 mod wifi_ccmp;
+#[cfg(feature = "stage13-9-test")]
+mod wifi_net;
 mod memory;
 mod network;
 #[cfg(feature = "stage13-3-test")]
@@ -386,6 +388,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         }
         serial::write_line(format_args!(
             "[S13.9I] CCMP protected data path: PASSED"
+        ));
+        if !wifi_net::self_test() {
+            serial::write_line(format_args!(
+                "[S13.9J] WovenWiFi <-> WovenNet integration: FAILED"
+            ));
+            halt();
+        }
+        serial::write_line(format_args!(
+            "[S13.9J] WovenWiFi <-> WovenNet integration: PASSED"
         ));
         if !wifi_scan::self_test() {
             serial::write_line(format_args!(
