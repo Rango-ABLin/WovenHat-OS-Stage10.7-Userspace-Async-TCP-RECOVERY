@@ -466,6 +466,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             halt();
         }
         serial::write_line(format_args!("[S13.9R] entropy/network randomness split: PASSED"));
+        if !wifi_session::wpa2_handoff_self_test() {
+            serial::write_line(format_args!("[S13.9S] WPA2 supplicant/session key handoff: FAILED"));
+            halt();
+        }
+        serial::write_line(format_args!("[S13.9S] WPA2 supplicant/session key handoff: PASSED"));
         if !wifi_scan::self_test() {
             serial::write_line(format_args!(
                 "[S13.9C] beacon/probe scan pipeline: FAILED"

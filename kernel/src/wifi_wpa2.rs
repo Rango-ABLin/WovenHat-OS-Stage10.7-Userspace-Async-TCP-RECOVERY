@@ -204,6 +204,10 @@ impl Wpa2Supplicant {
         self.group.gtk().is_some()
     }
 
+    pub fn gtk_index(&self) -> Option<u8> {
+        self.group.gtk().map(crate::wifi_gtk::GroupTemporalKey::index)
+    }
+
     pub fn fail(&mut self) {
         self.handshake.fail();
         self.ptk = None;
