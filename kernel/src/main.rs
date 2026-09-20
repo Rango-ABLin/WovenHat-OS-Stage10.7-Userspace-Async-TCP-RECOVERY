@@ -83,6 +83,8 @@ mod wifi_ccmp;
 mod wifi_net;
 #[cfg(feature = "stage13-9-test")]
 mod wifi_backend;
+#[cfg(feature = "stage13-9-test")]
+mod wifi_recovery;
 mod memory;
 mod network;
 #[cfg(feature = "stage13-3-test")]
@@ -408,6 +410,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         }
         serial::write_line(format_args!(
             "[S13.9K] Wi-Fi transport/backend contract: PASSED"
+        ));
+        if !wifi_recovery::self_test() {
+            serial::write_line(format_args!(
+                "[S13.9L] reconnect/timeout/lifecycle hardening: FAILED"
+            ));
+            halt();
+        }
+        serial::write_line(format_args!(
+            "[S13.9L] reconnect/timeout/lifecycle hardening: PASSED"
         ));
         if !wifi_scan::self_test() {
             serial::write_line(format_args!(
