@@ -461,6 +461,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             halt();
         }
         serial::write_line(format_args!("[S13.9Q] WPA2 association + RSN integration: PASSED"));
+        if !entropy::self_test() {
+            serial::write_line(format_args!("[S13.9R] entropy/network randomness split: FAILED"));
+            halt();
+        }
+        serial::write_line(format_args!("[S13.9R] entropy/network randomness split: PASSED"));
         if !wifi_scan::self_test() {
             serial::write_line(format_args!(
                 "[S13.9C] beacon/probe scan pipeline: FAILED"
