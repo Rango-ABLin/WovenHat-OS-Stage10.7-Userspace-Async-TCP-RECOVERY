@@ -87,6 +87,7 @@ mod wifi_backend;
 mod wifi_recovery;
 #[cfg(feature = "stage13-9-test")]
 mod wifi_session;
+mod wifi_smol;
 #[cfg(feature = "stage13-9-test")]
 mod wifi_security;
 mod memory;
@@ -476,6 +477,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             halt();
         }
         serial::write_line(format_args!("[S13.9T] backend RX/CCMP/Ethernet integration: PASSED"));
+        if !wifi_smol::self_test() {
+            serial::write_line(format_args!("[S13.9U] WovenWiFi/smoltcp transport adapter: FAILED"));
+            halt();
+        }
+        serial::write_line(format_args!("[S13.9U] WovenWiFi/smoltcp transport adapter: PASSED"));
         if !wifi_scan::self_test() {
             serial::write_line(format_args!(
                 "[S13.9C] beacon/probe scan pipeline: FAILED"

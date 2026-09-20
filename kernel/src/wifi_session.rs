@@ -109,6 +109,13 @@ impl WifiSession{
 
     pub const fn has_pairwise_keys(&self)->bool{self.bridge.is_some()}
 
+    pub fn is_active_epoch(&self,epoch:u32)->bool{
+        self.active_epoch==Some(epoch)
+            && self.recovery.epoch()==epoch
+            && self.recovery.state()==RecoveryState::Connected
+            && self.bridge.is_some()
+    }
+
     fn require_active(&self,epoch:u32)->Result<(),SessionError>{
         if self.active_epoch!=Some(epoch)||self.recovery.epoch()!=epoch{return Err(SessionError::StaleEpoch)}
         if self.recovery.state()!=RecoveryState::Connected{return Err(SessionError::WrongState)}
