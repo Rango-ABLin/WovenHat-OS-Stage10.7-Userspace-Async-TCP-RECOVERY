@@ -75,6 +75,8 @@ mod wifi_rsn;
 mod wifi_crypto;
 #[cfg(feature = "stage13-9-test")]
 mod wifi_wpa2;
+#[cfg(feature = "stage13-9-test")]
+mod wifi_gtk;
 mod memory;
 mod network;
 #[cfg(feature = "stage13-3-test")]
@@ -364,6 +366,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         }
         serial::write_line(format_args!(
             "[S13.9G] WPA2 4-way handshake integration: PASSED"
+        ));
+        if !wifi_gtk::self_test() {
+            serial::write_line(format_args!(
+                "[S13.9H] GTK + encrypted key data: FAILED"
+            ));
+            halt();
+        }
+        serial::write_line(format_args!(
+            "[S13.9H] GTK + encrypted key data: PASSED"
         ));
         if !wifi_scan::self_test() {
             serial::write_line(format_args!(
