@@ -1,8 +1,8 @@
-//! WovenWiFi Stage 13.9S — WPA2 supplicant-to-session key handoff.
+//! WovenWiFi Stage 13.9T — backend RX -> CCMP -> Ethernet session integration.
 //!
-//! A connected data session may now be activated directly from a completed
-//! WPA2 supplicant. This prevents a second, detached key-install path from
-//! deciding independently that the link is secure.
+//! Completes the virtual receive path so backend-delivered protected 802.11
+//! frames are authenticated/decrypted by the existing CCMP bridge before being
+//! surfaced as Ethernet frames to WovenNet-facing callers.
 
 use crate::wifi_backend::{BackendError,VirtualBackend,WifiBackend,MAX_80211_FRAME};
 use crate::wifi_net::{BridgeError,WifiNetBridge};
@@ -34,10 +34,6 @@ impl WifiSession{
         Ok(self.recovery.begin_connect(now,timeout)?)
     }
 
-    /// Legacy/internal pairwise installer retained for narrow testing and
-    /// non-WPA2 callers. WPA2 connection flow should use
-    /// `activate_from_wpa2`, which gates activation on a completed handshake
-    /// and installed GTK.
     pub fn install_pairwise(&mut self,epoch:u32,station:[u8;6],bssid:[u8;6],tk:&[u8])->Result<(),SessionError>{
         if epoch!=self.recovery.epoch(){return Err(SessionError::StaleEpoch)}
         if self.recovery.state()!=RecoveryState::Connecting{return Err(SessionError::WrongState)}
@@ -76,6 +72,16 @@ impl WifiSession{
         Ok(n)
     }
 
+    /// Pull one backend RX frame through peer/direction checks, CCMP replay and
+    /// authentication, then LLC/SNAP decapsulation into Ethernet-II.
+    pub fn receive_ethernet(&mut self,epoch:u32,out:&mut[u8])->Result<Option<usize>,SessionError>{
+        self.require_active(epoch)?;
+        let mut frame=[0u8;MAX_80211_FRAME];
+        let Some(n)=self.backend.receive_into(&mut frame)? else{return Ok(None)};
+        let bridge=self.bridge.as_mut().ok_or(SessionError::NoKeys)?;
+        Ok(Some(bridge.decapsulate(&frame[..n],out)?))
+    }
+
     pub fn poll_timeout(&mut self,now:u64)->bool{
         if self.recovery.poll_timeout(now){self.clear_association();true}else{false}
     }
@@ -94,6 +100,11 @@ impl WifiSession{
 
     pub fn dequeue_tx(&mut self,out:&mut[u8])->Result<Option<usize>,SessionError>{
         Ok(self.backend.dequeue_tx(out)?)
+    }
+
+    #[cfg(feature="stage13-9-test")]
+    pub fn inject_rx_for_test(&mut self,frame:&[u8])->Result<(),SessionError>{
+        Ok(self.backend.inject_rx(frame)?)
     }
 
     pub const fn has_pairwise_keys(&self)->bool{self.bridge.is_some()}
@@ -182,11 +193,7 @@ pub fn wpa2_handoff_self_test()->bool{
 
     let mut supplicant=Wpa2Supplicant::new(station);
     if supplicant.begin(profile,ap,snonce).is_err(){return false}
-
-    // Session activation must be impossible before the WPA2 handshake completes.
-    if session.activate_from_wpa2(epoch,station,ap,&supplicant)!=Err(SessionError::HandshakeIncomplete){
-        return false;
-    }
+    if session.activate_from_wpa2(epoch,station,ap,&supplicant)!=Err(SessionError::HandshakeIncomplete){return false}
 
     let mut msg1=[0u8;EAPOL_LEN];
     let Some(n1)=build(&mut msg1,PAIRWISE|ACK|DESC,1,anonce,&[])else{return false};
@@ -208,12 +215,7 @@ pub fn wpa2_handoff_self_test()->bool{
 
     if session.activate_from_wpa2(epoch,station,ap,&supplicant).is_err(){return false}
     if !session.has_pairwise_keys(){return false}
-
-    // Duplicate activation is rejected because recovery already moved to Connected;
-    // this prevents a second key/PN installation.
-    if session.activate_from_wpa2(epoch,station,ap,&supplicant)!=Err(SessionError::WrongState){
-        return false;
-    }
+    if session.activate_from_wpa2(epoch,station,ap,&supplicant)!=Err(SessionError::WrongState){return false}
 
     let peer=[2,0,0,0,0,3];
     let mut eth=[0u8;64];
@@ -224,4 +226,88 @@ pub fn wpa2_handoff_self_test()->bool{
 
     let next=session.disconnect();
     next!=epoch&&!session.has_pairwise_keys()
+}
+
+#[cfg(feature="stage13-9-test")]
+pub fn rx_path_self_test()->bool{
+    use crate::wifi_ccmp::{self,TemporalKey,TxState};
+
+    const RFC1042:[u8;6]=[0xaa,0xaa,0x03,0x00,0x00,0x00];
+
+    fn make_downlink(
+        key:&TemporalKey,
+        tx:&mut TxState,
+        station:[u8;6],
+        bssid:[u8;6],
+        source:[u8;6],
+        ethernet:&[u8],
+        out:&mut[u8],
+    )->Option<usize>{
+        if ethernet.len()<14{return None}
+        let mut h=[0u8;24];
+        h[0]=0x08;h[1]=0x02;
+        h[4..10].copy_from_slice(&station);
+        h[10..16].copy_from_slice(&bssid);
+        h[16..22].copy_from_slice(&source);
+
+        let mut payload=[0u8;1508];
+        payload[..6].copy_from_slice(&RFC1042);
+        payload[6..8].copy_from_slice(&ethernet[12..14]);
+        let n=8+ethernet.len()-14;
+        payload[8..n].copy_from_slice(&ethernet[14..]);
+        wifi_ccmp::protect(key,tx,&h,&payload[..n],0,out).ok()
+    }
+
+    let station=[0x02,0,0,0,0,1];
+    let ap=[0x02,0,0,0,0,2];
+    let peer=[0x02,0,0,0,0,3];
+    let tk=[0x44;16];
+
+    let mut session=WifiSession::new(2);
+    let Ok(epoch)=session.begin_connect(1,10)else{return false};
+    if session.install_pairwise(epoch,station,ap,&tk).is_err(){return false}
+
+    let mut ethernet=[0u8;64];
+    ethernet[..6].copy_from_slice(&station);
+    ethernet[6..12].copy_from_slice(&peer);
+    ethernet[12..14].copy_from_slice(&[0x08,0x00]);
+    for(i,b)in ethernet[14..].iter_mut().enumerate(){*b=i as u8}
+
+    let Ok(key)=TemporalKey::new(&tk)else{return false};
+    let mut ap_tx=TxState::new();
+
+    let mut frame=[0u8;MAX_80211_FRAME];
+    let Some(n)=make_downlink(&key,&mut ap_tx,station,ap,peer,&ethernet,&mut frame)else{return false};
+    if session.inject_rx_for_test(&frame[..n]).is_err(){return false}
+
+    let mut recovered=[0u8;1514];
+    let Ok(Some(rn))=session.receive_ethernet(epoch,&mut recovered)else{return false};
+    if recovered[..rn]!=ethernet{return false}
+
+    // Backend queue is empty after consuming the accepted frame.
+    if session.receive_ethernet(epoch,&mut recovered)!=Ok(None){return false}
+
+    // Replay is rejected at the session boundary.
+    if session.inject_rx_for_test(&frame[..n]).is_err(){return false}
+    if session.receive_ethernet(epoch,&mut recovered)
+        !=Err(SessionError::Bridge(BridgeError::Ccmp(wifi_ccmp::CcmpError::Replay)))
+    {return false}
+
+    // Tamper a fresh packet: it must fail authentication and must not advance
+    // the receive packet-number state, so the untampered copy can still pass.
+    let Some(n2)=make_downlink(&key,&mut ap_tx,station,ap,peer,&ethernet,&mut frame)else{return false};
+    let mut tampered=frame;
+    tampered[n2-1]^=1;
+    if session.inject_rx_for_test(&tampered[..n2]).is_err(){return false}
+    if session.receive_ethernet(epoch,&mut recovered)
+        !=Err(SessionError::Bridge(BridgeError::Ccmp(wifi_ccmp::CcmpError::Authentication)))
+    {return false}
+    if session.inject_rx_for_test(&frame[..n2]).is_err(){return false}
+    let Ok(Some(rn2))=session.receive_ethernet(epoch,&mut recovered)else{return false};
+    if recovered[..rn2]!=ethernet{return false}
+
+    let old=epoch;
+    let new=session.disconnect();
+    if new==old{return false}
+    session.receive_ethernet(old,&mut recovered)==Err(SessionError::StaleEpoch)
 }

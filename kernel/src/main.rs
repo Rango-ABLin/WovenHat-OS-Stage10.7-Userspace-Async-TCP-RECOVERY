@@ -471,6 +471,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             halt();
         }
         serial::write_line(format_args!("[S13.9S] WPA2 supplicant/session key handoff: PASSED"));
+        if !wifi_session::rx_path_self_test() {
+            serial::write_line(format_args!("[S13.9T] backend RX/CCMP/Ethernet integration: FAILED"));
+            halt();
+        }
+        serial::write_line(format_args!("[S13.9T] backend RX/CCMP/Ethernet integration: PASSED"));
         if !wifi_scan::self_test() {
             serial::write_line(format_args!(
                 "[S13.9C] beacon/probe scan pipeline: FAILED"
