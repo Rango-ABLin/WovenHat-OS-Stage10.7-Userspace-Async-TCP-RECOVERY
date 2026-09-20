@@ -155,6 +155,11 @@ fn wrap_test(kek:&[u8],plain:&[u8],out:&mut[u8])->Result<usize,GtkError>{
     for j in 0..=5u64{for i in 1..=n{let mut b=[0u8;16];b[..8].copy_from_slice(&a);b[8..].copy_from_slice(&out[i*8..(i+1)*8]);aes_encrypt(&key,&mut b);let mut ah=[0u8;8];ah.copy_from_slice(&b[..8]);a=(u64::from_be_bytes(ah)^(n as u64*j+i as u64)).to_be_bytes();out[i*8..(i+1)*8].copy_from_slice(&b[8..]);b.zeroize();}}
     key.zeroize();out[..8].copy_from_slice(&a);Ok(plain.len()+8)
 }
+#[cfg(feature = "stage13-9-test")]
+pub fn wrap_gtk_for_test(kek:&[u8],index:u8,gtk:[u8;GTK_LEN],out:&mut[u8])->Result<usize,GtkError>{
+    let mut kde=[0u8;24];kde[0]=0xdd;kde[1]=22;kde[2..5].copy_from_slice(&RSN_OUI);kde[5]=GTK_KDE_TYPE;kde[6]=index&3;kde[7]=0;kde[8..24].copy_from_slice(&gtk);
+    wrap_test(kek,&kde,out)
+}
 pub fn self_test()->bool{
     // FIPS-197 AES-128 known-answer vector, independent of RFC 3394.
     let key=[0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f];

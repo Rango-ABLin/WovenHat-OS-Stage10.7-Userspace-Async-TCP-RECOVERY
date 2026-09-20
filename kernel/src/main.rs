@@ -451,6 +451,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         serial::write_line(format_args!(
             "[S13.9O] kernel entropy/secure SNonce boundary: PASSED"
         ));
+        if !wifi_wpa2::self_test() {
+            serial::write_line(format_args!("[S13.9P] live WPA2 GTK/KRACK integration: FAILED"));
+            halt();
+        }
+        serial::write_line(format_args!("[S13.9P] live WPA2 GTK/KRACK integration: PASSED"));
         if !wifi_scan::self_test() {
             serial::write_line(format_args!(
                 "[S13.9C] beacon/probe scan pipeline: FAILED"
