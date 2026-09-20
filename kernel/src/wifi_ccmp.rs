@@ -80,7 +80,9 @@ fn cbc_mac(key:&[u8;16],n:&[u8;13],a:&[u8;22],msg:&[u8])->[u8;8]{
 fn ctr(key:&[u8;16],n:&[u8;13],counter:u16)->[u8;16]{let mut a=[0;16];a[0]=1;a[1..14].copy_from_slice(n);a[14..].copy_from_slice(&counter.to_be_bytes());aes(key,&mut a);a}
 
 pub fn protect(key:&TemporalKey,tx:&mut TxState,header:&[u8],payload:&[u8],key_id:u8,out:&mut[u8])->Result<usize,CcmpError>{
-    if header.len()!=DATA_HEADER_LEN||wifi80211::parse_data_header(header).is_err(){return Err(CcmpError::UnsupportedHeader)}
+    if header.len()!=DATA_HEADER_LEN{return Err(CcmpError::UnsupportedHeader)}
+    let parsed=wifi80211::parse_data_header(header).map_err(|_|CcmpError::UnsupportedHeader)?;
+    if (parsed.control.to_ds()&&parsed.control.is_from_ds())||parsed.control.subtype()>=8{return Err(CcmpError::UnsupportedHeader)}
     if payload.len()>MAX_PAYLOAD{return Err(CcmpError::PayloadTooLarge)}
     let total=DATA_HEADER_LEN+CCMP_HEADER_LEN+payload.len()+MIC_LEN;if out.len()<total{return Err(CcmpError::BufferTooSmall)}
     let pn=tx.next()?;out[..DATA_HEADER_LEN].copy_from_slice(header);out[1]|=0x40;write_ccmp_header(&mut out[DATA_HEADER_LEN..DATA_HEADER_LEN+8],pn,key_id);
@@ -90,7 +92,8 @@ pub fn protect(key:&TemporalKey,tx:&mut TxState,header:&[u8],payload:&[u8],key_i
 }
 pub fn unprotect(key:&TemporalKey,rx:&mut RxState,frame:&[u8],out:&mut[u8])->Result<usize,CcmpError>{
     if frame.len()<DATA_HEADER_LEN+CCMP_HEADER_LEN+MIC_LEN{return Err(CcmpError::InvalidFrame)}
-    let h=&frame[..DATA_HEADER_LEN];let parsed=wifi80211::parse_data_header(h).map_err(|_|CcmpError::UnsupportedHeader)?;if !parsed.control.protected(){return Err(CcmpError::InvalidFrame)}
+    let h=&frame[..DATA_HEADER_LEN];let parsed=wifi80211::parse_data_header(h).map_err(|_|CcmpError::UnsupportedHeader)?;if (parsed.control.to_ds()&&parsed.control.is_from_ds())||parsed.control.subtype()>=8{return Err(CcmpError::UnsupportedHeader)}
+    if !parsed.control.protected(){return Err(CcmpError::InvalidFrame)}
     let pn=read_pn(&frame[DATA_HEADER_LEN..DATA_HEADER_LEN+8])?;if pn<=rx.last_pn{return Err(CcmpError::Replay)}
     let clen=frame.len()-DATA_HEADER_LEN-8-8;if clen>MAX_PAYLOAD||out.len()<clen{return Err(CcmpError::BufferTooSmall)}
     let n=nonce(h,pn);for (i,chunk) in frame[DATA_HEADER_LEN+8..DATA_HEADER_LEN+8+clen].chunks(16).enumerate(){let s=ctr(&key.0,&n,(i+1)as u16);for j in 0..chunk.len(){out[i*16+j]=chunk[j]^s[j];}}

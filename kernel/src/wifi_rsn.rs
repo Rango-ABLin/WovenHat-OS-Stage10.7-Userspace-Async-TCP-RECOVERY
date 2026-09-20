@@ -150,6 +150,7 @@ pub fn parse_eapol_key(frame: &[u8]) -> Result<EapolKey<'_>, EapolError> {
     mic.copy_from_slice(&b[77..93]);
     let key_data_len = read_u16_be(b, 93)? as usize;
     let key_data_end = 95usize.checked_add(key_data_len).ok_or(EapolError::InvalidBodyLength)?;
+    if key_data_end != body_len || frame.len() != 4 + body_len { return Err(EapolError::InvalidBodyLength); }
     let key_data = b.get(95..key_data_end).ok_or(EapolError::InvalidBodyLength)?;
     Ok(EapolKey {
         protocol_version: frame[0],

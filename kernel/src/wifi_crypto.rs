@@ -27,7 +27,6 @@ pub enum CryptoError {
     Hmac,
 }
 
-#[derive(Clone)]
 pub struct Pmk([u8; PMK_LEN]);
 
 impl Pmk {
@@ -37,7 +36,6 @@ impl Drop for Pmk {
     fn drop(&mut self) { self.0.zeroize(); }
 }
 
-#[derive(Clone)]
 pub struct Ptk([u8; PTK_LEN]);
 
 impl Ptk {
