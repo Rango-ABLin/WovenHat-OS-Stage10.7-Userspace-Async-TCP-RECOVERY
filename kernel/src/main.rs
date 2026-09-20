@@ -87,6 +87,8 @@ mod wifi_backend;
 mod wifi_recovery;
 #[cfg(feature = "stage13-9-test")]
 mod wifi_session;
+#[cfg(feature = "stage13-9-test")]
+mod wifi_security;
 mod memory;
 mod network;
 #[cfg(feature = "stage13-3-test")]
@@ -430,6 +432,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         }
         serial::write_line(format_args!(
             "[S13.9M] cross-module integration closure: PASSED"
+        ));
+        if !wifi_security::self_test() {
+            serial::write_line(format_args!(
+                "[S13.9N] WPA2 security lifecycle integration: FAILED"
+            ));
+            halt();
+        }
+        serial::write_line(format_args!(
+            "[S13.9N] WPA2 security lifecycle integration: PASSED"
         ));
         if !wifi_scan::self_test() {
             serial::write_line(format_args!(

@@ -55,7 +55,7 @@ pub enum GtkError { InvalidKek, InvalidWrappedLength, Integrity, KeyDataTooLarge
 pub enum InstallOutcome { Installed, Retransmission }
 
 pub struct GroupTemporalKey { key:[u8;GTK_LEN], index:u8 }
-impl GroupTemporalKey { pub const fn index(&self)->u8{self.index} pub fn expose(&self)->&[u8;GTK_LEN]{&self.key} }
+impl GroupTemporalKey { pub const fn index(&self)->u8{self.index} pub fn expose(&self)->&[u8;GTK_LEN]{&self.key} #[cfg(feature = "stage13-9-test")] pub fn from_test_bytes(index:u8,key:[u8;GTK_LEN])->Self{Self{key,index:index&3}} }
 impl Drop for GroupTemporalKey { fn drop(&mut self){self.key.zeroize();} }
 
 pub struct GroupKeyStore { gtk:Option<GroupTemporalKey>, replay_counter:u64, installed:bool, installs:u64 }

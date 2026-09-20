@@ -39,6 +39,8 @@ impl Drop for Pmk {
 pub struct Ptk([u8; PTK_LEN]);
 
 impl Ptk {
+    #[cfg(feature = "stage13-9-test")]
+    pub fn from_test_bytes(bytes: [u8; PTK_LEN]) -> Self { Self(bytes) }
     pub fn kck(&self) -> &[u8] { &self.0[..KCK_LEN] }
     pub fn kek(&self) -> &[u8] { &self.0[KCK_LEN..KCK_LEN + KEK_LEN] }
     pub fn tk(&self) -> &[u8] { &self.0[KCK_LEN + KEK_LEN..] }
