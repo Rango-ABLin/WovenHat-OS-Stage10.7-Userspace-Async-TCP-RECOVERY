@@ -37,6 +37,7 @@ pub enum SupplicantError {
     WrongNonce,
     BufferTooSmall,
     UnsupportedDescriptorVersion,
+    Entropy(crate::entropy::EntropyError),
 }
 
 impl From<EapolError> for SupplicantError {
@@ -89,6 +90,14 @@ impl Wpa2Supplicant {
         Ok(())
     }
 
+    pub fn begin_with_secure_nonce(
+        &mut self,
+        profile: RsnProfile,
+        authenticator: [u8; 6],
+    ) -> Result<(), SupplicantError> {
+        let snonce = crate::entropy::snonce().map_err(SupplicantError::Entropy)?;
+        self.begin(profile, authenticator, snonce)
+    }
     pub fn receive_message1_build_message2(
         &mut self,
         pmk: &Pmk,

@@ -1,73 +1,78 @@
-//! Minimal kernel entropy source.
+//! WovenHat Stage 13.9O — fail-closed kernel entropy boundary.
 //!
-//! Security-sensitive subsystems (initial TCP sequence numbers, and later
-//! ASLR / stack-canary values) must not be seeded from a fixed compile-time
-//! constant: a static seed makes the corresponding sequence numbers, and
-//! therefore any values derived from them, predictable to a network
-//! attacker. Before this module existed, `network.rs` seeded smoltcp's
-//! `Config::random_seed` with a single hardcoded `u64` literal.
-//!
-//! `random_u64()` prefers the CPU's hardware RDRAND instruction (already
-//! detected at boot in `hal::cpu::detect_features` but previously unused
-//! anywhere in the kernel). RDRAND is not guaranteed to be present on every
-//! target (older QEMU CPU models, some real hardware), and the instruction
-//! itself is documented by Intel/AMD as occasionally failing to produce a
-//! value under heavy load, so callers get a graceful, always-available
-//! fallback rather than a panic or an `Option`.
-//!
-//! The fallback mixes the monotonic timer tick count with the memory
-//! address of a freshly stack-allocated value (ASLR-relevant only in that
-//! kernel stack placement is not attacker-controlled) through a SplitMix64
-//! step. This is **not** cryptographically secure — it is a best-effort
-//! improvement over a fixed constant for platforms without RDRAND, not a
-//! substitute for real hardware entropy. Do not use this fallback path for
-//! anything that needs cryptographic unpredictability (key material,
-//! nonces); it exists only to avoid a fully static seed.
+//! Security-sensitive callers ask this service for bytes. If no reviewed
+//! entropy source is registered, requests fail; clocks/TSC/PIDs/MACs are never
+//! silently substituted. The deterministic source exists only in stage13-9-test.
 
-use x86_64::instructions::random::RdRand;
+use spin::Mutex;
+use zeroize::Zeroize;
 
-/// Returns a best-effort random `u64`.
-///
-/// Tries hardware RDRAND first (a handful of attempts, since RDRAND may
-/// transiently fail to produce a value per the ISA documentation). Falls
-/// back to a SplitMix64 mix of the boot tick counter and a stack address
-/// if RDRAND is unavailable or exhausted its retries.
-pub fn random_u64() -> u64 {
-    if let Some(rdrand) = RdRand::new() {
-        for _ in 0..8 {
-            if let Some(value) = rdrand.get_u64() {
-                return value;
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum EntropyError { Unavailable, InvalidRequest }
+
+struct Pool { seeded:bool, key:[u8;32], counter:u64 }
+impl Pool {
+    const fn new()->Self{Self{seeded:false,key:[0;32],counter:0}}
+    fn clear(&mut self){self.key.zeroize();self.counter=0;self.seeded=false;}
+    fn seed(&mut self,seed:[u8;32]){self.clear();self.key=seed;self.counter=1;self.seeded=true;}
+    fn fill(&mut self,out:&mut[u8])->Result<(),EntropyError>{
+        if out.is_empty(){return Err(EntropyError::InvalidRequest)}
+        if !self.seeded{return Err(EntropyError::Unavailable)}
+        // Stage O establishes the fail-closed service boundary. This mixer is
+        // test-only because production seeding is deliberately unavailable.
+        #[cfg(feature="stage13-9-test")]
+        {
+            let mut x=self.counter^u64::from_le_bytes(self.key[..8].try_into().unwrap_or([0;8]));
+            for (i,b) in out.iter_mut().enumerate(){
+                x^=x<<13;x^=x>>7;x^=x<<17;
+                *b=(x as u8)^self.key[i%32];
             }
+            self.counter=self.counter.wrapping_add(1);
+            Ok(())
         }
-    }
-    fallback_u64()
-}
-
-/// Returns a value in `[min, max)`, or `min` when the range is empty.
-///
-/// Rejection sampling avoids the modulo bias that would otherwise make small
-/// ASLR ranges slightly more likely at their lower addresses.
-pub fn random_range(min: u64, max: u64) -> u64 {
-    if min >= max {
-        return min;
-    }
-    let span = max - min;
-    let threshold = span.wrapping_neg() % span;
-    loop {
-        let value = random_u64();
-        if value >= threshold {
-            return min + value % span;
-        }
+        #[cfg(not(feature="stage13-9-test"))]
+        { let _=out; Err(EntropyError::Unavailable) }
     }
 }
+static POOL:Mutex<Pool>=Mutex::new(Pool::new());
 
-/// SplitMix64-style fallback mix. Not cryptographically secure — see the
-/// module-level documentation.
-fn fallback_u64() -> u64 {
-    let stack_marker: u8 = 0;
-    let stack_addr = &stack_marker as *const u8 as u64;
-    let mut z = crate::timer::ticks().wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ stack_addr;
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
+pub fn fill_secure(out:&mut[u8])->Result<(),EntropyError>{POOL.lock().fill(out)}
+pub fn snonce()->Result<[u8;32],EntropyError>{
+    let mut n=[0u8;32];
+    fill_secure(&mut n)?;
+    Ok(n)
+}
+
+pub fn try_random_u64()->Result<u64,EntropyError>{
+    let mut bytes=[0u8;8];
+    fill_secure(&mut bytes)?;
+    Ok(u64::from_le_bytes(bytes))
+}
+
+pub fn random_u64()->u64{
+    try_random_u64().unwrap_or(0)
+}
+pub fn available()->bool{POOL.lock().seeded}
+
+#[cfg(feature="stage13-9-test")]
+pub fn seed_for_test(seed:[u8;32]){POOL.lock().seed(seed)}
+#[cfg(feature="stage13-9-test")]
+pub fn clear_for_test(){POOL.lock().clear()}
+
+pub fn self_test()->bool{
+    #[cfg(feature="stage13-9-test")]
+    {
+        clear_for_test();
+        let mut unavailable=[0u8;32];
+        if fill_secure(&mut unavailable)!=Err(EntropyError::Unavailable)||available(){return false}
+        seed_for_test([0xa5;32]);
+        if !available(){return false}
+        let Ok(a)=snonce()else{return false};
+        let Ok(b)=snonce()else{return false};
+        if a==[0;32]||b==[0;32]||a==b{return false}
+        clear_for_test();
+        !available()&&snonce()==Err(EntropyError::Unavailable)
+    }
+    #[cfg(not(feature="stage13-9-test"))]
+    { !available() }
 }
