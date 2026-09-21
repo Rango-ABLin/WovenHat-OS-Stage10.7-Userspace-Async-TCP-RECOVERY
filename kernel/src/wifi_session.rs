@@ -73,6 +73,14 @@ impl WifiSession{
         self.active_epoch=Some(epoch);
         Ok(())
     }
+    pub fn refresh_group_key_from_wpa2(&mut self,epoch:u32,supplicant:&Wpa2Supplicant)->Result<(),SessionError>{
+        self.require_active(epoch)?;
+        if supplicant.state()!=SupplicantState::Completed{return Err(SessionError::HandshakeIncomplete)}
+        let (index,gtk)=supplicant.group_temporal_key().ok_or(SessionError::MissingGtk)?;
+        let bridge=self.bridge.as_mut().ok_or(SessionError::NoKeys)?;
+        bridge.install_group_key(index,gtk)?;
+        Ok(())
+    }
     pub fn transmit_ethernet(&mut self,epoch:u32,ethernet:&[u8])->Result<usize,SessionError>{
         self.require_active(epoch)?;
         let bridge=self.bridge.as_mut().ok_or(SessionError::NoKeys)?;

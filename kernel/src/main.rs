@@ -417,6 +417,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             qemu_test_exit_failure();
         }
         serial::write_line(format_args!("[S13.9Y] WPA2 reconnect/rekey lifecycle: PASSED"));
+        if !wifi_wpa2::group_rekey_self_test() {
+            serial::write_line(format_args!("[S13.9Z] WPA2 live group-key rekey: FAILED"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!("[S13.9Z] WPA2 live group-key rekey: PASSED"));
         if !wifi_backend::self_test() {
             serial::write_line(format_args!(
                 "[S13.9K] Wi-Fi transport/backend contract: FAILED"

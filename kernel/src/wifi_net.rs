@@ -43,7 +43,7 @@ impl WifiNetBridge {
     }
     pub const fn tx_packet_number(&self)->u64{self.tx.packet_number()}
     pub const fn rx_packet_number(&self)->u64{self.rx.last_packet_number()}
-    pub fn install_group_key(&mut self,index:u8,gtk:&[u8])->Result<(),BridgeError>{self.group=Some((index&3,TemporalKey::new(gtk)?,RxState::new()));Ok(())}
+    pub fn install_group_key(&mut self,index:u8,gtk:&[u8])->Result<(),BridgeError>{let next=TemporalKey::new(gtk)?;self.group=Some((index&3,next,RxState::new()));Ok(())}
     pub fn group_rx_packet_number(&self)->u64{self.group.as_ref().map_or(0,|(_,_,rx)|rx.last_packet_number())}
 
     /// Convert one WovenNet Ethernet-II frame to a protected station->DS frame.
