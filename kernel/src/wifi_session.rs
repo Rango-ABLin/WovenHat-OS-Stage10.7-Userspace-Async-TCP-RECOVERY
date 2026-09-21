@@ -52,7 +52,8 @@ impl WifiSession{
         if supplicant.state()!=SupplicantState::Completed{return Err(SessionError::HandshakeIncomplete)}
         if !supplicant.gtk_installed(){return Err(SessionError::MissingGtk)}
         let tk=supplicant.temporal_key().ok_or(SessionError::NoKeys)?;
-        self.activate_bridge(epoch,station,bssid,tk)
+        let (gtk_index,gtk)=supplicant.group_temporal_key().ok_or(SessionError::MissingGtk)?;
+        self.activate_bridge_with_group(epoch,station,bssid,tk,gtk_index,gtk)
     }
 
     fn activate_bridge(&mut self,epoch:u32,station:[u8;6],bssid:[u8;6],tk:&[u8])->Result<(),SessionError>{
@@ -63,6 +64,15 @@ impl WifiSession{
         Ok(())
     }
 
+    fn activate_bridge_with_group(&mut self,epoch:u32,station:[u8;6],bssid:[u8;6],tk:&[u8],gtk_index:u8,gtk:&[u8])->Result<(),SessionError>{
+        let mut bridge=WifiNetBridge::new(station,bssid,tk)?;
+        bridge.install_group_key(gtk_index,gtk)?;
+        self.bridge=Some(bridge);
+        self.backend.set_up(true);
+        self.recovery.connected(epoch)?;
+        self.active_epoch=Some(epoch);
+        Ok(())
+    }
     pub fn transmit_ethernet(&mut self,epoch:u32,ethernet:&[u8])->Result<usize,SessionError>{
         self.require_active(epoch)?;
         let bridge=self.bridge.as_mut().ok_or(SessionError::NoKeys)?;

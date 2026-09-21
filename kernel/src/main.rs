@@ -407,6 +407,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         serial::write_line(format_args!(
             "[S13.9J] WovenWiFi <-> WovenNet integration: PASSED"
         ));
+        if !wifi_net::group_ccmp_self_test() {
+            serial::write_line(format_args!("[S13.9X] GTK/group-addressed CCMP data path: FAILED"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!("[S13.9X] GTK/group-addressed CCMP data path: PASSED"));
         if !wifi_backend::self_test() {
             serial::write_line(format_args!(
                 "[S13.9K] Wi-Fi transport/backend contract: FAILED"

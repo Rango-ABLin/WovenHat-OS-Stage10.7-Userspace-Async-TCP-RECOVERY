@@ -204,6 +204,10 @@ impl Wpa2Supplicant {
         self.group.gtk().is_some()
     }
 
+    pub(crate) fn group_temporal_key(&self) -> Option<(u8, &[u8; wifi_gtk::GTK_LEN])> {
+        self.group.gtk().map(|gtk| (gtk.index(), gtk.expose()))
+    }
+
     pub fn gtk_index(&self) -> Option<u8> {
         self.group.gtk().map(crate::wifi_gtk::GroupTemporalKey::index)
     }
