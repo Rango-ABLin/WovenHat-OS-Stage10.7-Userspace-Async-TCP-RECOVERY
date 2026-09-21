@@ -8,7 +8,11 @@
 //! Register layouts, firmware protocols, DMA ring formats, interrupts, channel
 //! control, and RF behavior remain chipset-specific work for later stages.
 
-use crate::hal::pci;
+use core::sync::atomic::{fence, Ordering};
+
+use x86_64::structures::paging::{PhysFrame, Size4KiB};
+
+use crate::{hal::pci, memory, paging};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HwBindError {
@@ -255,6 +259,201 @@ impl HardwareQueues {
     }
 }
 
+pub const DMA_PAGE_SIZE: usize = 4096;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DmaMemoryError {
+    OutOfFrames,
+    DirectMapUnavailable,
+    AddressOverflow,
+}
+
+/// One kernel-owned 4 KiB frame suitable for a device DMA buffer.
+///
+/// The frame remains exclusively owned by this value and is returned to the
+/// physical allocator on Drop. The virtual address is the bootloader direct
+/// mapping of the same physical frame, so CPU and device refer to one backing
+/// allocation without copying.
+pub struct DmaPage {
+    frame: PhysFrame<Size4KiB>,
+    physical_address: u64,
+    virtual_address: u64,
+}
+
+impl DmaPage {
+    pub fn allocate_zeroed() -> Result<Self, DmaMemoryError> {
+        let frame = memory::allocate_frame().ok_or(DmaMemoryError::OutOfFrames)?;
+        let physical_address = frame.start_address().as_u64();
+        let Some(offset) = paging::physical_memory_offset() else {
+            let _ = memory::deallocate_frame(frame);
+            return Err(DmaMemoryError::DirectMapUnavailable);
+        };
+        let Some(virtual_address) = offset.checked_add(physical_address) else {
+            let _ = memory::deallocate_frame(frame);
+            return Err(DmaMemoryError::AddressOverflow);
+        };
+
+        // SAFETY: `frame` is exclusively owned by this DmaPage and the
+        // bootloader direct map makes the complete 4 KiB frame writable at
+        // `virtual_address`.
+        unsafe {
+            core::ptr::write_bytes(virtual_address as *mut u8, 0, DMA_PAGE_SIZE);
+        }
+        Ok(Self {
+            frame,
+            physical_address,
+            virtual_address,
+        })
+    }
+
+    pub const fn physical_address(&self) -> u64 { self.physical_address }
+    pub const fn virtual_address(&self) -> u64 { self.virtual_address }
+    pub const fn len(&self) -> usize { DMA_PAGE_SIZE }
+    pub const fn is_empty(&self) -> bool { false }
+
+    pub fn write_u32(&mut self, offset: usize, value: u32) -> Result<(), DmaMemoryError> {
+        if offset & 3 != 0 || offset.checked_add(4).is_none_or(|end| end > DMA_PAGE_SIZE) {
+            return Err(DmaMemoryError::AddressOverflow);
+        }
+        // SAFETY: Bounds/alignment were checked and this DmaPage uniquely owns
+        // the backing frame for the duration of the write.
+        unsafe {
+            ((self.virtual_address + offset as u64) as *mut u32).write_volatile(value);
+        }
+        Ok(())
+    }
+
+    pub fn read_u32(&self, offset: usize) -> Result<u32, DmaMemoryError> {
+        if offset & 3 != 0 || offset.checked_add(4).is_none_or(|end| end > DMA_PAGE_SIZE) {
+            return Err(DmaMemoryError::AddressOverflow);
+        }
+        // SAFETY: Bounds/alignment were checked and the direct mapping remains
+        // live while self owns the physical frame.
+        Ok(unsafe {
+            ((self.virtual_address + offset as u64) as *const u32).read_volatile()
+        })
+    }
+}
+
+impl Drop for DmaPage {
+    fn drop(&mut self) {
+        // The allocator rejects duplicate returns; ownership of `frame` is
+        // confined to this value, so a normal Drop returns it exactly once.
+        let _ = memory::deallocate_frame(self.frame);
+    }
+}
+
+/// Publish CPU writes before handing DMA ownership to a device.
+pub fn dma_publish() {
+    fence(Ordering::Release);
+}
+
+/// Observe device DMA writes before the CPU consumes a completed descriptor.
+pub fn dma_consume() {
+    fence(Ordering::Acquire);
+}
+
+/// Audited volatile 32-bit register access over an already mapped MMIO window.
+///
+/// Construction is unsafe because the caller must prove that `virtual_base`
+/// denotes a live device mapping for the complete span. Offset validation and
+/// all volatile pointer operations are then contained here.
+pub struct VolatileMmio32 {
+    region: MmioRegion,
+    virtual_base: u64,
+}
+
+impl VolatileMmio32 {
+    /// # Safety
+    ///
+    /// `virtual_base..virtual_base + region.span()` must be a valid, writable
+    /// kernel mapping of the device register window for the lifetime of this
+    /// value. No ordinary RAM alias may be concurrently treated as Rust data.
+    pub const unsafe fn from_mapped(region: MmioRegion, virtual_base: u64) -> Self {
+        Self { region, virtual_base }
+    }
+
+    pub fn read(&self, offset: usize) -> Result<u32, MmioError> {
+        let _ = self.region.register_address(offset)?;
+        let virtual_address = self
+            .virtual_base
+            .checked_add(offset as u64)
+            .ok_or(MmioError::OutOfRange)?;
+        // SAFETY: Constructor contract establishes a live MMIO mapping and
+        // register_address validated this aligned 32-bit access.
+        Ok(unsafe { (virtual_address as *const u32).read_volatile() })
+    }
+
+    pub fn write(&mut self, offset: usize, value: u32) -> Result<(), MmioError> {
+        let _ = self.region.register_address(offset)?;
+        let virtual_address = self
+            .virtual_base
+            .checked_add(offset as u64)
+            .ok_or(MmioError::OutOfRange)?;
+        // SAFETY: Constructor contract establishes a live writable MMIO
+        // mapping and register_address validated this aligned 32-bit access.
+        unsafe { (virtual_address as *mut u32).write_volatile(value) };
+        Ok(())
+    }
+}
+
+/// Map one physical device register page uncached/NX and return the isolated
+/// volatile accessor. Stage 13.10C deliberately limits a binding to one page;
+/// larger chipset BARs will be mapped page-by-page by the concrete driver.
+pub fn map_mmio_page(physical: u64) -> Result<VolatileMmio32, MmioError> {
+    if physical & (DMA_PAGE_SIZE as u64 - 1) != 0 {
+        return Err(MmioError::Unaligned);
+    }
+    let virtual_base = paging::map_mmio(physical).map_err(|_| MmioError::OutOfRange)?;
+    let region = MmioRegion::new(physical, DMA_PAGE_SIZE)?;
+    // SAFETY: paging::map_mmio created a writable, uncached, NX kernel mapping
+    // of the physical register page represented by `region`.
+    Ok(unsafe { VolatileMmio32::from_mapped(region, virtual_base) })
+}
+
+pub fn stage13_10c_self_test() -> bool {
+    let before = memory::stats().allocated_frames;
+    {
+        let Ok(mut page) = DmaPage::allocate_zeroed() else { return false };
+        if page.physical_address() & (DMA_PAGE_SIZE as u64 - 1) != 0
+            || page.virtual_address() == 0
+            || page.len() != DMA_PAGE_SIZE
+            || page.is_empty()
+            || page.read_u32(0) != Ok(0)
+            || page.write_u32(0, 0x5748_444d).is_err()
+        {
+            return false;
+        }
+        dma_publish();
+        dma_consume();
+        if page.read_u32(0) != Ok(0x5748_444d)
+            || page.write_u32(2, 1).is_ok()
+            || page.read_u32(DMA_PAGE_SIZE).is_ok()
+        {
+            return false;
+        }
+
+        // Exercise the same audited volatile access boundary against the
+        // owned test frame. This validates pointer containment without
+        // touching a nonexistent physical Wi-Fi device in QEMU.
+        let Ok(region) = MmioRegion::new(page.physical_address(), DMA_PAGE_SIZE) else {
+            return false;
+        };
+        // SAFETY: For this self-test the DmaPage is live, writable and
+        // exclusively owned for the complete synthetic register window.
+        let mut registers = unsafe {
+            VolatileMmio32::from_mapped(region, page.virtual_address())
+        };
+        if registers.write(4, 0xa5a5_5a5a).is_err()
+            || registers.read(4) != Ok(0xa5a5_5a5a)
+            || registers.read(2).is_ok()
+            || registers.write(DMA_PAGE_SIZE, 0).is_ok()
+        {
+            return false;
+        }
+    }
+    memory::stats().allocated_frames == before
+}
 pub fn stage13_10b_self_test() -> bool {
     let Ok(mmio) = MmioRegion::new(0xfebc_0000, 0x1000) else { return false };
     if mmio.register_address(0) != Ok(0xfebc_0000)
