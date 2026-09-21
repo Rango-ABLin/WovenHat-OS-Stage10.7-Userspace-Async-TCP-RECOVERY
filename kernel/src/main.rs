@@ -482,6 +482,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             halt();
         }
         serial::write_line(format_args!("[S13.9U] WovenWiFi/smoltcp transport adapter: PASSED"));
+        if !wifi_smol::transport_selector_self_test() {
+            serial::write_line(format_args!("[S13.9V] selectable WovenNet transport integration: FAILED"));
+            halt();
+        }
+        serial::write_line(format_args!("[S13.9V] selectable WovenNet transport integration: PASSED"));
         if !wifi_scan::self_test() {
             serial::write_line(format_args!(
                 "[S13.9C] beacon/probe scan pipeline: FAILED"

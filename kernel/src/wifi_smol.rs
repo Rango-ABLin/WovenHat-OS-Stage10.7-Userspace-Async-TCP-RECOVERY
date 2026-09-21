@@ -26,6 +26,12 @@ impl<'a> WifiSmolDevice<'a>{
 
 pub struct WifiRxToken<'a>{data:&'a mut[u8]}
 pub struct WifiTxToken<'a>{session:&'a mut WifiSession,epoch:u32}
+impl<'a> WifiRxToken<'a>{
+    pub fn new(data:&'a mut[u8])->Self{Self{data}}
+}
+impl<'a> WifiTxToken<'a>{
+    pub fn new(session:&'a mut WifiSession,epoch:u32)->Self{Self{session,epoch}}
+}
 
 impl RxToken for WifiRxToken<'_>{
     fn consume<R,F>(self,f:F)->R where F:FnOnce(&[u8])->R{f(self.data)}
@@ -112,4 +118,32 @@ pub fn self_test()->bool{
 
 pub fn classify_session_error(error:&SessionError)->bool{
     matches!(error,SessionError::StaleEpoch|SessionError::WrongState|SessionError::NoKeys)
+}
+
+#[cfg(feature="stage13-9-test")]
+pub fn transport_selector_self_test()->bool{
+    use smoltcp::phy::{Device,TxToken};
+    use crate::network::{NetTransport,WifiNetDevice};
+    use crate::wifi_backend::MAX_80211_FRAME;
+
+    let station=[0x02,0,0,0,0,0x11];
+    let ap=[0x02,0,0,0,0,0x22];
+    let peer=[0x02,0,0,0,0,0x33];
+    let tk=[0x77;16];
+    let mut session=WifiSession::new(2);
+    let Ok(epoch)=session.begin_connect(10,10)else{return false};
+    if session.install_pairwise(epoch,station,ap,&tk).is_err(){return false}
+    let mut transport=NetTransport::Wifi(WifiNetDevice::new(session,epoch));
+    let Some(tx)=transport.transmit(Instant::from_millis(0))else{return false};
+    tx.consume(64,|frame|{
+        frame[..6].copy_from_slice(&peer);
+        frame[6..12].copy_from_slice(&station);
+        frame[12..14].copy_from_slice(&[0x08,0x00]);
+    });
+    let NetTransport::Wifi(device)=&mut transport else{return false};
+    let mut protected=[0u8;MAX_80211_FRAME];
+    let Ok(Some(n))=device.session_mut().dequeue_tx(&mut protected)else{return false};
+    if n<=64{return false}
+    transport=NetTransport::Virtio(crate::network::VirtioSmolDevice::new());
+    matches!(transport,NetTransport::Virtio(_))
 }
