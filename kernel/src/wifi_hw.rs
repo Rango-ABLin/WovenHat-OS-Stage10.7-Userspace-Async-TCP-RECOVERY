@@ -97,6 +97,228 @@ pub fn discover_first() -> Option<WifiPciFunction> {
     None
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MmioError {
+    Unaligned,
+    OutOfRange,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct MmioRegion {
+    base: u64,
+    span: usize,
+}
+
+impl MmioRegion {
+    pub const fn new(base: u64, span: usize) -> Result<Self, MmioError> {
+        if base & 3 != 0 {
+            return Err(MmioError::Unaligned);
+        }
+        if span < 4 || span & 3 != 0 {
+            return Err(MmioError::OutOfRange);
+        }
+        Ok(Self { base, span })
+    }
+
+    pub const fn base(&self) -> u64 { self.base }
+    pub const fn span(&self) -> usize { self.span }
+
+    pub fn register_address(&self, offset: usize) -> Result<u64, MmioError> {
+        if offset & 3 != 0 || offset.checked_add(4).is_none_or(|end| end > self.span) {
+            return Err(MmioError::OutOfRange);
+        }
+        self.base
+            .checked_add(offset as u64)
+            .ok_or(MmioError::OutOfRange)
+    }
+}
+
+pub const DMA_RING_CAPACITY: usize = 64;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DmaError {
+    Full,
+    Empty,
+    InvalidLength,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct DmaDescriptor {
+    pub physical_address: u64,
+    pub length: u16,
+    pub flags: u16,
+}
+
+pub struct DmaRing {
+    entries: [DmaDescriptor; DMA_RING_CAPACITY],
+    producer: usize,
+    consumer: usize,
+    count: usize,
+}
+
+impl DmaRing {
+    pub const fn new() -> Self {
+        Self {
+            entries: [DmaDescriptor {
+                physical_address: 0,
+                length: 0,
+                flags: 0,
+            }; DMA_RING_CAPACITY],
+            producer: 0,
+            consumer: 0,
+            count: 0,
+        }
+    }
+
+    pub const fn len(&self) -> usize { self.count }
+    pub const fn is_empty(&self) -> bool { self.count == 0 }
+
+    pub fn push(&mut self, descriptor: DmaDescriptor) -> Result<(), DmaError> {
+        if descriptor.length == 0 {
+            return Err(DmaError::InvalidLength);
+        }
+        if self.count == DMA_RING_CAPACITY {
+            return Err(DmaError::Full);
+        }
+        self.entries[self.producer] = descriptor;
+        self.producer = (self.producer + 1) % DMA_RING_CAPACITY;
+        self.count += 1;
+        Ok(())
+    }
+
+    pub fn pop(&mut self) -> Result<DmaDescriptor, DmaError> {
+        if self.count == 0 {
+            return Err(DmaError::Empty);
+        }
+        let descriptor = self.entries[self.consumer];
+        self.entries[self.consumer] = DmaDescriptor::default();
+        self.consumer = (self.consumer + 1) % DMA_RING_CAPACITY;
+        self.count -= 1;
+        Ok(descriptor)
+    }
+
+    pub fn reset(&mut self) {
+        self.entries = [DmaDescriptor::default(); DMA_RING_CAPACITY];
+        self.producer = 0;
+        self.consumer = 0;
+        self.count = 0;
+    }
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct InterruptState {
+    pub pending: u32,
+    pub handled: u64,
+}
+
+impl InterruptState {
+    pub fn raise(&mut self, causes: u32) {
+        self.pending |= causes;
+    }
+
+    pub fn take(&mut self) -> u32 {
+        let causes = self.pending;
+        if causes != 0 {
+            self.pending = 0;
+            self.handled = self.handled.saturating_add(1);
+        }
+        causes
+    }
+
+    pub fn reset(&mut self) {
+        self.pending = 0;
+    }
+}
+
+pub struct HardwareQueues {
+    pub tx: DmaRing,
+    pub rx: DmaRing,
+    pub interrupts: InterruptState,
+}
+
+impl HardwareQueues {
+    pub const fn new() -> Self {
+        Self {
+            tx: DmaRing::new(),
+            rx: DmaRing::new(),
+            interrupts: InterruptState {
+                pending: 0,
+                handled: 0,
+            },
+        }
+    }
+
+    pub fn quiesce(&mut self) {
+        self.tx.reset();
+        self.rx.reset();
+        self.interrupts.reset();
+    }
+}
+
+pub fn stage13_10b_self_test() -> bool {
+    let Ok(mmio) = MmioRegion::new(0xfebc_0000, 0x1000) else { return false };
+    if mmio.register_address(0) != Ok(0xfebc_0000)
+        || mmio.register_address(0x0ffc) != Ok(0xfebc_0ffc)
+        || mmio.register_address(2).is_ok()
+        || mmio.register_address(0x1000).is_ok()
+    {
+        return false;
+    }
+
+    let mut queues = HardwareQueues::new();
+    let tx = DmaDescriptor {
+        physical_address: 0x0020_0000,
+        length: 1500,
+        flags: 1,
+    };
+    let rx = DmaDescriptor {
+        physical_address: 0x0021_0000,
+        length: 1600,
+        flags: 2,
+    };
+
+    if queues.tx.push(tx).is_err()
+        || queues.rx.push(rx).is_err()
+        || queues.tx.len() != 1
+        || queues.rx.len() != 1
+    {
+        return false;
+    }
+
+    queues.interrupts.raise(0x1);
+    queues.interrupts.raise(0x4);
+    if queues.interrupts.take() != 0x5
+        || queues.interrupts.pending != 0
+        || queues.interrupts.handled != 1
+    {
+        return false;
+    }
+
+    if queues.tx.pop() != Ok(tx) || queues.rx.pop() != Ok(rx) {
+        return false;
+    }
+
+    for index in 0..DMA_RING_CAPACITY {
+        let descriptor = DmaDescriptor {
+            physical_address: 0x0030_0000 + (index as u64 * 0x1000),
+            length: 512,
+            flags: 0,
+        };
+        if queues.tx.push(descriptor).is_err() {
+            return false;
+        }
+    }
+    if queues.tx.push(tx) != Err(DmaError::Full) {
+        return false;
+    }
+
+    queues.interrupts.raise(0xffff);
+    queues.quiesce();
+    queues.tx.is_empty()
+        && queues.rx.is_empty()
+        && queues.interrupts.pending == 0
+        && queues.interrupts.handled == 1
+}
 pub fn self_test() -> bool {
     let mut good = pci::Device {
         segment: 0,

@@ -433,6 +433,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             "[S13.10A] physical PCI Wi-Fi backend boundary: PASSED bound_candidate={}",
             hw_candidate.is_some() as u8
         ));
+        if !wifi_hw::stage13_10b_self_test() {
+            serial::write_line(format_args!("[S13.10B] Wi-Fi MMIO/DMA/interrupt scaffolding: FAILED"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!("[S13.10B] Wi-Fi MMIO/DMA/interrupt scaffolding: PASSED"));
         if !wifi_backend::self_test() {
             serial::write_line(format_args!(
                 "[S13.9K] Wi-Fi transport/backend contract: FAILED"
