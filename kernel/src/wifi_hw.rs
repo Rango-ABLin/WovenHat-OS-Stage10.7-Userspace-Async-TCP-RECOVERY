@@ -411,6 +411,199 @@ pub fn map_mmio_page(physical: u64) -> Result<VolatileMmio32, MmioError> {
     Ok(unsafe { VolatileMmio32::from_mapped(region, virtual_base) })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DescriptorOwner {
+    Cpu,
+    Device,
+    Completed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueueError {
+    Full,
+    Empty,
+    InvalidLength,
+    NotCpuOwned,
+    NotDeviceOwned,
+    NotCompleted,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct OwnedDescriptor {
+    descriptor: DmaDescriptor,
+    owner: DescriptorOwner,
+}
+
+impl OwnedDescriptor {
+    const fn empty() -> Self {
+        Self {
+            descriptor: DmaDescriptor {
+                physical_address: 0,
+                length: 0,
+                flags: 0,
+            },
+            owner: DescriptorOwner::Cpu,
+        }
+    }
+}
+
+/// Fixed-capacity DMA descriptor lifecycle.
+///
+/// CPU -> Device is a publish operation: descriptor fields are fully written
+/// before the ownership transition. Device -> Completed is represented by the
+/// interrupt/backend side. Completed -> CPU is the only legal reclaim path,
+/// preventing a buffer from being reused while hardware still owns it.
+pub struct DeviceQueue {
+    entries: [OwnedDescriptor; DMA_RING_CAPACITY],
+    head: usize,
+    tail: usize,
+    count: usize,
+    device_owned: usize,
+    completed: usize,
+}
+
+impl DeviceQueue {
+    pub const fn new() -> Self {
+        Self {
+            entries: [OwnedDescriptor::empty(); DMA_RING_CAPACITY],
+            head: 0,
+            tail: 0,
+            count: 0,
+            device_owned: 0,
+            completed: 0,
+        }
+    }
+
+    pub const fn len(&self) -> usize { self.count }
+    pub const fn is_empty(&self) -> bool { self.count == 0 }
+    pub const fn device_owned(&self) -> usize { self.device_owned }
+    pub const fn completed(&self) -> usize { self.completed }
+
+    pub fn submit(&mut self, descriptor: DmaDescriptor) -> Result<usize, QueueError> {
+        if descriptor.length == 0 {
+            return Err(QueueError::InvalidLength);
+        }
+        if self.count == DMA_RING_CAPACITY {
+            return Err(QueueError::Full);
+        }
+        if self.entries[self.tail].owner != DescriptorOwner::Cpu {
+            return Err(QueueError::NotCpuOwned);
+        }
+        let slot = self.tail;
+        self.entries[slot].descriptor = descriptor;
+        dma_publish();
+        self.entries[slot].owner = DescriptorOwner::Device;
+        self.tail = (self.tail + 1) % DMA_RING_CAPACITY;
+        self.count += 1;
+        self.device_owned += 1;
+        Ok(slot)
+    }
+
+    /// Model the device/interrupt side completing one descriptor. A concrete
+    /// chipset ISR will call the equivalent transition only after reading the
+    /// hardware completion state.
+    pub fn complete(&mut self, slot: usize) -> Result<(), QueueError> {
+        if slot >= DMA_RING_CAPACITY || self.entries[slot].owner != DescriptorOwner::Device {
+            return Err(QueueError::NotDeviceOwned);
+        }
+        dma_consume();
+        self.entries[slot].owner = DescriptorOwner::Completed;
+        self.device_owned -= 1;
+        self.completed += 1;
+        Ok(())
+    }
+
+    pub fn reclaim(&mut self) -> Result<DmaDescriptor, QueueError> {
+        if self.count == 0 {
+            return Err(QueueError::Empty);
+        }
+        if self.entries[self.head].owner != DescriptorOwner::Completed {
+            return Err(QueueError::NotCompleted);
+        }
+        dma_consume();
+        let descriptor = self.entries[self.head].descriptor;
+        self.entries[self.head] = OwnedDescriptor::empty();
+        self.head = (self.head + 1) % DMA_RING_CAPACITY;
+        self.count -= 1;
+        self.completed -= 1;
+        Ok(descriptor)
+    }
+
+    /// Reset is legal only after hardware has been stopped and no descriptor
+    /// remains device-owned. This prevents teardown from freeing DMA memory
+    /// while a bus master may still access it.
+    pub fn quiesce(&mut self) -> Result<(), QueueError> {
+        if self.device_owned != 0 {
+            return Err(QueueError::NotCpuOwned);
+        }
+        self.entries = [OwnedDescriptor::empty(); DMA_RING_CAPACITY];
+        self.head = 0;
+        self.tail = 0;
+        self.count = 0;
+        self.completed = 0;
+        Ok(())
+    }
+}
+
+pub fn stage13_10d_self_test() -> bool {
+    let mut queue = DeviceQueue::new();
+    let first = DmaDescriptor {
+        physical_address: 0x0040_0000,
+        length: 1536,
+        flags: 0x11,
+    };
+    let second = DmaDescriptor {
+        physical_address: 0x0041_0000,
+        length: 2048,
+        flags: 0x22,
+    };
+
+    let Ok(first_slot) = queue.submit(first) else { return false };
+    let Ok(second_slot) = queue.submit(second) else { return false };
+    if first_slot != 0
+        || second_slot != 1
+        || queue.len() != 2
+        || queue.device_owned() != 2
+        || queue.completed() != 0
+        || queue.reclaim() != Err(QueueError::NotCompleted)
+        || queue.quiesce() != Err(QueueError::NotCpuOwned)
+    {
+        return false;
+    }
+
+    // Complete out of order. Reclaim must still respect queue head ordering.
+    if queue.complete(second_slot).is_err()
+        || queue.completed() != 1
+        || queue.reclaim() != Err(QueueError::NotCompleted)
+        || queue.complete(first_slot).is_err()
+        || queue.complete(first_slot) != Err(QueueError::NotDeviceOwned)
+        || queue.device_owned() != 0
+        || queue.completed() != 2
+        || queue.reclaim() != Ok(first)
+        || queue.reclaim() != Ok(second)
+        || !queue.is_empty()
+    {
+        return false;
+    }
+
+    // Exercise ring wraparound and prove a device-owned slot cannot be reused.
+    for index in 0..DMA_RING_CAPACITY {
+        let descriptor = DmaDescriptor {
+            physical_address: 0x0080_0000 + index as u64 * DMA_PAGE_SIZE as u64,
+            length: 512,
+            flags: index as u16,
+        };
+        let Ok(slot) = queue.submit(descriptor) else { return false };
+        if queue.complete(slot).is_err() || queue.reclaim() != Ok(descriptor) {
+            return false;
+        }
+    }
+
+    queue.is_empty()
+        && queue.device_owned() == 0
+        && queue.completed() == 0
+        && queue.quiesce().is_ok()
+}
 pub fn stage13_10c_self_test() -> bool {
     let before = memory::stats().allocated_frames;
     {
