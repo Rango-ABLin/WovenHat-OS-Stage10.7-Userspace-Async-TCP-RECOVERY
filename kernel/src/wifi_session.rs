@@ -34,7 +34,7 @@ impl WifiSession{
         Ok(self.recovery.begin_connect(now,timeout)?)
     }
 
-    pub fn install_pairwise(&mut self,epoch:u32,station:[u8;6],bssid:[u8;6],tk:&[u8])->Result<(),SessionError>{
+    pub(crate) fn install_pairwise_for_test(&mut self,epoch:u32,station:[u8;6],bssid:[u8;6],tk:&[u8])->Result<(),SessionError>{
         if epoch!=self.recovery.epoch(){return Err(SessionError::StaleEpoch)}
         if self.recovery.state()!=RecoveryState::Connecting{return Err(SessionError::WrongState)}
         self.activate_bridge(epoch,station,bssid,tk)
@@ -109,6 +109,13 @@ impl WifiSession{
 
     pub const fn has_pairwise_keys(&self)->bool{self.bridge.is_some()}
 
+    /// True only after WPA2-authorized activation has transitioned recovery
+    /// into Connected for the current epoch. Transport selection must use this
+    /// rather than merely observing that key material exists.
+    pub fn secure_transport_ready(&self,epoch:u32)->bool{
+        self.is_active_epoch(epoch)
+    }
+
     pub fn is_active_epoch(&self,epoch:u32)->bool{
         self.active_epoch==Some(epoch)
             && self.recovery.epoch()==epoch
@@ -140,7 +147,7 @@ pub fn self_test()->bool{
 
     let mut s=WifiSession::new(3);
     let Ok(e1)=s.begin_connect(10,5)else{return false};
-    if s.install_pairwise(e1,sta,ap,&[0x11;16]).is_err()||!s.has_pairwise_keys(){return false}
+    if s.install_pairwise_for_test(e1,sta,ap,&[0x11;16]).is_err()||!s.has_pairwise_keys(){return false}
     if s.transmit_ethernet(e1,&eth).is_err(){return false}
     let mut out=[0u8;MAX_80211_FRAME];
     if !matches!(s.dequeue_tx(&mut out),Ok(Some(_))){return false}
@@ -150,7 +157,7 @@ pub fn self_test()->bool{
 
     let Ok(e3)=s.begin_connect(20,2)else{return false};
     if e3!=e2||!s.poll_timeout(22)||s.has_pairwise_keys(){return false}
-    if s.install_pairwise(e3,sta,ap,&[0x22;16])!=Err(SessionError::StaleEpoch){return false}
+    if s.install_pairwise_for_test(e3,sta,ap,&[0x22;16])!=Err(SessionError::StaleEpoch){return false}
     true
 }
 
@@ -272,7 +279,7 @@ pub fn rx_path_self_test()->bool{
 
     let mut session=WifiSession::new(2);
     let Ok(epoch)=session.begin_connect(1,10)else{return false};
-    if session.install_pairwise(epoch,station,ap,&tk).is_err(){return false}
+    if session.install_pairwise_for_test(epoch,station,ap,&tk).is_err(){return false}
 
     let mut ethernet=[0u8;64];
     ethernet[..6].copy_from_slice(&station);

@@ -192,7 +192,7 @@ impl Wpa2Supplicant {
         self.state=SupplicantState::Completed;
         Ok(len)
     }
-    pub fn temporal_key(&self) -> Option<&[u8]> {
+    pub(crate) fn temporal_key(&self) -> Option<&[u8]> {
         self.ptk.as_ref().map(Ptk::tk)
     }
 

@@ -62,7 +62,7 @@ impl Device for WifiSmolDevice<'_>{
     }
 
     fn transmit(&mut self,_timestamp:Instant)->Option<Self::TxToken<'_>>{
-        self.session.is_active_epoch(self.epoch).then_some(
+        self.session.secure_transport_ready(self.epoch).then_some(
             WifiTxToken{session:self.session,epoch:self.epoch}
         )
     }
@@ -88,7 +88,7 @@ pub fn self_test()->bool{
 
     let mut session=WifiSession::new(2);
     let Ok(epoch)=session.begin_connect(1,10)else{return false};
-    if session.install_pairwise(epoch,station,ap,&tk).is_err(){return false}
+    if session.install_pairwise_for_test(epoch,station,ap,&tk).is_err(){return false}
 
     // Exercise the exact smoltcp TxToken contract. The token receives an
     // Ethernet frame and must push a protected 802.11 frame into the backend.
@@ -132,7 +132,7 @@ pub fn transport_selector_self_test()->bool{
     let tk=[0x77;16];
     let mut session=WifiSession::new(2);
     let Ok(epoch)=session.begin_connect(10,10)else{return false};
-    if session.install_pairwise(epoch,station,ap,&tk).is_err(){return false}
+    if session.install_pairwise_for_test(epoch,station,ap,&tk).is_err(){return false}
     let mut transport=NetTransport::Wifi(WifiNetDevice::new(session,epoch));
     let Some(tx)=transport.transmit(Instant::from_millis(0))else{return false};
     tx.consume(64,|frame|{
