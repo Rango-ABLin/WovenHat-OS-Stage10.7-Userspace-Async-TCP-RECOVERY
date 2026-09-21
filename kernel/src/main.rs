@@ -84,6 +84,8 @@ mod wifi_net;
 #[cfg(feature = "stage13-9-test")]
 mod wifi_backend;
 #[cfg(feature = "stage13-9-test")]
+mod wifi_hw;
+#[cfg(feature = "stage13-9-test")]
 mod wifi_recovery;
 #[cfg(feature = "stage13-9-test")]
 mod wifi_session;
@@ -422,6 +424,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             qemu_test_exit_failure();
         }
         serial::write_line(format_args!("[S13.9Z] WPA2 live group-key rekey: PASSED"));
+        if !wifi_hw::self_test() {
+            serial::write_line(format_args!("[S13.10A] physical PCI Wi-Fi backend boundary: FAILED"));
+            qemu_test_exit_failure();
+        }
+        let hw_candidate = wifi_hw::discover_first();
+        serial::write_line(format_args!(
+            "[S13.10A] physical PCI Wi-Fi backend boundary: PASSED bound_candidate={}",
+            hw_candidate.is_some() as u8
+        ));
         if !wifi_backend::self_test() {
             serial::write_line(format_args!(
                 "[S13.9K] Wi-Fi transport/backend contract: FAILED"
