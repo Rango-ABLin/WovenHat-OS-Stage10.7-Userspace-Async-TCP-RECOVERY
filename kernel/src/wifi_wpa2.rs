@@ -212,6 +212,18 @@ impl Wpa2Supplicant {
         self.group.gtk().map(crate::wifi_gtk::GroupTemporalKey::index)
     }
 
+    /// Destroy all association-specific WPA2 material and make this supplicant
+    /// reusable for a fresh association. This is the only Completed/Failed ->
+    /// Idle transition; callers must obtain a new association epoch separately.
+    pub fn reset(&mut self) {
+        self.handshake.reset();
+        self.ptk = None;
+        self.group.clear();
+        self.completed_replay = None;
+        self.snonce.zeroize();
+        self.authenticator.zeroize();
+        self.state = SupplicantState::Idle;
+    }
     pub fn fail(&mut self) {
         self.handshake.fail();
         self.ptk = None;
@@ -231,6 +243,31 @@ impl Drop for Wpa2Supplicant {
     }
 }
 
+#[cfg(feature="stage13-9-test")]
+pub fn lifecycle_self_test() -> bool {
+    let rsn=[1,0,0,0x0f,0xac,4,1,0,0,0x0f,0xac,4,1,0,0,0x0f,0xac,2,0,0];
+    let Ok(profile)=wifi_rsn::parse_rsn(&rsn)else{return false};
+    let station=[0x00,0x13,0x46,0xfe,0x32,0x0c];
+    let ap=[0x00,0x14,0x6c,0x7e,0x40,0x80];
+    let mut s=Wpa2Supplicant::new(station);
+
+    // An in-progress association cannot be silently restarted.
+    if s.begin(profile,ap,[0x11;32]).is_err(){return false}
+    if s.begin(profile,ap,[0x22;32])!=Err(SupplicantError::WrongState){return false}
+
+    // Failure destroys partial secrets and remains terminal until reset.
+    s.fail();
+    if s.state()!=SupplicantState::Failed||s.temporal_key().is_some()||s.gtk_installed(){return false}
+    if s.begin(profile,ap,[0x22;32])!=Err(SupplicantError::WrongState){return false}
+    s.reset();
+    if s.state()!=SupplicantState::Idle||s.temporal_key().is_some()||s.gtk_installed()||s.gtk_index().is_some(){return false}
+
+    // A clean reset permits a fresh association with a new nonce/peer lifecycle.
+    if s.begin(profile,ap,[0x33;32]).is_err(){return false}
+    s.reset();
+    if s.state()!=SupplicantState::Idle{return false}
+    s.begin(profile,ap,[0x44;32]).is_ok()
+}
 fn build_eapol_key(
     output: &mut [u8],
     key_info: u16,

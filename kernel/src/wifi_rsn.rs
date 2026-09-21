@@ -262,6 +262,14 @@ impl FourWayHandshake {
         self.anonce = [0; 32];
         self.last_replay = 0;
     }
+
+    /// Return the handshake to a clean association boundary. Old ANonce and
+    /// replay state are destroyed before a new WPA2 exchange may begin.
+    pub fn reset(&mut self) {
+        self.state = FourWayState::Idle;
+        self.anonce = [0; 32];
+        self.last_replay = 0;
+    }
 }
 
 fn synthetic_eapol_key(

@@ -412,6 +412,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             qemu_test_exit_failure();
         }
         serial::write_line(format_args!("[S13.9X] GTK/group-addressed CCMP data path: PASSED"));
+        if !wifi_wpa2::lifecycle_self_test() {
+            serial::write_line(format_args!("[S13.9Y] WPA2 reconnect/rekey lifecycle: FAILED"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!("[S13.9Y] WPA2 reconnect/rekey lifecycle: PASSED"));
         if !wifi_backend::self_test() {
             serial::write_line(format_args!(
                 "[S13.9K] Wi-Fi transport/backend contract: FAILED"
