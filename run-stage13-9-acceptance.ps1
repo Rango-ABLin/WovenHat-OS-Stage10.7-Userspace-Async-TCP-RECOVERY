@@ -5,6 +5,6 @@ cargo clippy -p wovenhat-kernel --target x86_64-unknown-none --features stage13-
 if ($LASTEXITCODE -ne 0) { throw 'Kernel lint failed' }
 foreach ($cpu in 1,2,4) {
     python .\scripts\test-stage10-runtime.py --stage 13.9 --cpus $cpu --timeout 120
-    if ($LASTEXITCODE -ne 0) { throw "Stage 13.10Q failed on $cpu CPU(s)" }
+    if ($LASTEXITCODE -ne 0) { throw "Stage 13.10R failed on $cpu CPU(s)" }
 }
-Write-Host '=== STAGE 13.10Q AX200 DMA-BACKED CONTEXT-INFO: PASS ==='
+Write-Host '=== STAGE 13.10R AX200 CONTEXT-INFO ABI + PUBLICATION: PASS ==='

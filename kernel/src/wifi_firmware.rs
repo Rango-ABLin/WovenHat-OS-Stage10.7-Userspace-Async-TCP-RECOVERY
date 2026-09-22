@@ -1548,6 +1548,160 @@ impl Intel22000DmaContextInfo {
     }
 }
 
+// === Stage 13.10R: Intel 22000/AX200 context-info hardware ABI ===
+pub const INTEL_CONTEXT_INFO_WIRE_SIZE: usize = 1776;
+pub const INTEL_CONTEXT_INFO_WIRE_DWORDS: u16 = 444;
+pub const INTEL_CONTEXT_INFO_DRAM_UMAC_OFFSET: usize = 176;
+pub const INTEL_CONTEXT_INFO_DRAM_LMAC_OFFSET: usize = 688;
+pub const INTEL_CONTEXT_INFO_DRAM_PAGING_OFFSET: usize = 1200;
+pub const INTEL_CONTEXT_INFO_DEFAULT_CONTROL_FLAGS: u32 = 0x0100 | (8 << 4) | (4 << 9);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntelContextInfoAbiError {
+    NotReady,
+    Dma,
+    TooManySections,
+    Publication,
+}
+pub struct Intel22000HardwareContextInfo {
+    dma: crate::wifi_hw::OwnedDmaBuffer,
+}
+impl Intel22000HardwareContextInfo {
+    pub const fn physical_address(&self) -> u64 {
+        self.dma.physical_address()
+    }
+    pub fn byte(&self, o: usize) -> Result<u8, IntelContextInfoAbiError> {
+        self.dma
+            .read_byte(o)
+            .map_err(|_| IntelContextInfoAbiError::Dma)
+    }
+}
+fn ci16(x: &mut [u8; 1776], o: usize, v: u16) {
+    x[o..o + 2].copy_from_slice(&v.to_le_bytes());
+}
+fn ci32(x: &mut [u8; 1776], o: usize, v: u32) {
+    x[o..o + 4].copy_from_slice(&v.to_le_bytes());
+}
+fn ci64(x: &mut [u8; 1776], o: usize, v: u64) {
+    x[o..o + 8].copy_from_slice(&v.to_le_bytes());
+}
+impl Intel22000DmaContextInfo {
+    pub fn build_hardware_context(
+        &self,
+        mac_id: u16,
+    ) -> Result<Intel22000HardwareContextInfo, IntelContextInfoAbiError> {
+        if !self.ready_for_publication() {
+            return Err(IntelContextInfoAbiError::NotReady);
+        }
+        let mut x = [0u8; 1776];
+        ci16(&mut x, 0, mac_id);
+        ci16(&mut x, 4, 444);
+        ci32(&mut x, 8, INTEL_CONTEXT_INFO_DEFAULT_CONTROL_FLAGS);
+        ci64(&mut x, 24, self.manifest.free_rbd_address);
+        ci64(&mut x, 32, self.manifest.used_rbd_address);
+        ci64(&mut x, 40, self.manifest.status_write_pointer);
+        ci64(&mut x, 48, self.manifest.command_queue_address);
+        x[56] = self.manifest.command_queue_size;
+        for (kind, base, count) in [
+            (
+                IntelContextInfoImageKind::Umac,
+                176,
+                self.manifest.umac_count(),
+            ),
+            (
+                IntelContextInfoImageKind::Lmac,
+                688,
+                self.manifest.lmac_count(),
+            ),
+            (
+                IntelContextInfoImageKind::Paging,
+                1200,
+                self.manifest.paging_count(),
+            ),
+        ] {
+            if count > 64 {
+                return Err(IntelContextInfoAbiError::TooManySections);
+            }
+            for i in 0..count {
+                let e = self
+                    .manifest
+                    .entry(kind, i)
+                    .ok_or(IntelContextInfoAbiError::TooManySections)?;
+                ci64(&mut x, base + i * 8, e.physical_address);
+            }
+        }
+        let mut dma = crate::wifi_hw::OwnedDmaBuffer::allocate(1776, 0)
+            .map_err(|_| IntelContextInfoAbiError::Dma)?;
+        dma.write_bytes(0, &x)
+            .map_err(|_| IntelContextInfoAbiError::Dma)?;
+        Ok(Intel22000HardwareContextInfo { dma })
+    }
+}
+pub trait IntelContextInfoPublicationIo {
+    fn write_context_info_base(&mut self, o: u32, a: u64) -> Result<(), IntelContextInfoAbiError>;
+}
+pub fn publish_hardware_context<I: IntelContextInfoPublicationIo>(
+    c: &Intel22000HardwareContextInfo,
+    io: &mut I,
+) -> Result<(), IntelContextInfoAbiError> {
+    crate::wifi_hw::dma_publish();
+    io.write_context_info_base(INTEL_CSR_CONTEXT_INFO_BASE, c.physical_address())
+        .map_err(|_| IntelContextInfoAbiError::Publication)
+}
+struct Stage13_10rMockIo {
+    offset: u32,
+    address: u64,
+    writes: usize,
+}
+impl IntelContextInfoPublicationIo for Stage13_10rMockIo {
+    fn write_context_info_base(&mut self, o: u32, a: u64) -> Result<(), IntelContextInfoAbiError> {
+        self.offset = o;
+        self.address = a;
+        self.writes += 1;
+        Ok(())
+    }
+}
+pub fn stage13_10r_self_test() -> bool {
+    let mut c = Intel22000DmaContextInfo::new();
+    if c.set_rx_queue(0x100000, 0x110000, 0x120000).is_err()
+        || c.set_command_queue(0x130000, 32).is_err()
+        || c.stage_firmware_chunk(IntelContextInfoImageKind::Lmac, &[0x11; 256])
+            .is_err()
+        || c.stage_firmware_chunk(IntelContextInfoImageKind::Umac, &[0x22; 128])
+            .is_err()
+    {
+        return false;
+    }
+    let Ok(h) = c.build_hardware_context(0x1234) else {
+        return false;
+    };
+    let r16 = |o| Some(u16::from_le_bytes([h.byte(o).ok()?, h.byte(o + 1).ok()?]));
+    let r64 = |o| {
+        let mut b = [0; 8];
+        for (i, v) in b.iter_mut().enumerate() {
+            *v = h.byte(o + i).ok()?;
+        }
+        Some(u64::from_le_bytes(b))
+    };
+    if r16(0) != Some(0x1234)
+        || r16(4) != Some(444)
+        || r64(24) != Some(0x100000)
+        || r64(48) != Some(0x130000)
+    {
+        return false;
+    }
+    let mut io = Stage13_10rMockIo {
+        offset: 0,
+        address: 0,
+        writes: 0,
+    };
+    publish_hardware_context(&h, &mut io).is_ok()
+        && io.offset == 0x40
+        && io.address == h.physical_address()
+        && io.address != 0
+        && io.writes == 1
+}
+
 pub fn stage13_10q_self_test() -> bool {
     let mut context = Intel22000DmaContextInfo::new();
     if context

@@ -590,6 +590,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         serial::write_line(format_args!(
             "[S13.10Q] AX200 DMA-backed context-info construction: PASSED"
         ));
+        if !wifi_firmware::stage13_10r_self_test() {
+            serial::write_line(format_args!(
+                "[S13.10R] AX200 context-info ABI + publication: FAILED"
+            ));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!(
+            "[S13.10R] AX200 context-info ABI + publication: PASSED"
+        ));
         if !wifi_backend::self_test() {
             serial::write_line(format_args!(
                 "[S13.9K] Wi-Fi transport/backend contract: FAILED"
