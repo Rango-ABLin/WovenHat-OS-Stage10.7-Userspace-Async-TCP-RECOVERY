@@ -2013,6 +2013,261 @@ pub fn stage13_10t_self_test() -> bool {
         && rejected.state() == IntelFirmwareStartState::Failed
 }
 
+// === Stage 13.10V: version-aware Intel 22000/AX200 ALIVE ABI ===
+pub const INTEL_ALIVE_V7_SIZE: usize = 144;
+pub const INTEL_ALIVE_V8_SIZE: usize = 152;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntelAliveAbiVersion {
+    V3,
+    V7,
+    V8,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IntelAliveImrInfo {
+    pub base_address: u64,
+    pub size: u32,
+    pub enabled: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IntelVersionedAliveInfo {
+    pub abi: IntelAliveAbiVersion,
+    pub primary: IntelAliveInfo,
+    pub lmac2_error_event_table: Option<u32>,
+    pub sku_id: [u32; 3],
+    pub imr: Option<IntelAliveImrInfo>,
+    pub platform_id: Option<u64>,
+}
+
+fn alive_u64(p: &[u8], o: usize) -> Option<u64> {
+    Some(u64::from_le_bytes([
+        *p.get(o)?,
+        *p.get(o + 1)?,
+        *p.get(o + 2)?,
+        *p.get(o + 3)?,
+        *p.get(o + 4)?,
+        *p.get(o + 5)?,
+        *p.get(o + 6)?,
+        *p.get(o + 7)?,
+    ]))
+}
+
+fn parse_alive_primary(p: &[u8], l: usize, u: usize) -> Result<IntelAliveInfo, IntelAliveError> {
+    Ok(IntelAliveInfo {
+        status: alive_u16(p, 0).ok_or(IntelAliveError::UnsupportedLength)?,
+        flags: alive_u16(p, 2).ok_or(IntelAliveError::UnsupportedLength)?,
+        lmac_ucode_major: alive_u32(p, l).ok_or(IntelAliveError::UnsupportedLength)?,
+        lmac_ucode_minor: alive_u32(p, l + 4).ok_or(IntelAliveError::UnsupportedLength)?,
+        lmac_ver_subtype: *p.get(l + 8).ok_or(IntelAliveError::UnsupportedLength)?,
+        lmac_ver_type: *p.get(l + 9).ok_or(IntelAliveError::UnsupportedLength)?,
+        lmac_mac: *p.get(l + 10).ok_or(IntelAliveError::UnsupportedLength)?,
+        lmac_opt: *p.get(l + 11).ok_or(IntelAliveError::UnsupportedLength)?,
+        lmac_timestamp: alive_u32(p, l + 12).ok_or(IntelAliveError::UnsupportedLength)?,
+        umac_major: alive_u32(p, u).ok_or(IntelAliveError::UnsupportedLength)?,
+        umac_minor: alive_u32(p, u + 4).ok_or(IntelAliveError::UnsupportedLength)?,
+        diagnostics: IntelAliveDiagnostics {
+            lmac_error_event_table: alive_u32(p, l + 16)
+                .ok_or(IntelAliveError::UnsupportedLength)?,
+            lmac_log_event_table: alive_u32(p, l + 20).ok_or(IntelAliveError::UnsupportedLength)?,
+            lmac_cpu_register: alive_u32(p, l + 24).ok_or(IntelAliveError::UnsupportedLength)?,
+            lmac_dbgm_config: alive_u32(p, l + 28).ok_or(IntelAliveError::UnsupportedLength)?,
+            lmac_alive_counter: alive_u32(p, l + 32).ok_or(IntelAliveError::UnsupportedLength)?,
+            lmac_scd_base: alive_u32(p, l + 36).ok_or(IntelAliveError::UnsupportedLength)?,
+            lmac_store_forward_address: alive_u32(p, l + 40)
+                .ok_or(IntelAliveError::UnsupportedLength)?,
+            lmac_store_forward_size: alive_u32(p, l + 44)
+                .ok_or(IntelAliveError::UnsupportedLength)?,
+            umac_error_info: alive_u32(p, u + 8).ok_or(IntelAliveError::UnsupportedLength)?,
+            umac_debug_print_buffer: alive_u32(p, u + 12)
+                .ok_or(IntelAliveError::UnsupportedLength)?,
+        },
+    })
+}
+
+pub fn parse_intel_alive(
+    abi: IntelAliveAbiVersion,
+    p: &[u8],
+) -> Result<IntelVersionedAliveInfo, IntelAliveError> {
+    if abi == IntelAliveAbiVersion::V3 {
+        return Ok(IntelVersionedAliveInfo {
+            abi,
+            primary: parse_intel_alive_v3(p)?,
+            lmac2_error_event_table: None,
+            sku_id: [0; 3],
+            imr: None,
+            platform_id: None,
+        });
+    }
+    let n = if abi == IntelAliveAbiVersion::V7 {
+        INTEL_ALIVE_V7_SIZE
+    } else {
+        INTEL_ALIVE_V8_SIZE
+    };
+    if p.len() != n {
+        return Err(IntelAliveError::UnsupportedLength);
+    }
+    Ok(IntelVersionedAliveInfo {
+        abi,
+        primary: parse_alive_primary(p, 4, 100)?,
+        lmac2_error_event_table: Some(alive_u32(p, 68).ok_or(IntelAliveError::UnsupportedLength)?),
+        sku_id: [
+            alive_u32(p, 116).ok_or(IntelAliveError::UnsupportedLength)?,
+            alive_u32(p, 120).ok_or(IntelAliveError::UnsupportedLength)?,
+            alive_u32(p, 124).ok_or(IntelAliveError::UnsupportedLength)?,
+        ],
+        imr: Some(IntelAliveImrInfo {
+            base_address: alive_u64(p, 128).ok_or(IntelAliveError::UnsupportedLength)?,
+            size: alive_u32(p, 136).ok_or(IntelAliveError::UnsupportedLength)?,
+            enabled: alive_u32(p, 140).ok_or(IntelAliveError::UnsupportedLength)?,
+        }),
+        platform_id: if abi == IntelAliveAbiVersion::V8 {
+            Some(alive_u64(p, 144).ok_or(IntelAliveError::UnsupportedLength)?)
+        } else {
+            None
+        },
+    })
+}
+
+impl<I: IntelFirmwareStartupIo> Intel22000FirmwareStartup<I> {
+    pub fn handle_alive_notification_versioned(
+        &mut self,
+        command: u8,
+        abi: IntelAliveAbiVersion,
+        p: &[u8],
+    ) -> Result<IntelVersionedAliveInfo, IntelAliveError> {
+        if self.state != IntelFirmwareStartState::AwaitingAlive {
+            return Err(IntelAliveError::InvalidState);
+        }
+        if command != INTEL_UCODE_ALIVE_NTFY {
+            return Err(IntelAliveError::WrongCommand);
+        }
+        let info = match parse_intel_alive(abi, p) {
+            Ok(v) => v,
+            Err(e) => {
+                self.state = IntelFirmwareStartState::Failed;
+                return Err(e);
+            }
+        };
+        if info.primary.status != INTEL_ALIVE_STATUS_OK {
+            self.state = IntelFirmwareStartState::Failed;
+            return Err(IntelAliveError::FirmwareRejected(info.primary.status));
+        }
+        self.state = IntelFirmwareStartState::FirmwareRunning;
+        Ok(info)
+    }
+}
+
+fn stage13_10v_put16(p: &mut [u8], o: usize, v: u16) {
+    p[o..o + 2].copy_from_slice(&v.to_le_bytes());
+}
+fn stage13_10v_put32(p: &mut [u8], o: usize, v: u32) {
+    p[o..o + 4].copy_from_slice(&v.to_le_bytes());
+}
+fn stage13_10v_put64(p: &mut [u8], o: usize, v: u64) {
+    p[o..o + 8].copy_from_slice(&v.to_le_bytes());
+}
+fn stage13_10v_fill(p: &mut [u8]) {
+    stage13_10v_put16(p, 0, INTEL_ALIVE_STATUS_OK);
+    stage13_10v_put16(p, 2, 1);
+    stage13_10v_put32(p, 4, 0x11110001);
+    stage13_10v_put32(p, 8, 0x11110002);
+    p[12] = 9;
+    p[14] = 1;
+    p[15] = 2;
+    stage13_10v_put32(p, 16, 0x11110003);
+    stage13_10v_put32(p, 20, 0x11111000);
+    stage13_10v_put32(p, 40, 0x11116000);
+    stage13_10v_put32(p, 52, 0x22220001);
+    stage13_10v_put32(p, 68, 0x22221000);
+    stage13_10v_put32(p, 100, 0x33330001);
+    stage13_10v_put32(p, 104, 0x33330002);
+    stage13_10v_put32(p, 108, 0x33331000);
+    stage13_10v_put32(p, 112, 0x33332000);
+    stage13_10v_put32(p, 116, 0x44440001);
+    stage13_10v_put32(p, 120, 0x44440002);
+    stage13_10v_put32(p, 124, 0x44440003);
+    stage13_10v_put64(p, 128, 0x0000000180000000);
+    stage13_10v_put32(p, 136, 0x00200000);
+    stage13_10v_put32(p, 140, 1);
+}
+pub fn stage13_10v_self_test() -> bool {
+    let mut v7 = [0u8; INTEL_ALIVE_V7_SIZE];
+    stage13_10v_fill(&mut v7);
+    let Ok(a7) = parse_intel_alive(IntelAliveAbiVersion::V7, &v7) else {
+        return false;
+    };
+    if a7.primary.lmac_ucode_major != 0x11110001
+        || a7.primary.diagnostics.lmac_error_event_table != 0x11111000
+        || a7.primary.umac_major != 0x33330001
+        || a7.lmac2_error_event_table != Some(0x22221000)
+        || a7.sku_id != [0x44440001, 0x44440002, 0x44440003]
+        || a7.imr
+            != Some(IntelAliveImrInfo {
+                base_address: 0x0000000180000000,
+                size: 0x00200000,
+                enabled: 1,
+            })
+        || a7.platform_id.is_some()
+        || parse_intel_alive(IntelAliveAbiVersion::V7, &v7[..143])
+            != Err(IntelAliveError::UnsupportedLength)
+    {
+        return false;
+    }
+    let mut v8 = [0u8; INTEL_ALIVE_V8_SIZE];
+    stage13_10v_fill(&mut v8);
+    stage13_10v_put64(&mut v8, 144, 0x8877665544332211);
+    let Ok(a8) = parse_intel_alive(IntelAliveAbiVersion::V8, &v8) else {
+        return false;
+    };
+    if a8.platform_id != Some(0x8877665544332211)
+        || parse_intel_alive(IntelAliveAbiVersion::V8, &v8[..151])
+            != Err(IntelAliveError::UnsupportedLength)
+    {
+        return false;
+    }
+    let v3 = stage13_10t_valid_payload(INTEL_ALIVE_STATUS_OK);
+    if parse_intel_alive(IntelAliveAbiVersion::V3, &v3).is_err() {
+        return false;
+    }
+    let mut owner = Intel22000DmaContextInfo::new();
+    if owner.set_rx_queue(0x100000, 0x110000, 0x120000).is_err()
+        || owner.set_command_queue(0x130000, 32).is_err()
+        || owner
+            .stage_firmware_chunk(IntelContextInfoImageKind::Lmac, &[0x31; 512])
+            .is_err()
+        || owner
+            .stage_firmware_chunk(IntelContextInfoImageKind::Umac, &[0x42; 256])
+            .is_err()
+    {
+        return false;
+    }
+    let Ok(context) = owner.build_hardware_context(0x2200) else {
+        return false;
+    };
+    let io = Stage13_10sMockIo {
+        context_offset: 0,
+        context_address: 0,
+        context_writes: 0,
+        prph_register: 0,
+        prph_value: 0,
+        prph_writes: 0,
+        fail_prph: false,
+    };
+    let mut s = Intel22000FirmwareStartup::new(io);
+    s.publish_context(&context).is_ok()
+        && s.issue_cpu_init_run().is_ok()
+        && s.begin_alive_wait().is_ok()
+        && s.handle_alive_notification_versioned(
+            INTEL_UCODE_ALIVE_NTFY,
+            IntelAliveAbiVersion::V8,
+            &v8,
+        )
+        .is_ok()
+        && s.state() == IntelFirmwareStartState::FirmwareRunning
+}
+
 pub fn stage13_10s_self_test() -> bool {
     let mut owner = Intel22000DmaContextInfo::new();
     if owner.set_rx_queue(0x100000, 0x110000, 0x120000).is_err()
