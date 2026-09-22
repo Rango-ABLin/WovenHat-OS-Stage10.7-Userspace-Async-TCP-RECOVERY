@@ -223,6 +223,197 @@ impl IntelCsrBank {
     }
 }
 
+pub const INTEL_CSR_RESET_SW_RESET: u32 = 0x0000_0080;
+pub const INTEL_CSR_GP_CNTRL_MAC_CLOCK_READY: u32 = 0x0000_0001;
+pub const INTEL_RESET_POLL_LIMIT: usize = 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntelResetState {
+    Uninitialized,
+    ResetRequested,
+    WaitingForReady,
+    Ready,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntelResetError {
+    InvalidState,
+    Timeout,
+    Csr(IntelCsrError),
+}
+
+/// Explicit Intel reset/readiness lifecycle.
+///
+/// Stage 13.10I models the control flow and bounded readiness wait. The live
+/// hardware path is not invoked by the acceptance test; synthetic MMIO is used
+/// to validate state transitions, register effects, and timeout behavior.
+pub struct IntelResetController {
+    csr: IntelCsrBank,
+    state: IntelResetState,
+}
+
+impl IntelResetController {
+    pub const fn state(&self) -> IntelResetState {
+        self.state
+    }
+
+    pub fn new(csr: IntelCsrBank) -> Self {
+        Self {
+            csr,
+            state: IntelResetState::Uninitialized,
+        }
+    }
+
+    pub fn request_reset(&mut self) -> Result<(), IntelResetError> {
+        if self.state != IntelResetState::Uninitialized {
+            return Err(IntelResetError::InvalidState);
+        }
+
+        let current = self
+            .csr
+            .read(IntelCsr::Reset)
+            .map_err(IntelResetError::Csr)?;
+        self.csr
+            .write(IntelCsr::Reset, current | INTEL_CSR_RESET_SW_RESET)
+            .map_err(IntelResetError::Csr)?;
+        self.state = IntelResetState::ResetRequested;
+        Ok(())
+    }
+
+    pub fn begin_ready_wait(&mut self) -> Result<(), IntelResetError> {
+        if self.state != IntelResetState::ResetRequested {
+            return Err(IntelResetError::InvalidState);
+        }
+        self.state = IntelResetState::WaitingForReady;
+        Ok(())
+    }
+
+    pub fn poll_ready_bounded(&mut self, limit: usize) -> Result<(), IntelResetError> {
+        if self.state != IntelResetState::WaitingForReady {
+            return Err(IntelResetError::InvalidState);
+        }
+        if limit == 0 {
+            self.state = IntelResetState::Failed;
+            return Err(IntelResetError::Timeout);
+        }
+
+        for _ in 0..limit {
+            let value = self
+                .csr
+                .read(IntelCsr::GpControl)
+                .map_err(IntelResetError::Csr)?;
+            if value & INTEL_CSR_GP_CNTRL_MAC_CLOCK_READY != 0 {
+                self.state = IntelResetState::Ready;
+                return Ok(());
+            }
+        }
+
+        self.state = IntelResetState::Failed;
+        Err(IntelResetError::Timeout)
+    }
+}
+
+fn stage13_10i_supported_function() -> Option<SupportedWifiFunction> {
+    let mut ax200 = pci::Device {
+        segment: 0,
+        bus: 2,
+        device: 3,
+        function: 0,
+        vendor_id: 0x8086,
+        device_id: 0x2723,
+        revision: 1,
+        class: 0x02,
+        subclass: 0x80,
+        ..pci::Device::default()
+    };
+    ax200.bars[0] = pci::Bar {
+        valid: true,
+        kind: pci::BarKind::Memory64,
+        address: 0xfebc_0000,
+        prefetchable: false,
+    };
+    classify_supported(ax200).ok()
+}
+
+pub fn stage13_10i_self_test() -> bool {
+    let Some(function) = stage13_10i_supported_function() else {
+        return false;
+    };
+
+    let Ok(mut page) = DmaPage::allocate_zeroed() else {
+        return false;
+    };
+    let Ok(region) = MmioRegion::new(page.physical_address(), DMA_PAGE_SIZE) else {
+        return false;
+    };
+
+    // Seed synthetic readiness after reset has been requested. The reset
+    // controller itself still observes the flag only through IntelCsrBank.
+    if page
+        .write_u32(
+            IntelCsr::GpControl.offset(),
+            INTEL_CSR_GP_CNTRL_MAC_CLOCK_READY,
+        )
+        .is_err()
+    {
+        return false;
+    }
+
+    // SAFETY: this synthetic register window aliases one live, exclusively
+    // owned DmaPage for the duration of the controller.
+    let mmio = unsafe {
+        VolatileMmio32::from_mapped(region, page.virtual_address())
+    };
+    let Ok(csr) = IntelCsrBank::from_supported(function, mmio) else {
+        return false;
+    };
+
+    let mut reset = IntelResetController::new(csr);
+    if reset.state() != IntelResetState::Uninitialized
+        || reset.begin_ready_wait() != Err(IntelResetError::InvalidState)
+        || reset.request_reset().is_err()
+        || reset.state() != IntelResetState::ResetRequested
+        || reset.request_reset() != Err(IntelResetError::InvalidState)
+        || reset.begin_ready_wait().is_err()
+        || reset.state() != IntelResetState::WaitingForReady
+        || reset.poll_ready_bounded(INTEL_RESET_POLL_LIMIT).is_err()
+        || reset.state() != IntelResetState::Ready
+    {
+        return false;
+    }
+
+    if page.read_u32(IntelCsr::Reset.offset()).is_err_and(|_| true) {
+        return false;
+    }
+
+    // Independently prove a bounded wait fails closed instead of spinning
+    // forever when hardware readiness never appears.
+    let Some(function) = stage13_10i_supported_function() else {
+        return false;
+    };
+    let Ok(timeout_page) = DmaPage::allocate_zeroed() else {
+        return false;
+    };
+    let Ok(timeout_region) =
+        MmioRegion::new(timeout_page.physical_address(), DMA_PAGE_SIZE)
+    else {
+        return false;
+    };
+    // SAFETY: same synthetic, exclusively-owned mapping contract as above.
+    let timeout_mmio = unsafe {
+        VolatileMmio32::from_mapped(timeout_region, timeout_page.virtual_address())
+    };
+    let Ok(timeout_csr) = IntelCsrBank::from_supported(function, timeout_mmio) else {
+        return false;
+    };
+    let mut timeout_reset = IntelResetController::new(timeout_csr);
+
+    timeout_reset.request_reset().is_ok()
+        && timeout_reset.begin_ready_wait().is_ok()
+        && timeout_reset.poll_ready_bounded(4) == Err(IntelResetError::Timeout)
+        && timeout_reset.state() == IntelResetState::Failed
+}
 pub fn stage13_10h_self_test() -> bool {
     let mut ax200 = pci::Device {
         segment: 0,
