@@ -617,6 +617,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         serial::write_line(format_args!(
             "[S13.10T] AX200 ALIVE notification validation: PASSED"
         ));
+        if !wifi_hw::stage13_10u_dma_self_test() {
+            serial::write_line(format_args!(
+                "[S13.10U] contiguous firmware DMA ownership: FAILED"
+            ));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!(
+            "[S13.10U] contiguous firmware DMA ownership: PASSED"
+        ));
         if !wifi_backend::self_test() {
             serial::write_line(format_args!(
                 "[S13.9K] Wi-Fi transport/backend contract: FAILED"

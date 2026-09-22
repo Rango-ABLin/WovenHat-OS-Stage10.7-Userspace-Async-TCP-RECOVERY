@@ -10,7 +10,10 @@
 
 use core::sync::atomic::{fence, Ordering};
 
-use x86_64::structures::paging::{PhysFrame, Size4KiB};
+use x86_64::{
+    structures::paging::{PhysFrame, Size4KiB},
+    PhysAddr,
+};
 
 use crate::{hal::pci, memory, paging};
 
@@ -1287,53 +1290,94 @@ impl DeviceQueue {
 /// cannot return the physical frame to the allocator while a device-owned
 /// descriptor still refers to that frame.
 pub struct OwnedDmaBuffer {
-    page: DmaPage,
+    first_frame: PhysFrame<Size4KiB>,
+    physical_address: u64,
+    virtual_address: u64,
+    page_count: usize,
     length: u16,
     flags: u16,
 }
-
 impl OwnedDmaBuffer {
     pub fn allocate(length: u16, flags: u16) -> Result<Self, DmaMemoryError> {
-        if length == 0 || usize::from(length) > DMA_PAGE_SIZE {
+        if length == 0 {
             return Err(DmaMemoryError::AddressOverflow);
         }
+        let page_count = usize::from(length).div_ceil(DMA_PAGE_SIZE);
+        let first_frame =
+            memory::allocate_contiguous_frames(page_count).ok_or(DmaMemoryError::OutOfFrames)?;
+        let physical_address = first_frame.start_address().as_u64();
+        let release = |count: usize| {
+            for index in 0..count {
+                if let Ok(frame) = PhysFrame::from_start_address(PhysAddr::new(
+                    physical_address + (index * DMA_PAGE_SIZE) as u64,
+                )) {
+                    let _ = memory::deallocate_frame(frame);
+                }
+            }
+        };
+        let Some(offset) = paging::physical_memory_offset() else {
+            release(page_count);
+            return Err(DmaMemoryError::DirectMapUnavailable);
+        };
+        let Some(virtual_address) = offset.checked_add(physical_address) else {
+            release(page_count);
+            return Err(DmaMemoryError::AddressOverflow);
+        };
+        let allocation_len = page_count
+            .checked_mul(DMA_PAGE_SIZE)
+            .ok_or(DmaMemoryError::AddressOverflow)?;
+        unsafe { core::ptr::write_bytes(virtual_address as *mut u8, 0, allocation_len) };
         Ok(Self {
-            page: DmaPage::allocate_zeroed()?,
+            first_frame,
+            physical_address,
+            virtual_address,
+            page_count,
             length,
             flags,
         })
     }
-
     pub const fn physical_address(&self) -> u64 {
-        self.page.physical_address()
+        self.physical_address
     }
-
     pub const fn virtual_address(&self) -> u64 {
-        self.page.virtual_address()
+        self.virtual_address
     }
-
     pub const fn length(&self) -> u16 {
         self.length
     }
-
+    pub const fn page_count(&self) -> usize {
+        self.page_count
+    }
     pub const fn flags(&self) -> u16 {
         self.flags
     }
-
     pub fn descriptor(&self) -> DmaDescriptor {
         DmaDescriptor {
-            physical_address: self.page.physical_address(),
+            physical_address: self.physical_address,
             length: self.length,
             flags: self.flags,
         }
     }
-
     pub fn write_u32(&mut self, offset: usize, value: u32) -> Result<(), DmaMemoryError> {
-        self.page.write_u32(offset, value)
+        if offset & 3 != 0
+            || offset
+                .checked_add(4)
+                .is_none_or(|end| end > usize::from(self.length))
+        {
+            return Err(DmaMemoryError::AddressOverflow);
+        }
+        unsafe { ((self.virtual_address + offset as u64) as *mut u32).write_volatile(value) };
+        Ok(())
     }
-
     pub fn read_u32(&self, offset: usize) -> Result<u32, DmaMemoryError> {
-        self.page.read_u32(offset)
+        if offset & 3 != 0
+            || offset
+                .checked_add(4)
+                .is_none_or(|end| end > usize::from(self.length))
+        {
+            return Err(DmaMemoryError::AddressOverflow);
+        }
+        Ok(unsafe { ((self.virtual_address + offset as u64) as *const u32).read_volatile() })
     }
     pub fn write_bytes(&mut self, offset: usize, bytes: &[u8]) -> Result<(), DmaMemoryError> {
         let end = offset
@@ -1342,24 +1386,60 @@ impl OwnedDmaBuffer {
         if end > usize::from(self.length) {
             return Err(DmaMemoryError::AddressOverflow);
         }
-        // SAFETY: the checked range is inside this exclusively owned DMA page.
         unsafe {
             core::ptr::copy_nonoverlapping(
                 bytes.as_ptr(),
-                (self.page.virtual_address() as *mut u8).add(offset),
+                (self.virtual_address as *mut u8).add(offset),
                 bytes.len(),
             );
         }
         Ok(())
     }
-
     pub fn read_byte(&self, offset: usize) -> Result<u8, DmaMemoryError> {
         if offset >= usize::from(self.length) {
             return Err(DmaMemoryError::AddressOverflow);
         }
-        // SAFETY: offset is inside the live DMA allocation owned by self.
-        Ok(unsafe { ((self.page.virtual_address() as *const u8).add(offset)).read_volatile() })
+        Ok(unsafe { ((self.virtual_address as *const u8).add(offset)).read_volatile() })
     }
+}
+impl Drop for OwnedDmaBuffer {
+    fn drop(&mut self) {
+        let base = self.first_frame.start_address().as_u64();
+        for index in 0..self.page_count {
+            if let Ok(frame) =
+                PhysFrame::from_start_address(PhysAddr::new(base + (index * DMA_PAGE_SIZE) as u64))
+            {
+                let _ = memory::deallocate_frame(frame);
+            }
+        }
+    }
+}
+pub fn stage13_10u_dma_self_test() -> bool {
+    let before = memory::stats().allocated_frames;
+    {
+        let Ok(mut buffer) = OwnedDmaBuffer::allocate(32 * 1024, 0) else {
+            return false;
+        };
+        if buffer.page_count() != 8
+            || buffer.length() != 32 * 1024
+            || buffer.physical_address() & (DMA_PAGE_SIZE as u64 - 1) != 0
+        {
+            return false;
+        }
+        let pattern = [0x5au8; 96];
+        if buffer.write_bytes(DMA_PAGE_SIZE - 32, &pattern).is_err()
+            || buffer.read_byte(DMA_PAGE_SIZE - 32) != Ok(0x5a)
+            || buffer.read_byte(DMA_PAGE_SIZE + 63) != Ok(0x5a)
+            || buffer
+                .write_u32(DMA_PAGE_SIZE * 2 - 4, 0x1122_3344)
+                .is_err()
+            || buffer.read_u32(DMA_PAGE_SIZE * 2 - 4) != Ok(0x1122_3344)
+            || buffer.read_byte(32 * 1024).is_ok()
+        {
+            return false;
+        }
+    }
+    memory::stats().allocated_frames == before
 }
 
 struct BufferSlot {

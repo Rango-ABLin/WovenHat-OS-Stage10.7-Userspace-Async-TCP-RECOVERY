@@ -1516,14 +1516,14 @@ impl Intel22000DmaContextInfo {
             physical_address: buffer.physical_address(),
             length: manifest_length,
         };
-        self.manifest
-            .push(kind, entry)
-            .map_err(IntelContextInfoBuildError::Manifest)?;
         if self.firmware_dma_count >= self.firmware_dma.len() {
             return Err(IntelContextInfoBuildError::Manifest(
                 IntelContextInfoError::TooManySections,
             ));
         }
+        self.manifest
+            .push(kind, entry)
+            .map_err(IntelContextInfoBuildError::Manifest)?;
         self.firmware_dma[self.firmware_dma_count] = Some(buffer);
         self.firmware_dma_count += 1;
         Ok(entry)
@@ -2156,11 +2156,23 @@ pub fn stage13_10q_self_test() -> bool {
         return false;
     }
 
+    let large = [0x6cu8; INTEL_CONTEXT_INFO_MAX_DRAM_CHUNK_SIZE];
+    let Ok(large_entry) = context.stage_firmware_chunk(IntelContextInfoImageKind::Paging, &large)
+    else {
+        return false;
+    };
+    if large_entry.length != INTEL_CONTEXT_INFO_MAX_DRAM_CHUNK_SIZE as u32
+        || context.staged_byte(2, 0) != Ok(0x6c)
+        || context.staged_byte(2, INTEL_CONTEXT_INFO_MAX_DRAM_CHUNK_SIZE - 1) != Ok(0x6c)
+    {
+        return false;
+    }
+
     let too_large = [0u8; INTEL_CONTEXT_INFO_MAX_DRAM_CHUNK_SIZE + 1];
     context.stage_firmware_chunk(IntelContextInfoImageKind::Paging, &too_large)
         == Err(IntelContextInfoBuildError::Manifest(
             IntelContextInfoError::SectionTooLarge,
         ))
-        && context.firmware_buffer_count() == 2
-        && context.manifest().paging_count() == 0
+        && context.firmware_buffer_count() == 3
+        && context.manifest().paging_count() == 1
 }
