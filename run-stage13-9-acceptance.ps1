@@ -5,6 +5,6 @@ cargo clippy -p wovenhat-kernel --target x86_64-unknown-none --features stage13-
 if ($LASTEXITCODE -ne 0) { throw 'Kernel lint failed' }
 foreach ($cpu in 1,2,4) {
     python .\scripts\test-stage10-runtime.py --stage 13.9 --cpus $cpu --timeout 120
-    if ($LASTEXITCODE -ne 0) { throw "Stage 13.10K failed on $cpu CPU(s)" }
+    if ($LASTEXITCODE -ne 0) { throw "Stage 13.10L failed on $cpu CPU(s)" }
 }
-Write-Host '=== STAGE 13.10K WIFI FIRMWARE VALIDATION LIFECYCLE: PASS ==='
+Write-Host '=== STAGE 13.10L INTEL TLV FIRMWARE PARSER: PASS ==='

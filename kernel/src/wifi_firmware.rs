@@ -290,3 +290,233 @@ pub fn stage13_10k_self_test() -> bool {
         Err(FirmwareError::AddressOverflow)
     )
 }
+pub const INTEL_TLV_UCODE_MAGIC: u32 = 0x0a4c_5749;
+pub const INTEL_TLV_UCODE_HEADER_SIZE: usize = 88;
+pub const INTEL_TLV_HEADER_SIZE: usize = 8;
+pub const INTEL_TLV_SEC_RT: u32 = 19;
+pub const INTEL_TLV_SEC_INIT: u32 = 20;
+pub const INTEL_TLV_PAGING: u32 = 32;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntelFirmwareImageKind {
+    Runtime,
+    Init,
+    Paging,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IntelFirmwareSection<'a> {
+    pub image: IntelFirmwareImageKind,
+    pub device_offset: u32,
+    pub bytes: &'a [u8],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntelTlvError {
+    TooShort,
+    BadZeroPrefix,
+    BadMagic,
+    LengthOverflow,
+    TruncatedTlv,
+    InvalidPadding,
+    SectionTooShort,
+    EmptySection,
+    TooManySections,
+}
+
+pub struct IntelTlvFirmware<'a> {
+    bytes: &'a [u8],
+    sections: [Option<IntelFirmwareSection<'a>>; MAX_FIRMWARE_SECTIONS],
+    section_count: usize,
+    version: u32,
+    build: u32,
+}
+
+impl<'a> IntelTlvFirmware<'a> {
+    pub fn parse(bytes: &'a [u8]) -> Result<Self, IntelTlvError> {
+        if bytes.len() < INTEL_TLV_UCODE_HEADER_SIZE {
+            return Err(IntelTlvError::TooShort);
+        }
+        if read_le_u32(bytes, 0).ok_or(IntelTlvError::TooShort)? != 0 {
+            return Err(IntelTlvError::BadZeroPrefix);
+        }
+        if read_le_u32(bytes, 4).ok_or(IntelTlvError::TooShort)? != INTEL_TLV_UCODE_MAGIC {
+            return Err(IntelTlvError::BadMagic);
+        }
+
+        let version = read_le_u32(bytes, 72).ok_or(IntelTlvError::TooShort)?;
+        let build = read_le_u32(bytes, 76).ok_or(IntelTlvError::TooShort)?;
+        let mut parsed = Self {
+            bytes,
+            sections: [None; MAX_FIRMWARE_SECTIONS],
+            section_count: 0,
+            version,
+            build,
+        };
+
+        let mut cursor = INTEL_TLV_UCODE_HEADER_SIZE;
+        while cursor < bytes.len() {
+            let header_end = cursor
+                .checked_add(INTEL_TLV_HEADER_SIZE)
+                .ok_or(IntelTlvError::LengthOverflow)?;
+            if header_end > bytes.len() {
+                return Err(IntelTlvError::TruncatedTlv);
+            }
+
+            let tlv_type = read_le_u32(bytes, cursor).ok_or(IntelTlvError::TruncatedTlv)?;
+            let tlv_len = read_le_u32(bytes, cursor + 4).ok_or(IntelTlvError::TruncatedTlv)?;
+            let tlv_len = usize::try_from(tlv_len).map_err(|_| IntelTlvError::LengthOverflow)?;
+
+            let data_start = header_end;
+            let data_end = data_start
+                .checked_add(tlv_len)
+                .ok_or(IntelTlvError::LengthOverflow)?;
+            if data_end > bytes.len() {
+                return Err(IntelTlvError::TruncatedTlv);
+            }
+
+            let aligned_len = tlv_len
+                .checked_add(3)
+                .ok_or(IntelTlvError::LengthOverflow)?
+                & !3usize;
+            let next = data_start
+                .checked_add(aligned_len)
+                .ok_or(IntelTlvError::LengthOverflow)?;
+            if next > bytes.len() {
+                return Err(IntelTlvError::InvalidPadding);
+            }
+
+            let image = match tlv_type {
+                INTEL_TLV_SEC_RT => Some(IntelFirmwareImageKind::Runtime),
+                INTEL_TLV_SEC_INIT => Some(IntelFirmwareImageKind::Init),
+                INTEL_TLV_PAGING => Some(IntelFirmwareImageKind::Paging),
+                _ => None,
+            };
+
+            if let Some(image) = image {
+                if tlv_len < 4 {
+                    return Err(IntelTlvError::SectionTooShort);
+                }
+                if parsed.section_count >= MAX_FIRMWARE_SECTIONS {
+                    return Err(IntelTlvError::TooManySections);
+                }
+                let device_offset =
+                    read_le_u32(bytes, data_start).ok_or(IntelTlvError::SectionTooShort)?;
+                let payload = &bytes[data_start + 4..data_end];
+                if payload.is_empty() {
+                    return Err(IntelTlvError::EmptySection);
+                }
+                parsed.sections[parsed.section_count] = Some(IntelFirmwareSection {
+                    image,
+                    device_offset,
+                    bytes: payload,
+                });
+                parsed.section_count += 1;
+            }
+
+            cursor = next;
+        }
+
+        Ok(parsed)
+    }
+
+    pub const fn version(&self) -> u32 {
+        self.version
+    }
+
+    pub const fn build(&self) -> u32 {
+        self.build
+    }
+
+    pub const fn section_count(&self) -> usize {
+        self.section_count
+    }
+
+    pub fn section(&self, index: usize) -> Option<IntelFirmwareSection<'a>> {
+        if index >= self.section_count {
+            return None;
+        }
+        self.sections[index]
+    }
+
+    pub const fn bytes(&self) -> &'a [u8] {
+        self.bytes
+    }
+}
+
+fn read_le_u32(bytes: &[u8], offset: usize) -> Option<u32> {
+    let end = offset.checked_add(4)?;
+    let slice = bytes.get(offset..end)?;
+    Some(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+}
+
+pub fn stage13_10l_self_test() -> bool {
+    let mut blob = [0u8; 128];
+    blob[4..8].copy_from_slice(&INTEL_TLV_UCODE_MAGIC.to_le_bytes());
+    blob[72..76].copy_from_slice(&0x1122_3344u32.to_le_bytes());
+    blob[76..80].copy_from_slice(&7u32.to_le_bytes());
+
+    // Runtime SEC TLV. Intel section payload begins with a LE device offset.
+    let mut cursor = INTEL_TLV_UCODE_HEADER_SIZE;
+    blob[cursor..cursor + 4].copy_from_slice(&INTEL_TLV_SEC_RT.to_le_bytes());
+    blob[cursor + 4..cursor + 8].copy_from_slice(&12u32.to_le_bytes());
+    blob[cursor + 8..cursor + 12].copy_from_slice(&0x2000u32.to_le_bytes());
+    blob[cursor + 12..cursor + 20].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+    cursor += 20;
+
+    // Unknown TLV must be safely skipped, including 4-byte alignment padding.
+    blob[cursor..cursor + 4].copy_from_slice(&0xfeedu32.to_le_bytes());
+    blob[cursor + 4..cursor + 8].copy_from_slice(&3u32.to_le_bytes());
+    blob[cursor + 8..cursor + 11].copy_from_slice(&[9, 8, 7]);
+    cursor += 12;
+
+    let Ok(parsed) = IntelTlvFirmware::parse(&blob[..cursor]) else {
+        return false;
+    };
+    let Some(section) = parsed.section(0) else {
+        return false;
+    };
+    if parsed.version() != 0x1122_3344
+        || parsed.build() != 7
+        || parsed.section_count() != 1
+        || parsed.section(1).is_some()
+        || section.image != IntelFirmwareImageKind::Runtime
+        || section.device_offset != 0x2000
+        || section.bytes != [1, 2, 3, 4, 5, 6, 7, 8]
+        || parsed.bytes().len() != cursor
+    {
+        return false;
+    }
+
+    let mut bad_magic = blob;
+    bad_magic[4..8].copy_from_slice(&0u32.to_le_bytes());
+    if !matches!(
+        IntelTlvFirmware::parse(&bad_magic[..cursor]),
+        Err(IntelTlvError::BadMagic)
+    ) {
+        return false;
+    }
+
+    let mut truncated = blob;
+    truncated[INTEL_TLV_UCODE_HEADER_SIZE + 4..INTEL_TLV_UCODE_HEADER_SIZE + 8]
+        .copy_from_slice(&0x1000u32.to_le_bytes());
+    if !matches!(
+        IntelTlvFirmware::parse(&truncated[..cursor]),
+        Err(IntelTlvError::TruncatedTlv)
+    ) {
+        return false;
+    }
+
+    let mut too_short_section = [0u8; 100];
+    too_short_section[4..8].copy_from_slice(&INTEL_TLV_UCODE_MAGIC.to_le_bytes());
+    too_short_section[88..92].copy_from_slice(&INTEL_TLV_SEC_INIT.to_le_bytes());
+    too_short_section[92..96].copy_from_slice(&3u32.to_le_bytes());
+    if !matches!(
+        IntelTlvFirmware::parse(&too_short_section),
+        Err(IntelTlvError::SectionTooShort)
+    ) {
+        return false;
+    }
+
+    true
+}
