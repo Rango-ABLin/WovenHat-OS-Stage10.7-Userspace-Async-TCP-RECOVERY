@@ -123,10 +123,13 @@ impl Inventory {
 /// Serializes the legacy CONFIG_ADDRESS/CONFIG_DATA transaction and PCI config
 /// read/modify/write operations across CPUs. Never sleep while this lock is held.
 static CONFIG_LOCK: Mutex<()> = Mutex::with_rank((), 10);
-static CONFIG: Mutex<ConfigState> = Mutex::with_rank(ConfigState {
-    ecam: [None; MAX_ECAM_REGIONS],
-    ecam_count: 0,
-}, 10);
+static CONFIG: Mutex<ConfigState> = Mutex::with_rank(
+    ConfigState {
+        ecam: [None; MAX_ECAM_REGIONS],
+        ecam_count: 0,
+    },
+    10,
+);
 static INVENTORY: Mutex<Inventory> = Mutex::with_rank(Inventory::new(), 10);
 
 pub fn configure(allocations: &[McfgAllocation]) {
@@ -175,15 +178,29 @@ fn scan_bus_range(inventory: &mut Inventory, segment: u16, start_bus: u8, end_bu
     for bus in u16::from(start_bus)..=u16::from(end_bus) {
         let bus = bus as u8;
         for device in 0_u8..32 {
-            let address = Address { segment, bus, device, function: 0 };
-            let Some(identity) = read_config(address, 0) else { continue };
+            let address = Address {
+                segment,
+                bus,
+                device,
+                function: 0,
+            };
+            let Some(identity) = read_config(address, 0) else {
+                continue;
+            };
             if identity as u16 == 0xffff {
                 continue;
             }
             let header = read_config(address, 0x0c).unwrap_or(u32::MAX);
-            let functions = if ((header >> 16) as u8) & 0x80 != 0 { 8 } else { 1 };
+            let functions = if ((header >> 16) as u8) & 0x80 != 0 {
+                8
+            } else {
+                1
+            };
             for function in 0..functions {
-                let address = Address { function, ..address };
+                let address = Address {
+                    function,
+                    ..address
+                };
                 if let Some(found) = probe(address) {
                     inventory.record(found);
                 }
@@ -198,15 +215,38 @@ pub fn device(index: usize) -> Option<Device> {
 
 #[allow(dead_code)]
 pub fn read_config_dword(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
-    read_config(Address { segment: 0, bus, device, function }, u16::from(offset)).unwrap_or(u32::MAX)
+    read_config(
+        Address {
+            segment: 0,
+            bus,
+            device,
+            function,
+        },
+        u16::from(offset),
+    )
+    .unwrap_or(u32::MAX)
 }
 
 pub fn write_config_dword(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
-    let _ = write_config(Address { segment: 0, bus, device, function }, u16::from(offset), value);
+    let _ = write_config(
+        Address {
+            segment: 0,
+            bus,
+            device,
+            function,
+        },
+        u16::from(offset),
+        value,
+    );
 }
 
 pub fn enable_io_bus_master(bus: u8, device: u8, function: u8) {
-    let address = Address { segment: 0, bus, device, function };
+    let address = Address {
+        segment: 0,
+        bus,
+        device,
+        function,
+    };
     let _guard = CONFIG_LOCK.lock();
     if let Some(value) = read_config_unlocked(address, 0x04) {
         // PCI command: bit0 I/O space, bit2 bus master. Preserve status/high bits.
@@ -226,7 +266,15 @@ pub fn enable_memory_bus_master(address: Address) -> bool {
 }
 
 pub fn bar0_io_base(bus: u8, device: u8, function: u8) -> Option<u16> {
-    let bar = read_config(Address { segment: 0, bus, device, function }, 0x10)?;
+    let bar = read_config(
+        Address {
+            segment: 0,
+            bus,
+            device,
+            function,
+        },
+        0x10,
+    )?;
     if bar & 1 == 0 {
         return None;
     }
@@ -265,17 +313,30 @@ fn probe(address: Address) -> Option<Device> {
 
 fn read_bars(address: Address, header_type: u8) -> [Bar; 6] {
     let mut bars = [Bar::default(); 6];
-    let count = if header_type & 0x7f == 0x00 { 6 } else if header_type & 0x7f == 0x01 { 2 } else { 0 };
+    let count = if header_type & 0x7f == 0x00 {
+        6
+    } else if header_type & 0x7f == 0x01 {
+        2
+    } else {
+        0
+    };
     let mut index = 0usize;
     while index < count {
         let offset = 0x10 + (index as u16 * 4);
-        let Some(low) = read_config(address, offset) else { break };
+        let Some(low) = read_config(address, offset) else {
+            break;
+        };
         if low == 0 || low == u32::MAX {
             index += 1;
             continue;
         }
         if low & 1 != 0 {
-            bars[index] = Bar { valid: true, kind: BarKind::Io, address: u64::from(low & !3), prefetchable: false };
+            bars[index] = Bar {
+                valid: true,
+                kind: BarKind::Io,
+                address: u64::from(low & !3),
+                prefetchable: false,
+            };
             index += 1;
             continue;
         }
@@ -294,7 +355,12 @@ fn read_bars(address: Address, header_type: u8) -> [Bar; 6] {
             }
         }
         if memory_type == 0 {
-            bars[index] = Bar { valid: true, kind: BarKind::Memory32, address: u64::from(low & !0xf), prefetchable };
+            bars[index] = Bar {
+                valid: true,
+                kind: BarKind::Memory32,
+                address: u64::from(low & !0xf),
+                prefetchable,
+            };
         }
         index += 1;
     }
@@ -306,15 +372,24 @@ fn read_capabilities(address: Address, status: u16, header_type: u8) -> Capabili
     if status & (1 << 4) == 0 {
         return capabilities;
     }
-    let pointer_register = if header_type & 0x7f == 0x02 { 0x14 } else { 0x34 };
-    let Some(mut pointer) = read_config(address, pointer_register).map(|value| (value & 0xfc) as u16) else {
+    let pointer_register = if header_type & 0x7f == 0x02 {
+        0x14
+    } else {
+        0x34
+    };
+    let Some(mut pointer) =
+        read_config(address, pointer_register).map(|value| (value & 0xfc) as u16)
+    else {
         capabilities.malformed = true;
         return capabilities;
     };
     let mut visited = [0_u8; MAX_CAPABILITY_STEPS];
     let mut visited_count = 0usize;
     while pointer != 0 {
-        if !(0x40..=0xfc).contains(&pointer) || pointer & 3 != 0 || visited[..visited_count].contains(&(pointer as u8)) {
+        if !(0x40..=0xfc).contains(&pointer)
+            || pointer & 3 != 0
+            || visited[..visited_count].contains(&(pointer as u8))
+        {
             capabilities.malformed = true;
             break;
         }
@@ -362,7 +437,10 @@ fn read_config_unlocked(address: Address, offset: u16) -> Option<u32> {
         return None;
     }
     unsafe {
-        outl(CONFIG_ADDRESS, config_address(address.bus, address.device, address.function, offset as u8));
+        outl(
+            CONFIG_ADDRESS,
+            config_address(address.bus, address.device, address.function, offset as u8),
+        );
         Some(inl(CONFIG_DATA))
     }
 }
@@ -372,7 +450,9 @@ fn write_config_unlocked(address: Address, offset: u16, value: u32) -> bool {
         return false;
     }
     if let Some(physical) = ecam_physical(address, offset) {
-        let Ok(virtual_address) = crate::paging::map_mmio(physical) else { return false };
+        let Ok(virtual_address) = crate::paging::map_mmio(physical) else {
+            return false;
+        };
         unsafe { ptr::write_volatile(virtual_address as *mut u32, value) };
         return true;
     }
@@ -380,7 +460,10 @@ fn write_config_unlocked(address: Address, offset: u16, value: u32) -> bool {
         return false;
     }
     unsafe {
-        outl(CONFIG_ADDRESS, config_address(address.bus, address.device, address.function, offset as u8));
+        outl(
+            CONFIG_ADDRESS,
+            config_address(address.bus, address.device, address.function, offset as u8),
+        );
         outl(CONFIG_DATA, value);
     }
     true
@@ -391,10 +474,13 @@ fn ecam_physical(address: Address, offset: u16) -> Option<u64> {
     let allocation = state.ecam[..state.ecam_count]
         .iter()
         .flatten()
-        .find(|allocation| allocation.segment_group == address.segment
-            && (allocation.start_bus..=allocation.end_bus).contains(&address.bus))?;
+        .find(|allocation| {
+            allocation.segment_group == address.segment
+                && (allocation.start_bus..=allocation.end_bus).contains(&address.bus)
+        })?;
     let bus = u64::from(address.bus - allocation.start_bus);
-    allocation.base_address
+    allocation
+        .base_address
         .checked_add(bus << 20)?
         .checked_add(u64::from(address.device) << 15)?
         .checked_add(u64::from(address.function) << 12)?
@@ -410,9 +496,22 @@ const fn config_address(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
 }
 
 pub fn self_test() -> bool {
-    let allocation = McfgAllocation { base_address: 0xe000_0000, segment_group: 0, start_bus: 0x20, end_bus: 0x2f };
-    let ecam_math = ecam_address_for(allocation, Address { segment: 0, bus: 0x21, device: 3, function: 4 }, 0x100)
-        == Some(0xe000_0000 + (1 << 20) + (3 << 15) + (4 << 12) + 0x100);
+    let allocation = McfgAllocation {
+        base_address: 0xe000_0000,
+        segment_group: 0,
+        start_bus: 0x20,
+        end_bus: 0x2f,
+    };
+    let ecam_math = ecam_address_for(
+        allocation,
+        Address {
+            segment: 0,
+            bus: 0x21,
+            device: 3,
+            function: 4,
+        },
+        0x100,
+    ) == Some(0xe000_0000 + (1 << 20) + (3 << 15) + (4 << 12) + 0x100);
     config_address(2, 3, 4, 0x0b) == 0x8002_1c08
         && ecam_math
         && INVENTORY.lock().summary.recorded as usize <= MAX_DEVICES
@@ -428,7 +527,8 @@ fn ecam_address_for(allocation: McfgAllocation, address: Address, offset: u16) -
     {
         return None;
     }
-    allocation.base_address
+    allocation
+        .base_address
         .checked_add(u64::from(address.bus - allocation.start_bus) << 20)?
         .checked_add(u64::from(address.device) << 15)?
         .checked_add(u64::from(address.function) << 12)?
@@ -437,10 +537,14 @@ fn ecam_address_for(allocation: McfgAllocation, address: Address, offset: u16) -
 
 unsafe fn inl(port: u16) -> u32 {
     let value: u32;
-    unsafe { asm!("in eax, dx", in("dx") port, out("eax") value, options(nomem, nostack, preserves_flags)); }
+    unsafe {
+        asm!("in eax, dx", in("dx") port, out("eax") value, options(nomem, nostack, preserves_flags));
+    }
     value
 }
 
 unsafe fn outl(port: u16, value: u32) {
-    unsafe { asm!("out dx, eax", in("dx") port, in("eax") value, options(nomem, nostack, preserves_flags)); }
+    unsafe {
+        asm!("out dx, eax", in("dx") port, in("eax") value, options(nomem, nostack, preserves_flags));
+    }
 }

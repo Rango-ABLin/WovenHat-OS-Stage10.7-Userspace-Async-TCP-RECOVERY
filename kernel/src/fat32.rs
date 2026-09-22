@@ -884,13 +884,9 @@ where
                 }
                 let entry = directory_entry_from_sector(&sector, offset)?;
                 let mut decoded = [0u8; MAX_LONG_NAME];
-                let display_name = decode_long_name(
-                    &records,
-                    record_count,
-                    expected_checksum,
-                    &mut decoded,
-                )
-                .and_then(|length| core::str::from_utf8(&decoded[..length]).ok());
+                let display_name =
+                    decode_long_name(&records, record_count, expected_checksum, &mut decoded)
+                        .and_then(|length| core::str::from_utf8(&decoded[..length]).ok());
                 record_count = 0;
                 visitor(entry, display_name)?;
             }
@@ -1032,7 +1028,8 @@ pub fn find_in_directory_name(
 ) -> Result<DirectoryEntry, Error> {
     let mut normalized = [0u8; MAX_LONG_NAME];
     let normalized_len = normalize_name(name, &mut normalized).ok_or(Error::NameTooLong)?;
-    let name = core::str::from_utf8(&normalized[..normalized_len]).map_err(|_| Error::InvalidPath)?;
+    let name =
+        core::str::from_utf8(&normalized[..normalized_len]).map_err(|_| Error::InvalidPath)?;
     let short = encode_short_name(name);
     let mut cluster = dir_cluster;
     let mut visited = [0_u32; MAX_DIRECTORY_CLUSTERS];
@@ -1090,16 +1087,11 @@ pub fn find_in_directory_name(
                 let alias_matches = short.is_some_and(|candidate| candidate == entry.short_name);
                 let mut decoded = [0u8; MAX_LONG_NAME];
                 let lfn_matches = record_count != 0
-                    && decode_long_name(
-                        &records,
-                        record_count,
-                        expected_checksum,
-                        &mut decoded,
-                    )
-                    .is_some_and(|length| {
-                        decoded[..length].eq_ignore_ascii_case(name.as_bytes())
-                            || decoded[..length].eq(name.as_bytes())
-                    });
+                    && decode_long_name(&records, record_count, expected_checksum, &mut decoded)
+                        .is_some_and(|length| {
+                            decoded[..length].eq_ignore_ascii_case(name.as_bytes())
+                                || decoded[..length].eq(name.as_bytes())
+                        });
                 record_count = 0;
                 if alias_matches || lfn_matches {
                     return Ok(entry);
@@ -1136,9 +1128,7 @@ pub fn encode_long_name(
     let normalized_len = normalize_name(name, &mut normalized)?;
     let name = core::str::from_utf8(&normalized[..normalized_len]).ok()?;
     let bytes = name.as_bytes();
-    if bytes.is_empty()
-        || bytes.len() > MAX_LONG_NAME
-    {
+    if bytes.is_empty() || bytes.len() > MAX_LONG_NAME {
         return None;
     }
     let mut units = [0u16; MAX_LONG_NAME];
@@ -1158,7 +1148,10 @@ pub fn encode_long_name(
             units[unit_count] = scalar as u16;
             unit_count += 1;
         } else if scalar <= 0x10ffff {
-            if unit_count.checked_add(2).is_none_or(|end| end > units.len()) {
+            if unit_count
+                .checked_add(2)
+                .is_none_or(|end| end > units.len())
+            {
                 return None;
             }
             let value = scalar - 0x10000;
@@ -2319,7 +2312,10 @@ fn find_long_directory_slots(
                         run_len += 1;
                     }
                     if run_len == count {
-                        return Ok(LongDirectoryReservation { slots: run, extensions });
+                        return Ok(LongDirectoryReservation {
+                            slots: run,
+                            extensions,
+                        });
                     }
                 } else {
                     run_len = 0;
@@ -3053,8 +3049,8 @@ pub fn rename_path(
         mark_lfn_prefix_deleted(device, old_slot.lba, old_slot.offset)
     } else {
         let mut records = [[0u8; DIRECTORY_ENTRY_SIZE]; MAX_LFN_ENTRIES];
-        let record_count = encode_long_name(new_leaf, &new_short, &mut records)
-            .ok_or(Error::NameTooLong)?;
+        let record_count =
+            encode_long_name(new_leaf, &new_short, &mut records).ok_or(Error::NameTooLong)?;
         let reservation = find_long_directory_slots(device, volume, new_parent, record_count + 1)?;
         for (index, record) in records.iter().take(record_count).enumerate() {
             if let Err(err) = write_raw_directory_slot(
@@ -3216,11 +3212,7 @@ pub fn self_test() -> bool {
         && find_root(&mut disk, volume, b"MISSING TXT") == Err(Error::NotFound);
 
     let mut lfn_records = [[0u8; DIRECTORY_ENTRY_SIZE]; MAX_LFN_ENTRIES];
-    let lfn_count = encode_long_name(
-        "A long filename.txt",
-        b"ALONGN~1TXT",
-        &mut lfn_records,
-    );
+    let lfn_count = encode_long_name("A long filename.txt", b"ALONGN~1TXT", &mut lfn_records);
     let lfn_valid = lfn_count == Some(2)
         && lfn_records[0][0] == 0x42
         && lfn_records[1][0] == 0x01
@@ -3475,16 +3467,17 @@ impl BlockDevice for MutableFatDisk {
         if lba == 0 {
             sector.copy_from_slice(&self.boot);
         } else if (TestDisk::FAT_LBA
-            - (METADATA_SECTOR_COUNT + JOURNAL_SECTOR_COUNT + INODE_METADATA_SECTOR_COUNT)
-                as u64
+            - (METADATA_SECTOR_COUNT + JOURNAL_SECTOR_COUNT + INODE_METADATA_SECTOR_COUNT) as u64
             ..TestDisk::FAT_LBA - (METADATA_SECTOR_COUNT + JOURNAL_SECTOR_COUNT) as u64)
             .contains(&lba)
         {
             sector.copy_from_slice(
                 &self.inode_metadata[(lba
                     - (TestDisk::FAT_LBA
-                        - (METADATA_SECTOR_COUNT + JOURNAL_SECTOR_COUNT + INODE_METADATA_SECTOR_COUNT)
-                            as u64)) as usize],
+                        - (METADATA_SECTOR_COUNT
+                            + JOURNAL_SECTOR_COUNT
+                            + INODE_METADATA_SECTOR_COUNT) as u64))
+                    as usize],
             );
         } else if (TestDisk::FAT_LBA - (METADATA_SECTOR_COUNT + JOURNAL_SECTOR_COUNT) as u64
             ..TestDisk::FAT_LBA - METADATA_SECTOR_COUNT as u64)
@@ -3498,7 +3491,9 @@ impl BlockDevice for MutableFatDisk {
         } else if (TestDisk::FAT_LBA - METADATA_SECTOR_COUNT as u64..TestDisk::FAT_LBA)
             .contains(&lba)
         {
-            sector.copy_from_slice(&self.metadata[(lba - (TestDisk::FAT_LBA - METADATA_SECTOR_COUNT as u64)) as usize]);
+            sector.copy_from_slice(
+                &self.metadata[(lba - (TestDisk::FAT_LBA - METADATA_SECTOR_COUNT as u64)) as usize],
+            );
         } else if lba == 1 {
             sector.copy_from_slice(&self.fs_info);
         } else if lba == 7 {
@@ -3522,8 +3517,7 @@ impl BlockDevice for MutableFatDisk {
         if lba == 0 {
             self.boot.copy_from_slice(sector);
         } else if (TestDisk::FAT_LBA
-            - (METADATA_SECTOR_COUNT + JOURNAL_SECTOR_COUNT + INODE_METADATA_SECTOR_COUNT)
-                as u64
+            - (METADATA_SECTOR_COUNT + JOURNAL_SECTOR_COUNT + INODE_METADATA_SECTOR_COUNT) as u64
             ..TestDisk::FAT_LBA - (METADATA_SECTOR_COUNT + JOURNAL_SECTOR_COUNT) as u64)
             .contains(&lba)
         {
@@ -3691,27 +3685,26 @@ fn long_filename_self_test() -> bool {
         checksum: 0x5678,
         metadata,
     };
-    let metadata_ok = write_file_metadata_pending(
-        &mut disk,
-        volume,
-        metadata_hash,
-        metadata_tag,
-        metadata,
-    )
-        .is_ok()
-        && read_file_metadata(&mut disk, volume, metadata_hash, metadata_tag) == Ok(Some(metadata))
-        && finalize_file_metadata(&mut disk, volume, metadata_hash, metadata_tag) == Ok(true)
-        && write_file_metadata(&mut disk, volume, metadata_hash, metadata_tag, metadata).is_ok()
-        && remove_file_metadata(&mut disk, volume, metadata_hash, metadata_tag).is_ok()
-        && read_file_metadata(&mut disk, volume, metadata_hash, metadata_tag) == Ok(None)
-        && append_journal_intent(&mut disk, volume, intent).is_ok()
-        && read_journal_intent(&mut disk, volume, metadata_hash, metadata_tag) == Ok(Some(intent))
-        && append_journal_intent(&mut disk, volume, intent2).is_ok()
-        && remove_journal_intent(&mut disk, volume, metadata_hash, metadata_tag).is_ok()
-        && read_journal_intent(&mut disk, volume, metadata_hash, metadata_tag) == Ok(None)
-        && read_journal_intent(&mut disk, volume, intent2.path_hash, intent2.path_tag)
-            == Ok(Some(intent2))
-        && remove_journal_intent(&mut disk, volume, intent2.path_hash, intent2.path_tag).is_ok();
+    let metadata_ok =
+        write_file_metadata_pending(&mut disk, volume, metadata_hash, metadata_tag, metadata)
+            .is_ok()
+            && read_file_metadata(&mut disk, volume, metadata_hash, metadata_tag)
+                == Ok(Some(metadata))
+            && finalize_file_metadata(&mut disk, volume, metadata_hash, metadata_tag) == Ok(true)
+            && write_file_metadata(&mut disk, volume, metadata_hash, metadata_tag, metadata)
+                .is_ok()
+            && remove_file_metadata(&mut disk, volume, metadata_hash, metadata_tag).is_ok()
+            && read_file_metadata(&mut disk, volume, metadata_hash, metadata_tag) == Ok(None)
+            && append_journal_intent(&mut disk, volume, intent).is_ok()
+            && read_journal_intent(&mut disk, volume, metadata_hash, metadata_tag)
+                == Ok(Some(intent))
+            && append_journal_intent(&mut disk, volume, intent2).is_ok()
+            && remove_journal_intent(&mut disk, volume, metadata_hash, metadata_tag).is_ok()
+            && read_journal_intent(&mut disk, volume, metadata_hash, metadata_tag) == Ok(None)
+            && read_journal_intent(&mut disk, volume, intent2.path_hash, intent2.path_tag)
+                == Ok(Some(intent2))
+            && remove_journal_intent(&mut disk, volume, intent2.path_hash, intent2.path_tag)
+                .is_ok();
     if create_path_file(&mut disk, volume, name, b"lfn").is_err() {
         return false;
     }
@@ -3723,8 +3716,8 @@ fn long_filename_self_test() -> bool {
             && read_inode_metadata(&mut disk, volume, entry.first_cluster) == Ok(None)
     });
     let mut bytes = [0u8; 4];
-    let read_ok = read_path_bytes(&mut disk, volume, name, &mut bytes) == Ok(3)
-        && &bytes[..3] == b"lfn";
+    let read_ok =
+        read_path_bytes(&mut disk, volume, name, &mut bytes) == Ok(3) && &bytes[..3] == b"lfn";
     let mut listed = false;
     let listing_ok = for_each_directory_entry_named(
         &mut disk,

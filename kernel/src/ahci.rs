@@ -75,7 +75,10 @@ impl DmaPage {
         let virtual_address = offset.checked_add(physical)?;
         // SAFETY: this page is exclusively owned by the AHCI driver.
         unsafe { ptr::write_bytes(virtual_address as *mut u8, 0, PAGE_SIZE) };
-        Some(Self { physical, virtual_address })
+        Some(Self {
+            physical,
+            virtual_address,
+        })
     }
 
     fn bytes_mut(&mut self) -> &mut [u8; PAGE_SIZE] {
@@ -178,7 +181,14 @@ impl AhciDisk {
         table[0x8c..0x90].copy_from_slice(&((byte_count as u32).saturating_sub(1)).to_le_bytes());
     }
 
-    fn issue(&mut self, command: u8, lba: u64, sectors: u16, write: bool, bytes: usize) -> Result<(), InitError> {
+    fn issue(
+        &mut self,
+        command: u8,
+        lba: u64,
+        sectors: u16,
+        write: bool,
+        bytes: usize,
+    ) -> Result<(), InitError> {
         self.prepare_command(write, bytes);
         let table = self.command_table.bytes_mut();
         table[0] = FIS_TYPE_REG_H2D;
@@ -221,8 +231,8 @@ impl AhciDisk {
             return Err(InitError::UnsupportedDevice);
         }
         let sectors = u64::from_le_bytes([
-            words[200], words[201], words[202], words[203],
-            words[204], words[205], words[206], words[207],
+            words[200], words[201], words[202], words[203], words[204], words[205], words[206],
+            words[207],
         ]);
         if sectors == 0 {
             return Err(InitError::UnsupportedDevice);
@@ -243,7 +253,11 @@ impl AhciDisk {
             fence(Ordering::Release);
         }
         self.issue(
-            if write { ATA_WRITE_DMA_EXT } else { ATA_READ_DMA_EXT },
+            if write {
+                ATA_WRITE_DMA_EXT
+            } else {
+                ATA_READ_DMA_EXT
+            },
             lba,
             1,
             write,

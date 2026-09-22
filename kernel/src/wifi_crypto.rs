@@ -30,23 +30,37 @@ pub enum CryptoError {
 pub struct Pmk([u8; PMK_LEN]);
 
 impl Pmk {
-    pub fn expose(&self) -> &[u8; PMK_LEN] { &self.0 }
+    pub fn expose(&self) -> &[u8; PMK_LEN] {
+        &self.0
+    }
 }
 impl Drop for Pmk {
-    fn drop(&mut self) { self.0.zeroize(); }
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
 }
 
 pub struct Ptk([u8; PTK_LEN]);
 
 impl Ptk {
     #[cfg(feature = "stage13-9-test")]
-    pub fn from_test_bytes(bytes: [u8; PTK_LEN]) -> Self { Self(bytes) }
-    pub fn kck(&self) -> &[u8] { &self.0[..KCK_LEN] }
-    pub fn kek(&self) -> &[u8] { &self.0[KCK_LEN..KCK_LEN + KEK_LEN] }
-    pub fn tk(&self) -> &[u8] { &self.0[KCK_LEN + KEK_LEN..] }
+    pub fn from_test_bytes(bytes: [u8; PTK_LEN]) -> Self {
+        Self(bytes)
+    }
+    pub fn kck(&self) -> &[u8] {
+        &self.0[..KCK_LEN]
+    }
+    pub fn kek(&self) -> &[u8] {
+        &self.0[KCK_LEN..KCK_LEN + KEK_LEN]
+    }
+    pub fn tk(&self) -> &[u8] {
+        &self.0[KCK_LEN + KEK_LEN..]
+    }
 }
 impl Drop for Ptk {
-    fn drop(&mut self) { self.0.zeroize(); }
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
 }
 
 pub fn derive_pmk(passphrase: &[u8], ssid: &[u8]) -> Result<Pmk, CryptoError> {
@@ -129,11 +143,15 @@ pub fn compute_eapol_mic(kck: &[u8], eapol_frame: &[u8]) -> Result<[u8; 16], Cry
 }
 
 pub fn verify_eapol_mic(kck: &[u8], eapol_frame: &[u8]) -> Result<(), CryptoError> {
-    if eapol_frame.len() < 4 + 95 { return Err(CryptoError::InvalidEapolFrame); }
+    if eapol_frame.len() < 4 + 95 {
+        return Err(CryptoError::InvalidEapolFrame);
+    }
     let expected = compute_eapol_mic(kck, eapol_frame)?;
     let mic_start = 4 + 77;
     let mic_end = mic_start + 16;
-    let actual = eapol_frame.get(mic_start..mic_end).ok_or(CryptoError::InvalidEapolFrame)?;
+    let actual = eapol_frame
+        .get(mic_start..mic_end)
+        .ok_or(CryptoError::InvalidEapolFrame)?;
     if bool::from(expected.ct_eq(actual)) {
         Ok(())
     } else {
@@ -144,21 +162,28 @@ pub fn verify_eapol_mic(kck: &[u8], eapol_frame: &[u8]) -> Result<(), CryptoErro
 pub fn self_test() -> bool {
     // IEEE 802.11i / common WPA2 PBKDF2 test vector:
     // passphrase "password", SSID "IEEE".
-    let Ok(pmk) = derive_pmk(b"password", b"IEEE") else { return false; };
+    let Ok(pmk) = derive_pmk(b"password", b"IEEE") else {
+        return false;
+    };
     let expected_pmk: [u8; 32] = [
-        0xf4,0x2c,0x6f,0xc5,0x2d,0xf0,0xeb,0xef,
-        0x9e,0xbb,0x4b,0x90,0xb3,0x8a,0x5f,0x90,
-        0x2e,0x83,0xfe,0x1b,0x13,0x5a,0x70,0xe2,
-        0x3a,0xed,0x76,0x2e,0x97,0x10,0xa1,0x2e,
+        0xf4, 0x2c, 0x6f, 0xc5, 0x2d, 0xf0, 0xeb, 0xef, 0x9e, 0xbb, 0x4b, 0x90, 0xb3, 0x8a, 0x5f,
+        0x90, 0x2e, 0x83, 0xfe, 0x1b, 0x13, 0x5a, 0x70, 0xe2, 0x3a, 0xed, 0x76, 0x2e, 0x97, 0x10,
+        0xa1, 0x2e,
     ];
-    if pmk.expose() != &expected_pmk { return false; }
+    if pmk.expose() != &expected_pmk {
+        return false;
+    }
 
-    let aa = [0x00,0x14,0x6c,0x7e,0x40,0x80];
-    let spa = [0x00,0x13,0x46,0xfe,0x32,0x0c];
+    let aa = [0x00, 0x14, 0x6c, 0x7e, 0x40, 0x80];
+    let spa = [0x00, 0x13, 0x46, 0xfe, 0x32, 0x0c];
     let anonce = [0x11u8; 32];
     let snonce = [0x22u8; 32];
-    let Ok(ptk1) = derive_ptk(&pmk, aa, spa, anonce, snonce) else { return false; };
-    let Ok(ptk2) = derive_ptk(&pmk, spa, aa, snonce, anonce) else { return false; };
+    let Ok(ptk1) = derive_ptk(&pmk, aa, spa, anonce, snonce) else {
+        return false;
+    };
+    let Ok(ptk2) = derive_ptk(&pmk, spa, aa, snonce, anonce) else {
+        return false;
+    };
     if ptk1.kck() != ptk2.kck() || ptk1.kek() != ptk2.kek() || ptk1.tk() != ptk2.tk() {
         return false;
     }
@@ -168,9 +193,13 @@ pub fn self_test() -> bool {
     eapol[1] = 3;
     eapol[2..4].copy_from_slice(&95u16.to_be_bytes());
     eapol[4] = 2;
-    let Ok(mic) = compute_eapol_mic(ptk1.kck(), &eapol) else { return false; };
+    let Ok(mic) = compute_eapol_mic(ptk1.kck(), &eapol) else {
+        return false;
+    };
     eapol[81..97].copy_from_slice(&mic);
-    if verify_eapol_mic(ptk1.kck(), &eapol).is_err() { return false; }
+    if verify_eapol_mic(ptk1.kck(), &eapol).is_err() {
+        return false;
+    }
     eapol[10] ^= 1;
     verify_eapol_mic(ptk1.kck(), &eapol) == Err(CryptoError::MicMismatch)
 }

@@ -33,7 +33,12 @@ struct Slot {
     data: [u8; MAX_80211_FRAME],
 }
 impl Slot {
-    const fn empty() -> Self { Self { len: 0, data: [0; MAX_80211_FRAME] } }
+    const fn empty() -> Self {
+        Self {
+            len: 0,
+            data: [0; MAX_80211_FRAME],
+        }
+    }
 }
 
 pub trait WifiBackend {
@@ -67,17 +72,28 @@ impl VirtualBackend {
         Self {
             up: false,
             tx: [Slot::empty(); QUEUE_DEPTH],
-            tx_head: 0, tx_tail: 0, tx_count: 0,
+            tx_head: 0,
+            tx_tail: 0,
+            tx_count: 0,
             rx: [Slot::empty(); QUEUE_DEPTH],
-            rx_head: 0, rx_tail: 0, rx_count: 0,
-            tx_frames: 0, rx_frames: 0, tx_dropped: 0, rx_dropped: 0,
+            rx_head: 0,
+            rx_tail: 0,
+            rx_count: 0,
+            tx_frames: 0,
+            rx_frames: 0,
+            tx_dropped: 0,
+            rx_dropped: 0,
         }
     }
 
     pub fn dequeue_tx(&mut self, out: &mut [u8]) -> Result<Option<usize>, BackendError> {
-        if self.tx_count == 0 { return Ok(None); }
+        if self.tx_count == 0 {
+            return Ok(None);
+        }
         let slot = &self.tx[self.tx_head];
-        if out.len() < slot.len { return Err(BackendError::BufferTooSmall); }
+        if out.len() < slot.len {
+            return Err(BackendError::BufferTooSmall);
+        }
         out[..slot.len].copy_from_slice(&slot.data[..slot.len]);
         let len = slot.len;
         self.tx[self.tx_head].len = 0;
@@ -88,7 +104,9 @@ impl VirtualBackend {
 
     /// Inject a received 802.11 frame as if delivered by a chipset/firmware.
     pub fn inject_rx(&mut self, frame: &[u8]) -> Result<(), BackendError> {
-        if !self.up { return Err(BackendError::Down); }
+        if !self.up {
+            return Err(BackendError::Down);
+        }
         if frame.len() > MAX_80211_FRAME {
             self.rx_dropped = self.rx_dropped.saturating_add(1);
             return Err(BackendError::FrameTooLarge);
@@ -110,16 +128,28 @@ impl WifiBackend for VirtualBackend {
     fn set_up(&mut self, up: bool) {
         self.up = up;
         if !up {
-            self.tx_head = 0; self.tx_tail = 0; self.tx_count = 0;
-            self.rx_head = 0; self.rx_tail = 0; self.rx_count = 0;
-            for slot in &mut self.tx { slot.len = 0; }
-            for slot in &mut self.rx { slot.len = 0; }
+            self.tx_head = 0;
+            self.tx_tail = 0;
+            self.tx_count = 0;
+            self.rx_head = 0;
+            self.rx_tail = 0;
+            self.rx_count = 0;
+            for slot in &mut self.tx {
+                slot.len = 0;
+            }
+            for slot in &mut self.rx {
+                slot.len = 0;
+            }
         }
     }
-    fn is_up(&self) -> bool { self.up }
+    fn is_up(&self) -> bool {
+        self.up
+    }
 
     fn transmit(&mut self, frame: &[u8]) -> Result<(), BackendError> {
-        if !self.up { return Err(BackendError::Down); }
+        if !self.up {
+            return Err(BackendError::Down);
+        }
         if frame.len() > MAX_80211_FRAME {
             self.tx_dropped = self.tx_dropped.saturating_add(1);
             return Err(BackendError::FrameTooLarge);
@@ -138,10 +168,16 @@ impl WifiBackend for VirtualBackend {
     }
 
     fn receive_into(&mut self, out: &mut [u8]) -> Result<Option<usize>, BackendError> {
-        if !self.up { return Err(BackendError::Down); }
-        if self.rx_count == 0 { return Ok(None); }
+        if !self.up {
+            return Err(BackendError::Down);
+        }
+        if self.rx_count == 0 {
+            return Ok(None);
+        }
         let slot = &self.rx[self.rx_head];
-        if out.len() < slot.len { return Err(BackendError::BufferTooSmall); }
+        if out.len() < slot.len {
+            return Err(BackendError::BufferTooSmall);
+        }
         out[..slot.len].copy_from_slice(&slot.data[..slot.len]);
         let len = slot.len;
         self.rx[self.rx_head].len = 0;
@@ -166,28 +202,51 @@ pub fn self_test() -> bool {
     let mut backend = VirtualBackend::new();
     let frame = [0x5au8; 128];
 
-    if backend.transmit(&frame) != Err(BackendError::Down) { return false; }
+    if backend.transmit(&frame) != Err(BackendError::Down) {
+        return false;
+    }
     backend.set_up(true);
-    if !backend.is_up() { return false; }
+    if !backend.is_up() {
+        return false;
+    }
 
-    if backend.transmit(&frame).is_err() { return false; }
+    if backend.transmit(&frame).is_err() {
+        return false;
+    }
     let mut out = [0u8; MAX_80211_FRAME];
-    let Ok(Some(tx_len)) = backend.dequeue_tx(&mut out) else { return false; };
-    if tx_len != frame.len() || out[..tx_len] != frame { return false; }
+    let Ok(Some(tx_len)) = backend.dequeue_tx(&mut out) else {
+        return false;
+    };
+    if tx_len != frame.len() || out[..tx_len] != frame {
+        return false;
+    }
 
-    if backend.inject_rx(&frame).is_err() { return false; }
+    if backend.inject_rx(&frame).is_err() {
+        return false;
+    }
     out.fill(0);
-    let Ok(Some(rx_len)) = backend.receive_into(&mut out) else { return false; };
-    if rx_len != frame.len() || out[..rx_len] != frame { return false; }
+    let Ok(Some(rx_len)) = backend.receive_into(&mut out) else {
+        return false;
+    };
+    if rx_len != frame.len() || out[..rx_len] != frame {
+        return false;
+    }
 
     for _ in 0..QUEUE_DEPTH {
-        if backend.transmit(&frame).is_err() { return false; }
+        if backend.transmit(&frame).is_err() {
+            return false;
+        }
     }
-    if backend.transmit(&frame) != Err(BackendError::TxFull) { return false; }
+    if backend.transmit(&frame) != Err(BackendError::TxFull) {
+        return false;
+    }
 
     let stats = backend.stats();
-    if !stats.up || stats.tx_frames != (QUEUE_DEPTH as u64 + 1)
-        || stats.rx_frames != 1 || stats.tx_dropped != 1 || stats.rx_dropped != 0
+    if !stats.up
+        || stats.tx_frames != (QUEUE_DEPTH as u64 + 1)
+        || stats.rx_frames != 1
+        || stats.tx_dropped != 1
+        || stats.rx_dropped != 0
     {
         return false;
     }

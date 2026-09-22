@@ -88,7 +88,9 @@ impl Queue {
         let slot = self.entries.iter_mut().find(|entry| entry.is_none())?;
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1).max(1);
-        *slot = Some(Request::pending(id, operation, lba, data, owner, completion));
+        *slot = Some(Request::pending(
+            id, operation, lba, data, owner, completion,
+        ));
         Some(id)
     }
 
@@ -348,8 +350,8 @@ fn enqueue_user(
     if worker == owner {
         return Err(Error::DeviceFault);
     }
-    let completion = async_op::allocate_current(AsyncClass::Block)
-        .map_err(|_| Error::DeviceFault)?;
+    let completion =
+        async_op::allocate_current(AsyncClass::Block).map_err(|_| Error::DeviceFault)?;
     if QUEUE
         .lock()
         .push(operation, lba, data, owner, Some(completion))
@@ -372,10 +374,7 @@ pub fn submit_user_read(lba: u64) -> Result<async_op::Handle, Error> {
 /// Stage 10.4 Ring-3 write submission. The userspace sector has already been
 /// copied into this kernel-owned buffer before the request becomes visible to
 /// the worker, so no raw Ring-3 pointer survives the syscall boundary.
-pub fn submit_user_write(
-    lba: u64,
-    data: [u8; SECTOR_SIZE],
-) -> Result<async_op::Handle, Error> {
+pub fn submit_user_write(lba: u64, data: [u8; SECTOR_SIZE]) -> Result<async_op::Handle, Error> {
     enqueue_user(Operation::Write, lba, data)
 }
 
@@ -476,8 +475,8 @@ fn submit(
     if let Some(input) = input {
         data.copy_from_slice(input);
     }
-    let completion = async_op::allocate_current(AsyncClass::Block)
-        .map_err(|_| Error::DeviceFault)?;
+    let completion =
+        async_op::allocate_current(AsyncClass::Block).map_err(|_| Error::DeviceFault)?;
     let owner = task::current_task_id_if_running().ok_or(Error::DeviceFault)?;
     let Some(id) = QUEUE
         .lock()
@@ -541,10 +540,7 @@ fn process_one_primary() -> bool {
     if let Some(completion) = completion {
         EVENT_SIGNALS.fetch_add(1, Ordering::Relaxed);
         let status = if result.is_ok() { 0 } else { -1 };
-        let _ = async_op::complete(
-            completion,
-            AsyncCompletion::new(status, work.request.id),
-        );
+        let _ = async_op::complete(completion, AsyncCompletion::new(status, work.request.id));
     }
     true
 }
@@ -609,7 +605,13 @@ pub fn self_test() -> bool {
         return false;
     }
 
-    let Some(read_id) = queue.push(Operation::Read, 2, [0; SECTOR_SIZE], TaskId::from_u64(0), None) else {
+    let Some(read_id) = queue.push(
+        Operation::Read,
+        2,
+        [0; SECTOR_SIZE],
+        TaskId::from_u64(0),
+        None,
+    ) else {
         return false;
     };
     if !drive_one(&mut queue, &mut disk)
@@ -621,12 +623,26 @@ pub fn self_test() -> bool {
 
     let mut ids = [0_u64; MAX_BLOCK_IO_REQUESTS];
     for (index, slot) in ids.iter_mut().enumerate() {
-        let Some(id) = queue.push(Operation::Write, index as u64 % 4, second, TaskId::from_u64(0), None) else {
+        let Some(id) = queue.push(
+            Operation::Write,
+            index as u64 % 4,
+            second,
+            TaskId::from_u64(0),
+            None,
+        ) else {
             return false;
         };
         *slot = id;
     }
-    if queue.push(Operation::Flush, 0, [0; SECTOR_SIZE], TaskId::from_u64(0), None).is_some()
+    if queue
+        .push(
+            Operation::Flush,
+            0,
+            [0; SECTOR_SIZE],
+            TaskId::from_u64(0),
+            None,
+        )
+        .is_some()
         || queue.active_count() != MAX_BLOCK_IO_REQUESTS
     {
         return false;

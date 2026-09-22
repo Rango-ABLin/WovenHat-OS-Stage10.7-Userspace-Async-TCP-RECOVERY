@@ -1373,7 +1373,6 @@ fn sys_ping_poll() -> u64 {
     }
 }
 
-
 fn authorize_async_class(class: crate::async_op::AsyncClass) -> bool {
     match class {
         crate::async_op::AsyncClass::Block => {
@@ -1391,8 +1390,12 @@ fn authorize_async_class(class: crate::async_op::AsyncClass) -> bool {
         // File operations are created only through the dedicated Stage 10.5
         // submission syscalls, which authorize the exact descriptor/scope.
         crate::async_op::AsyncClass::File => false,
-        crate::async_op::AsyncClass::Timer => crate::task::current_has(crate::capability::Capability::TimerRead),
-        crate::async_op::AsyncClass::Event => crate::task::current_has(crate::capability::Capability::Ipc),
+        crate::async_op::AsyncClass::Timer => {
+            crate::task::current_has(crate::capability::Capability::TimerRead)
+        }
+        crate::async_op::AsyncClass::Event => {
+            crate::task::current_has(crate::capability::Capability::Ipc)
+        }
     }
 }
 
@@ -1417,8 +1420,13 @@ fn sys_async_create(class: u64) -> u64 {
     };
     // Ring 3 may directly manufacture only Service operations. Hardware-backed
     // classes receive handles from their dedicated submission syscalls.
-    if !matches!(class, crate::async_op::AsyncClass::Service | crate::async_op::AsyncClass::Timer | crate::async_op::AsyncClass::Event)
-        || !authorize_async_class(class) {
+    if !matches!(
+        class,
+        crate::async_op::AsyncClass::Service
+            | crate::async_op::AsyncClass::Timer
+            | crate::async_op::AsyncClass::Event
+    ) || !authorize_async_class(class)
+    {
         return SYSCALL_ERROR;
     }
     match crate::async_op::allocate_current(class) {
@@ -1437,8 +1445,13 @@ fn sys_async_poll(raw_handle: u64, user_completion: u64) -> u64 {
     let Ok(class) = crate::async_op::class_current(handle) else {
         return SYSCALL_ERROR;
     };
-    if !matches!(class, crate::async_op::AsyncClass::Service | crate::async_op::AsyncClass::Timer | crate::async_op::AsyncClass::Event)
-        || !authorize_async_class(class) {
+    if !matches!(
+        class,
+        crate::async_op::AsyncClass::Service
+            | crate::async_op::AsyncClass::Timer
+            | crate::async_op::AsyncClass::Event
+    ) || !authorize_async_class(class)
+    {
         return SYSCALL_ERROR;
     }
     match crate::async_op::peek_current(handle) {
@@ -1472,7 +1485,8 @@ fn sys_async_wait(raw_handle: u64, user_completion: u64) -> u64 {
         crate::async_op::AsyncClass::Service
             | crate::async_op::AsyncClass::Timer
             | crate::async_op::AsyncClass::Event
-    ) || !authorize_async_class(class) {
+    ) || !authorize_async_class(class)
+    {
         return SYSCALL_ERROR;
     }
     let Ok(completion) = crate::async_op::wait_ready(handle) else {
@@ -1489,59 +1503,105 @@ fn sys_async_wait(raw_handle: u64, user_completion: u64) -> u64 {
 }
 
 fn sys_timer_create(relative: u64, period: u64) -> u64 {
-    if !crate::task::current_has(crate::capability::Capability::TimerRead) { return SYSCALL_ERROR; }
-    let deadline = crate::timer::ticks().checked_add(relative).filter(|&value| value != u64::MAX);
-    deadline.and_then(|value| crate::async_events::create_timer(crate::task::current_process_id(), value, period).ok()).unwrap_or(SYSCALL_ERROR)
+    if !crate::task::current_has(crate::capability::Capability::TimerRead) {
+        return SYSCALL_ERROR;
+    }
+    let deadline = crate::timer::ticks()
+        .checked_add(relative)
+        .filter(|&value| value != u64::MAX);
+    deadline
+        .and_then(|value| {
+            crate::async_events::create_timer(crate::task::current_process_id(), value, period).ok()
+        })
+        .unwrap_or(SYSCALL_ERROR)
 }
 
 fn sys_timer_wait(raw: u64) -> u64 {
-    if !crate::task::current_has(crate::capability::Capability::TimerRead) { return SYSCALL_ERROR; }
+    if !crate::task::current_has(crate::capability::Capability::TimerRead) {
+        return SYSCALL_ERROR;
+    }
     crate::async_events::wait_current(raw, true).map_or(SYSCALL_ERROR, |handle| handle.to_raw())
 }
 
 fn sys_event_create(initial: u64) -> u64 {
-    if !crate::task::current_has(crate::capability::Capability::Ipc) { return SYSCALL_ERROR; }
-    crate::async_events::create_event(crate::task::current_process_id(), initial != 0).unwrap_or(SYSCALL_ERROR)
+    if !crate::task::current_has(crate::capability::Capability::Ipc) {
+        return SYSCALL_ERROR;
+    }
+    crate::async_events::create_event(crate::task::current_process_id(), initial != 0)
+        .unwrap_or(SYSCALL_ERROR)
 }
 
 fn sys_event_set(raw: u64, state: u64) -> u64 {
-    if !crate::task::current_has(crate::capability::Capability::Ipc) { return SYSCALL_ERROR; }
-    crate::async_events::set_event(crate::task::current_process_id(), raw, state != 0).map_or(SYSCALL_ERROR, |()| 0)
+    if !crate::task::current_has(crate::capability::Capability::Ipc) {
+        return SYSCALL_ERROR;
+    }
+    crate::async_events::set_event(crate::task::current_process_id(), raw, state != 0)
+        .map_or(SYSCALL_ERROR, |()| 0)
 }
 
 fn sys_event_wait(raw: u64) -> u64 {
-    if !crate::task::current_has(crate::capability::Capability::Ipc) { return SYSCALL_ERROR; }
+    if !crate::task::current_has(crate::capability::Capability::Ipc) {
+        return SYSCALL_ERROR;
+    }
     crate::async_events::wait_current(raw, false).map_or(SYSCALL_ERROR, |handle| handle.to_raw())
 }
 
 fn sys_timer_close(raw: u64) -> u64 {
-    crate::async_events::close(crate::task::current_process_id(), raw, true).map_or(SYSCALL_ERROR, |()| 0)
+    crate::async_events::close(crate::task::current_process_id(), raw, true)
+        .map_or(SYSCALL_ERROR, |()| 0)
 }
 
 fn sys_event_close(raw: u64) -> u64 {
-    crate::async_events::close(crate::task::current_process_id(), raw, false).map_or(SYSCALL_ERROR, |()| 0)
+    crate::async_events::close(crate::task::current_process_id(), raw, false)
+        .map_or(SYSCALL_ERROR, |()| 0)
 }
 
 fn sys_sleep_until(deadline: u64) -> u64 {
-    if !crate::task::current_has(crate::capability::Capability::TimerRead) { return SYSCALL_ERROR; }
+    if !crate::task::current_has(crate::capability::Capability::TimerRead) {
+        return SYSCALL_ERROR;
+    }
     crate::task::wait_for_event_until(deadline);
     0
 }
 
 fn sys_notification_poll(user_buffer: u64) -> u64 {
-    if !crate::task::current_has(crate::capability::Capability::Ipc) { return SYSCALL_ERROR; }
-    let Some(note) = crate::notifications::receive_for(crate::task::current_process_id()) else { return 0; };
+    if !crate::task::current_has(crate::capability::Capability::Ipc) {
+        return SYSCALL_ERROR;
+    }
+    let Some(note) = crate::notifications::receive_for(crate::task::current_process_id()) else {
+        return 0;
+    };
     let mut bytes = [0u8; 24];
     bytes[0..8].copy_from_slice(&(note.kind as u64).to_le_bytes());
     bytes[8..16].copy_from_slice(&note.source.to_le_bytes());
     bytes[16..24].copy_from_slice(&note.payload.to_le_bytes());
-    if crate::paging::copy_to_current_user(user_buffer, &bytes).is_err() { return SYSCALL_ERROR; }
+    if crate::paging::copy_to_current_user(user_buffer, &bytes).is_err() {
+        return SYSCALL_ERROR;
+    }
     1
 }
 fn sys_notification_post(kind: u64, payload: u64) -> u64 {
-    if !crate::task::current_has(crate::capability::Capability::Ipc) || !(1..=6).contains(&kind) { return SYSCALL_ERROR; }
-    let kind = match kind { 1 => crate::notifications::Kind::Terminate, 2 => crate::notifications::Kind::Suspend, 3 => crate::notifications::Kind::Resume, 4 => crate::notifications::Kind::ChildExit, 5 => crate::notifications::Kind::Exception, _ => crate::notifications::Kind::User };
-    if crate::notifications::publish(crate::notifications::Notification { recipient: crate::task::current_process_id(), kind, source: crate::task::current_process_id(), payload }) { 0 } else { SYSCALL_ERROR }
+    if !crate::task::current_has(crate::capability::Capability::Ipc) || !(1..=6).contains(&kind) {
+        return SYSCALL_ERROR;
+    }
+    let kind = match kind {
+        1 => crate::notifications::Kind::Terminate,
+        2 => crate::notifications::Kind::Suspend,
+        3 => crate::notifications::Kind::Resume,
+        4 => crate::notifications::Kind::ChildExit,
+        5 => crate::notifications::Kind::Exception,
+        _ => crate::notifications::Kind::User,
+    };
+    if crate::notifications::publish(crate::notifications::Notification {
+        recipient: crate::task::current_process_id(),
+        kind,
+        source: crate::task::current_process_id(),
+        payload,
+    }) {
+        0
+    } else {
+        SYSCALL_ERROR
+    }
 }
 
 fn sys_async_cancel(raw_handle: u64) -> u64 {
@@ -1560,7 +1620,10 @@ fn sys_async_cancel(raw_handle: u64) -> u64 {
         let _ = crate::async_file::cancel(handle);
     } else if class == crate::async_op::AsyncClass::Network {
         let _ = crate::async_network::cancel(handle);
-    } else if matches!(class, crate::async_op::AsyncClass::Timer | crate::async_op::AsyncClass::Event) {
+    } else if matches!(
+        class,
+        crate::async_op::AsyncClass::Timer | crate::async_op::AsyncClass::Event
+    ) {
         crate::async_events::cancel(handle);
     }
     match crate::async_op::cancel_current(handle) {
@@ -1683,10 +1746,14 @@ fn sys_async_block_wait(raw_handle: u64, user_result: u64) -> u64 {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct AsyncFileRequest { offset: u64, buffer: u64, length: u64 }
+struct AsyncFileRequest {
+    offset: u64,
+    buffer: u64,
+    length: u64,
+}
 
 fn copy_async_file_request(user_request: u64) -> Result<AsyncFileRequest, ()> {
-    let mut bytes=[0u8; 24];
+    let mut bytes = [0u8; 24];
     crate::paging::copy_from_current_user(user_request, &mut bytes).map_err(|_| ())?;
     Ok(AsyncFileRequest {
         offset: u64::from_ne_bytes(bytes[0..8].try_into().map_err(|_| ())?),
@@ -1695,79 +1762,159 @@ fn copy_async_file_request(user_request: u64) -> Result<AsyncFileRequest, ()> {
     })
 }
 fn sys_async_file_read(descriptor: u64, user_request: u64) -> u64 {
-    let Ok(request)=copy_async_file_request(user_request) else { return SYSCALL_ERROR; };
-    let Ok(offset)=usize::try_from(request.offset) else { return SYSCALL_ERROR; };
-    let Ok(length)=usize::try_from(request.length) else { return SYSCALL_ERROR; };
-    if length > MAX_IO_SIZE { return SYSCALL_ERROR; }
+    let Ok(request) = copy_async_file_request(user_request) else {
+        return SYSCALL_ERROR;
+    };
+    let Ok(offset) = usize::try_from(request.offset) else {
+        return SYSCALL_ERROR;
+    };
+    let Ok(length) = usize::try_from(request.length) else {
+        return SYSCALL_ERROR;
+    };
+    if length > MAX_IO_SIZE {
+        return SYSCALL_ERROR;
+    }
     crate::async_file::submit_read(descriptor, offset, length).map_or(SYSCALL_ERROR, |h| h.to_raw())
 }
 fn sys_async_file_write(descriptor: u64, user_request: u64) -> u64 {
-    let Ok(request)=copy_async_file_request(user_request) else { return SYSCALL_ERROR; };
-    let Ok(offset)=usize::try_from(request.offset) else { return SYSCALL_ERROR; };
-    let Ok(length)=usize::try_from(request.length) else { return SYSCALL_ERROR; };
-    if length > MAX_IO_SIZE { return SYSCALL_ERROR; }
-    let mut data=[0u8; MAX_IO_SIZE];
-    if crate::paging::copy_from_current_user(request.buffer, &mut data[..length]).is_err() { return SYSCALL_ERROR; }
-    crate::async_file::submit_write(descriptor, offset, &data[..length]).map_or(SYSCALL_ERROR, |h| h.to_raw())
+    let Ok(request) = copy_async_file_request(user_request) else {
+        return SYSCALL_ERROR;
+    };
+    let Ok(offset) = usize::try_from(request.offset) else {
+        return SYSCALL_ERROR;
+    };
+    let Ok(length) = usize::try_from(request.length) else {
+        return SYSCALL_ERROR;
+    };
+    if length > MAX_IO_SIZE {
+        return SYSCALL_ERROR;
+    }
+    let mut data = [0u8; MAX_IO_SIZE];
+    if crate::paging::copy_from_current_user(request.buffer, &mut data[..length]).is_err() {
+        return SYSCALL_ERROR;
+    }
+    crate::async_file::submit_write(descriptor, offset, &data[..length])
+        .map_or(SYSCALL_ERROR, |h| h.to_raw())
 }
-fn copy_file_completion(user_completion: u64, completion: crate::async_op::Completion) -> Result<(), ()> {
-    let mut bytes=[0u8;16];
+fn copy_file_completion(
+    user_completion: u64,
+    completion: crate::async_op::Completion,
+) -> Result<(), ()> {
+    let mut bytes = [0u8; 16];
     bytes[0..4].copy_from_slice(&completion.status.to_ne_bytes());
     bytes[4..8].copy_from_slice(&completion.reserved.to_ne_bytes());
     bytes[8..16].copy_from_slice(&completion.value.to_ne_bytes());
     crate::paging::copy_to_current_user(user_completion, &bytes).map_err(|_| ())
 }
-fn finish_async_file(handle: crate::async_op::Handle, user_completion: u64, user_data: u64, wait: bool) -> u64 {
-    if crate::async_op::class_current(handle) != Ok(crate::async_op::AsyncClass::File) { return SYSCALL_ERROR; }
-    let completion=if wait {
-        match crate::async_op::wait_ready(handle) { Ok(c)=>c, Err(_)=>return SYSCALL_ERROR }
-    } else {
-        match crate::async_op::peek_current(handle) { Ok(Some(c))=>c, Ok(None)=>return 0, Err(_)=>return SYSCALL_ERROR }
-    };
-    let Some(result)=crate::async_file::peek_result(handle) else { return SYSCALL_ERROR; };
-    let write=result.operation == crate::async_file::Operation::Write;
-    if !crate::task::authorize_current_file_scope(result.scope, write) { return SYSCALL_ERROR; }
-    if copy_file_completion(user_completion, completion).is_err() { return SYSCALL_ERROR; }
-    if !write && result.result.is_ok() {
-        let count=result.result.unwrap_or(0).min(result.length);
-        if crate::paging::copy_to_current_user(user_data, &result.data[..count]).is_err() { return SYSCALL_ERROR; }
+fn finish_async_file(
+    handle: crate::async_op::Handle,
+    user_completion: u64,
+    user_data: u64,
+    wait: bool,
+) -> u64 {
+    if crate::async_op::class_current(handle) != Ok(crate::async_op::AsyncClass::File) {
+        return SYSCALL_ERROR;
     }
-    if !crate::async_file::consume(handle) || crate::async_op::release_current(handle).is_err() { return SYSCALL_ERROR; }
+    let completion = if wait {
+        match crate::async_op::wait_ready(handle) {
+            Ok(c) => c,
+            Err(_) => return SYSCALL_ERROR,
+        }
+    } else {
+        match crate::async_op::peek_current(handle) {
+            Ok(Some(c)) => c,
+            Ok(None) => return 0,
+            Err(_) => return SYSCALL_ERROR,
+        }
+    };
+    let Some(result) = crate::async_file::peek_result(handle) else {
+        return SYSCALL_ERROR;
+    };
+    let write = result.operation == crate::async_file::Operation::Write;
+    if !crate::task::authorize_current_file_scope(result.scope, write) {
+        return SYSCALL_ERROR;
+    }
+    if copy_file_completion(user_completion, completion).is_err() {
+        return SYSCALL_ERROR;
+    }
+    if !write && result.result.is_ok() {
+        let count = result.result.unwrap_or(0).min(result.length);
+        if crate::paging::copy_to_current_user(user_data, &result.data[..count]).is_err() {
+            return SYSCALL_ERROR;
+        }
+    }
+    if !crate::async_file::consume(handle) || crate::async_op::release_current(handle).is_err() {
+        return SYSCALL_ERROR;
+    }
     1
 }
 fn sys_async_file_poll(raw_handle: u64, user_completion: u64, user_data: u64) -> u64 {
-    let Ok(handle)=async_handle(raw_handle) else { return SYSCALL_ERROR; };
+    let Ok(handle) = async_handle(raw_handle) else {
+        return SYSCALL_ERROR;
+    };
     finish_async_file(handle, user_completion, user_data, false)
 }
 fn sys_async_file_wait(raw_handle: u64, user_completion: u64, user_data: u64) -> u64 {
-    let Ok(handle)=async_handle(raw_handle) else { return SYSCALL_ERROR; };
+    let Ok(handle) = async_handle(raw_handle) else {
+        return SYSCALL_ERROR;
+    };
     finish_async_file(handle, user_completion, user_data, true)
 }
-
 
 fn sys_port_read(port: u64, destination: u64, argument: u64, wait: bool) -> u64 {
     let (capacity, deadline) = if wait {
         let mut options = [0u8; 16];
-        if crate::paging::copy_from_current_user(argument, &mut options).is_err() { return SYSCALL_ERROR; }
+        if crate::paging::copy_from_current_user(argument, &mut options).is_err() {
+            return SYSCALL_ERROR;
+        }
         let timeout = u64::from_le_bytes(options[8..].try_into().unwrap());
-        let deadline = if timeout == u64::MAX { u64::MAX } else {
-            let Some(deadline) = crate::timer::ticks().checked_add(timeout).filter(|&d| d != u64::MAX) else { return SYSCALL_ERROR; };
+        let deadline = if timeout == u64::MAX {
+            u64::MAX
+        } else {
+            let Some(deadline) = crate::timer::ticks()
+                .checked_add(timeout)
+                .filter(|&d| d != u64::MAX)
+            else {
+                return SYSCALL_ERROR;
+            };
             deadline
         };
-        (u64::from_le_bytes(options[..8].try_into().unwrap()), deadline)
-    } else { (argument, 0) };
-    if capacity == 0 || capacity > crate::completion_queue::BATCH as u64 { return SYSCALL_ERROR; }
+        (
+            u64::from_le_bytes(options[..8].try_into().unwrap()),
+            deadline,
+        )
+    } else {
+        (argument, 0)
+    };
+    if capacity == 0 || capacity > crate::completion_queue::BATCH as u64 {
+        return SYSCALL_ERROR;
+    }
     let owner = crate::task::current_process_id();
-    let Some(task) = crate::task::current_task_id_if_running() else { return SYSCALL_ERROR; };
+    let Some(task) = crate::task::current_task_id_if_running() else {
+        return SYSCALL_ERROR;
+    };
     loop {
         let result = crate::completion_port::begin(owner, port, task, capacity as usize, wait);
-        let Ok((events, count)) = result else { return SYSCALL_ERROR; };
+        let Ok((events, count)) = result else {
+            return SYSCALL_ERROR;
+        };
         if count != 0 {
             let mut bytes = [0u8; crate::completion_queue::BATCH * 40];
-            for (event, out) in events[..count].iter().zip(bytes.as_chunks_mut::<40>().0.iter_mut()) { event.encode(out); }
-            let copied = crate::paging::copy_to_current_user(destination, &bytes[..count * 40]).is_ok();
-            let acknowledged = crate::completion_port::finish(owner, port, task, &events[..count], copied).is_ok();
-            return if copied && acknowledged { count as u64 } else { SYSCALL_ERROR };
+            for (event, out) in events[..count]
+                .iter()
+                .zip(bytes.as_chunks_mut::<40>().0.iter_mut())
+            {
+                event.encode(out);
+            }
+            let copied =
+                crate::paging::copy_to_current_user(destination, &bytes[..count * 40]).is_ok();
+            let acknowledged =
+                crate::completion_port::finish(owner, port, task, &events[..count], copied).is_ok();
+            return if copied && acknowledged {
+                count as u64
+            } else {
+                SYSCALL_ERROR
+            };
         }
         if !wait || (deadline != u64::MAX && crate::timer::ticks() >= deadline) {
             crate::completion_port::unwatch(port, task);
@@ -1779,52 +1926,96 @@ fn sys_port_read(port: u64, destination: u64, argument: u64, wait: bool) -> u64 
 }
 
 fn sys_async_tcp_connect(socket: u64, packed: u64) -> u64 {
-    if !crate::task::authorize_current_device(crate::wovenguard::DeviceClass::Network) { return SYSCALL_ERROR; }
-    let Ok(endpoint) = crate::network::endpoint_from_packed(packed) else { return SYSCALL_ERROR; };
+    if !crate::task::authorize_current_device(crate::wovenguard::DeviceClass::Network) {
+        return SYSCALL_ERROR;
+    }
+    let Ok(endpoint) = crate::network::endpoint_from_packed(packed) else {
+        return SYSCALL_ERROR;
+    };
     crate::async_network::submit_connect(socket, endpoint).map_or(SYSCALL_ERROR, |h| h.to_raw())
 }
 
 fn sys_async_net_send(socket: u64, user_buffer: u64, length: u64) -> u64 {
-    if !crate::task::authorize_current_device(crate::wovenguard::DeviceClass::Network) { return SYSCALL_ERROR; }
-    let Ok(length)=usize::try_from(length) else { return SYSCALL_ERROR; };
-    if length > MAX_IO_SIZE { return SYSCALL_ERROR; }
-    let mut data=[0u8; MAX_IO_SIZE];
-    if crate::paging::copy_from_current_user(user_buffer, &mut data[..length]).is_err() { return SYSCALL_ERROR; }
+    if !crate::task::authorize_current_device(crate::wovenguard::DeviceClass::Network) {
+        return SYSCALL_ERROR;
+    }
+    let Ok(length) = usize::try_from(length) else {
+        return SYSCALL_ERROR;
+    };
+    if length > MAX_IO_SIZE {
+        return SYSCALL_ERROR;
+    }
+    let mut data = [0u8; MAX_IO_SIZE];
+    if crate::paging::copy_from_current_user(user_buffer, &mut data[..length]).is_err() {
+        return SYSCALL_ERROR;
+    }
     crate::async_network::submit_send(socket, &data[..length]).map_or(SYSCALL_ERROR, |h| h.to_raw())
 }
 
 fn sys_async_net_recv(socket: u64, capacity: u64) -> u64 {
-    if !crate::task::authorize_current_device(crate::wovenguard::DeviceClass::Network) { return SYSCALL_ERROR; }
-    let Ok(capacity)=usize::try_from(capacity) else { return SYSCALL_ERROR; };
-    if capacity > MAX_IO_SIZE { return SYSCALL_ERROR; }
+    if !crate::task::authorize_current_device(crate::wovenguard::DeviceClass::Network) {
+        return SYSCALL_ERROR;
+    }
+    let Ok(capacity) = usize::try_from(capacity) else {
+        return SYSCALL_ERROR;
+    };
+    if capacity > MAX_IO_SIZE {
+        return SYSCALL_ERROR;
+    }
     crate::async_network::submit_recv(socket, capacity).map_or(SYSCALL_ERROR, |h| h.to_raw())
 }
 
-fn finish_async_net(handle: crate::async_op::Handle, user_completion: u64, user_data: u64, wait: bool) -> u64 {
+fn finish_async_net(
+    handle: crate::async_op::Handle,
+    user_completion: u64,
+    user_data: u64,
+    wait: bool,
+) -> u64 {
     if crate::async_op::class_current(handle) != Ok(crate::async_op::AsyncClass::Network)
         || !crate::task::authorize_current_device(crate::wovenguard::DeviceClass::Network)
-    { return SYSCALL_ERROR; }
-    let completion=if wait {
-        match crate::async_op::wait_ready(handle) { Ok(c)=>c, Err(_)=>return SYSCALL_ERROR }
-    } else {
-        match crate::async_op::peek_current(handle) { Ok(Some(c))=>c, Ok(None)=>return 0, Err(_)=>return SYSCALL_ERROR }
-    };
-    let Some(result)=crate::async_network::peek_result(handle) else { return SYSCALL_ERROR; };
-    if copy_file_completion(user_completion, completion).is_err() { return SYSCALL_ERROR; }
-    if result.operation == crate::async_network::Operation::Recv && result.result.is_ok() {
-        let count=result.result.unwrap_or(0).min(result.length);
-        if crate::paging::copy_to_current_user(user_data, &result.data[..count]).is_err() { return SYSCALL_ERROR; }
+    {
+        return SYSCALL_ERROR;
     }
-    if !crate::async_network::consume(handle) || crate::async_op::release_current(handle).is_err() { return SYSCALL_ERROR; }
+    let completion = if wait {
+        match crate::async_op::wait_ready(handle) {
+            Ok(c) => c,
+            Err(_) => return SYSCALL_ERROR,
+        }
+    } else {
+        match crate::async_op::peek_current(handle) {
+            Ok(Some(c)) => c,
+            Ok(None) => return 0,
+            Err(_) => return SYSCALL_ERROR,
+        }
+    };
+    let Some(result) = crate::async_network::peek_result(handle) else {
+        return SYSCALL_ERROR;
+    };
+    if copy_file_completion(user_completion, completion).is_err() {
+        return SYSCALL_ERROR;
+    }
+    if result.operation == crate::async_network::Operation::Recv && result.result.is_ok() {
+        let count = result.result.unwrap_or(0).min(result.length);
+        if crate::paging::copy_to_current_user(user_data, &result.data[..count]).is_err() {
+            return SYSCALL_ERROR;
+        }
+    }
+    if !crate::async_network::consume(handle) || crate::async_op::release_current(handle).is_err() {
+        return SYSCALL_ERROR;
+    }
     1
 }
 
 fn sys_async_net_poll(raw_handle: u64, user_completion: u64, user_data: u64) -> u64 {
-    let Ok(handle)=async_handle(raw_handle) else { return SYSCALL_ERROR; };
+    let Ok(handle) = async_handle(raw_handle) else {
+        return SYSCALL_ERROR;
+    };
     finish_async_net(handle, user_completion, user_data, false)
 }
 fn sys_async_net_wait(raw_handle: u64, user_completion: u64, user_data: u64) -> u64 {
-    let Ok(handle)=async_handle(raw_handle) else { return SYSCALL_ERROR; };
+    let Ok(handle) = async_handle(raw_handle) else {
+        return SYSCALL_ERROR;
+    };
     finish_async_net(handle, user_completion, user_data, true)
 }
 
@@ -1955,12 +2146,24 @@ pub extern "C" fn wovenhat_syscall_dispatch(
         value if value == Number::AsyncNetPoll as u64 => sys_async_net_poll(arg0, arg1, arg2),
         value if value == Number::AsyncNetWait as u64 => sys_async_net_wait(arg0, arg1, arg2),
         value if value == Number::AsyncTcpConnect as u64 => sys_async_tcp_connect(arg0, arg1),
-        value if value == Number::CompletionPortCreate as u64 => crate::completion_port::create(crate::task::current_process_id()).unwrap_or(SYSCALL_ERROR),
-        value if value == Number::CompletionPortClose as u64 => crate::completion_port::close(crate::task::current_process_id(), arg0).map_or(SYSCALL_ERROR, |()| 0),
-        value if value == Number::CompletionPortAssociate as u64 => async_handle(arg0).ok()
-            .and_then(|handle| crate::async_op::associate_current(handle, arg1, arg2).ok()).map_or(SYSCALL_ERROR, |()| 0),
-        value if value == Number::CompletionPortPoll as u64 => sys_port_read(arg0, arg1, arg2, false),
-        value if value == Number::CompletionPortWait as u64 => sys_port_read(arg0, arg1, arg2, true),
+        value if value == Number::CompletionPortCreate as u64 => {
+            crate::completion_port::create(crate::task::current_process_id())
+                .unwrap_or(SYSCALL_ERROR)
+        }
+        value if value == Number::CompletionPortClose as u64 => {
+            crate::completion_port::close(crate::task::current_process_id(), arg0)
+                .map_or(SYSCALL_ERROR, |()| 0)
+        }
+        value if value == Number::CompletionPortAssociate as u64 => async_handle(arg0)
+            .ok()
+            .and_then(|handle| crate::async_op::associate_current(handle, arg1, arg2).ok())
+            .map_or(SYSCALL_ERROR, |()| 0),
+        value if value == Number::CompletionPortPoll as u64 => {
+            sys_port_read(arg0, arg1, arg2, false)
+        }
+        value if value == Number::CompletionPortWait as u64 => {
+            sys_port_read(arg0, arg1, arg2, true)
+        }
         value if value == Number::TimerCreate as u64 => sys_timer_create(arg0, arg1),
         value if value == Number::TimerWait as u64 => sys_timer_wait(arg0),
         value if value == Number::EventCreate as u64 => sys_event_create(arg0),

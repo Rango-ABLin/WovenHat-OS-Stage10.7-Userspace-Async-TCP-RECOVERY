@@ -76,3 +76,14 @@ the HDA codec converter must also receive Set Converter Format. That verb uses
 the 4-bit-verb/16-bit-payload encoding, which the original 12-bit/8-bit command
 helper could not express. R5 adds command16() and programs PCM format 0x0011 on
 both DAC and ADC before assigning stream tags. Acceptance is unchanged.
+
+## Stage 13.8G â€” WovenAudio stream/API integration
+
+WovenAudio now acts as the hardware-independent faÃ§ade above HDA. It exposes:
+- playback/capture direction and a common stream descriptor;
+- a stable 48 kHz, 16-bit, stereo format descriptor for the current backend;
+- one-shot playback and capture operations through WovenAudio rather than direct HDA calls;
+- mixer state translated into a WovenAudio-facing structure;
+- an integrated smoke test that initializes the registered audio device and exercises mixer, playback, and capture through the faÃ§ade.
+
+This stage intentionally keeps HDA-specific verbs and DMA implementation inside `hda.rs`. It is a boundary milestone, not yet a general asynchronous userspace audio server or arbitrary-format streaming API.

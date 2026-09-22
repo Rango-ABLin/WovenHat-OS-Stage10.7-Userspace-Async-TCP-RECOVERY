@@ -254,8 +254,16 @@ pub fn complete(handle: Handle, completion: Completion) -> Result<(), Error> {
         }
         slot.completion = completion;
         slot.state = State::Complete;
-        let wake = slot.port.map(|port| crate::completion_port::publish(
-            port, handle.to_raw(), slot.class as u32, 0, completion.status, completion.value));
+        let wake = slot.port.map(|port| {
+            crate::completion_port::publish(
+                port,
+                handle.to_raw(),
+                slot.class as u32,
+                0,
+                completion.status,
+                completion.value,
+            )
+        });
         (slot.waiting.then_some(slot.owner), wake)
     };
 
@@ -264,7 +272,9 @@ pub fn complete(handle: Handle, completion: Completion) -> Result<(), Error> {
         SIGNALS.fetch_add(1, Ordering::Relaxed);
         let _ = task::signal_event(waiter);
     }
-    if let Some(wake) = port_waiters { crate::completion_port::notify(wake); }
+    if let Some(wake) = port_waiters {
+        crate::completion_port::notify(wake);
+    }
     Ok(())
 }
 
@@ -277,16 +287,31 @@ pub fn associate_current(handle: Handle, port: u64, cookie: u64) -> Result<(), E
     let wake = {
         let mut table = TABLE.lock();
         let slot = table.get_mut(handle).ok_or(Error::InvalidHandle)?;
-        if slot.owner != owner { return Err(Error::NotOwner); }
-        if slot.port.is_some() { return Err(Error::AlreadyAssociated); }
-        crate::completion_port::reserve(process, port, handle.to_raw(), cookie).map_err(|_| Error::Full)?;
+        if slot.owner != owner {
+            return Err(Error::NotOwner);
+        }
+        if slot.port.is_some() {
+            return Err(Error::AlreadyAssociated);
+        }
+        crate::completion_port::reserve(process, port, handle.to_raw(), cookie)
+            .map_err(|_| Error::Full)?;
         slot.port = Some(port);
         if slot.state == State::Complete {
-            Some(crate::completion_port::publish(port, handle.to_raw(), slot.class as u32, 0,
-                slot.completion.status, slot.completion.value))
-        } else { None }
+            Some(crate::completion_port::publish(
+                port,
+                handle.to_raw(),
+                slot.class as u32,
+                0,
+                slot.completion.status,
+                slot.completion.value,
+            ))
+        } else {
+            None
+        }
     };
-    if let Some(wake) = wake { crate::completion_port::notify(wake); }
+    if let Some(wake) = wake {
+        crate::completion_port::notify(wake);
+    }
     Ok(())
 }
 
@@ -382,12 +407,24 @@ pub fn release_current(handle: Handle) -> Result<(), Error> {
         return Err(Error::NotOwner);
     }
     let wake = if slot.state == State::Pending {
-        slot.port.map(|port| crate::completion_port::publish(port, handle.to_raw(), slot.class as u32,
-            crate::completion_queue::CANCELLED, -2, 0))
-    } else { None };
+        slot.port.map(|port| {
+            crate::completion_port::publish(
+                port,
+                handle.to_raw(),
+                slot.class as u32,
+                crate::completion_queue::CANCELLED,
+                -2,
+                0,
+            )
+        })
+    } else {
+        None
+    };
     slot.release();
     drop(table);
-    if let Some(wake) = wake { crate::completion_port::notify(wake); }
+    if let Some(wake) = wake {
+        crate::completion_port::notify(wake);
+    }
     RELEASED.fetch_add(1, Ordering::Relaxed);
     Ok(())
 }
@@ -406,12 +443,24 @@ pub fn cancel_current(handle: Handle) -> Result<(), Error> {
         return Err(Error::NotOwner);
     }
     let wake = if slot.state == State::Pending {
-        slot.port.map(|port| crate::completion_port::publish(port, handle.to_raw(), slot.class as u32,
-            crate::completion_queue::CANCELLED, -2, 0))
-    } else { None };
+        slot.port.map(|port| {
+            crate::completion_port::publish(
+                port,
+                handle.to_raw(),
+                slot.class as u32,
+                crate::completion_queue::CANCELLED,
+                -2,
+                0,
+            )
+        })
+    } else {
+        None
+    };
     slot.release();
     drop(table);
-    if let Some(wake) = wake { crate::completion_port::notify(wake); }
+    if let Some(wake) = wake {
+        crate::completion_port::notify(wake);
+    }
     CANCELLED.fetch_add(1, Ordering::Relaxed);
     RELEASED.fetch_add(1, Ordering::Relaxed);
     Ok(())
@@ -426,7 +475,14 @@ pub fn release_owner(owner: TaskId) -> usize {
     for (index, slot) in table.slots.iter_mut().enumerate() {
         if slot.state != State::Free && slot.owner == owner {
             if let Some(port) = slot.port {
-                crate::completion_port::abandon(port, Handle { slot: index as u16, generation: slot.generation }.to_raw());
+                crate::completion_port::abandon(
+                    port,
+                    Handle {
+                        slot: index as u16,
+                        generation: slot.generation,
+                    }
+                    .to_raw(),
+                );
             }
             slot.release();
             released += 1;

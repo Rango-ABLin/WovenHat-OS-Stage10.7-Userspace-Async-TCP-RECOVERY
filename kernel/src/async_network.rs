@@ -6,8 +6,8 @@
 //! The worker sleeps on scheduler events when smoltcp reports WouldBlock;
 //! `network::poll()` signals progress so readiness retries are event-driven.
 
-use core::sync::atomic::{AtomicU64, Ordering};
 use crate::irq_lock::IrqMutex as Mutex;
+use core::sync::atomic::{AtomicU64, Ordering};
 use smoltcp::wire::IpEndpoint;
 
 use crate::{
@@ -21,9 +21,17 @@ use crate::{
 use crate::task::TaskPriority;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Operation { Connect, Send, Recv }
+pub enum Operation {
+    Connect,
+    Send,
+    Recv,
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum State { Pending, InProgress, Complete }
+enum State {
+    Pending,
+    InProgress,
+    Complete,
+}
 
 #[derive(Clone, Copy)]
 struct Request {
@@ -40,7 +48,10 @@ struct Request {
 }
 
 #[derive(Clone, Copy)]
-struct Work { slot: usize, request: Request }
+struct Work {
+    slot: usize,
+    request: Request,
+}
 
 #[derive(Clone, Copy)]
 struct Queue {
@@ -50,10 +61,15 @@ struct Queue {
 
 impl Queue {
     const fn new() -> Self {
-        Self { entries: [const { None }; MAX_ASYNC_NETWORK_REQUESTS], next_id: 1 }
+        Self {
+            entries: [const { None }; MAX_ASYNC_NETWORK_REQUESTS],
+            next_id: 1,
+        }
     }
     fn push(&mut self, mut request: Request) -> bool {
-        let Some(slot) = self.entries.iter_mut().find(|entry| entry.is_none()) else { return false; };
+        let Some(slot) = self.entries.iter_mut().find(|entry| entry.is_none()) else {
+            return false;
+        };
         request.id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1).max(1);
         *slot = Some(request);
@@ -61,32 +77,54 @@ impl Queue {
     }
     fn take_pending(&mut self, next_slot: &mut usize) -> Option<Work> {
         for (slot, entry) in self.entries.iter_mut().enumerate().skip(*next_slot) {
-            let Some(request) = entry.as_mut() else { continue; };
+            let Some(request) = entry.as_mut() else {
+                continue;
+            };
             if request.state == State::Pending {
                 *next_slot = slot + 1;
                 request.state = State::InProgress;
-                return Some(Work { slot, request: *request });
+                return Some(Work {
+                    slot,
+                    request: *request,
+                });
             }
         }
         None
     }
     fn retry(&mut self, slot: usize, id: u64) {
-        let Some(Some(request)) = self.entries.get_mut(slot) else { return; };
+        let Some(Some(request)) = self.entries.get_mut(slot) else {
+            return;
+        };
         if request.id == id && request.state == State::InProgress && request.completion.is_some() {
             request.state = State::Pending;
-        } else if request.id == id && request.state == State::InProgress && request.completion.is_none() {
+        } else if request.id == id
+            && request.state == State::InProgress
+            && request.completion.is_none()
+        {
             let socket = request.socket;
             self.entries[slot] = None;
             network::unpin_socket(socket);
         }
     }
-    fn finish(&mut self, slot: usize, id: u64, result: Result<usize, SocketError>, data: [u8; MAX_IO_SIZE]) -> Option<async_op::Handle> {
+    fn finish(
+        &mut self,
+        slot: usize,
+        id: u64,
+        result: Result<usize, SocketError>,
+        data: [u8; MAX_IO_SIZE],
+    ) -> Option<async_op::Handle> {
         let (completion, socket) = {
-            let Some(Some(request)) = self.entries.get_mut(slot) else { return None; };
-            if request.id != id || request.state != State::InProgress { return None; }
+            let Some(Some(request)) = self.entries.get_mut(slot) else {
+                return None;
+            };
+            if request.id != id || request.state != State::InProgress {
+                return None;
+            }
             request.result = result;
             request.data = data;
-            if request.completion.is_some() { request.state = State::Complete; }
+            if request.completion.is_some() {
+                request.state = State::Complete;
+            }
             (request.completion, request.socket)
         };
         if completion.is_none() {
@@ -96,11 +134,17 @@ impl Queue {
         completion
     }
     fn find_complete(&self, handle: async_op::Handle) -> Option<Request> {
-        self.entries.iter().flatten().copied().find(|r| r.completion == Some(handle) && r.state == State::Complete)
+        self.entries
+            .iter()
+            .flatten()
+            .copied()
+            .find(|r| r.completion == Some(handle) && r.state == State::Complete)
     }
     fn consume(&mut self, handle: async_op::Handle) -> bool {
         for entry in &mut self.entries {
-            let Some(request) = entry.as_ref() else { continue; };
+            let Some(request) = entry.as_ref() else {
+                continue;
+            };
             if request.completion == Some(handle) && request.state == State::Complete {
                 let socket = request.socket;
                 *entry = None;
@@ -112,8 +156,12 @@ impl Queue {
     }
     fn cancel(&mut self, handle: async_op::Handle) -> bool {
         for entry in &mut self.entries {
-            let Some(request) = entry.as_mut() else { continue; };
-            if request.completion != Some(handle) { continue; }
+            let Some(request) = entry.as_mut() else {
+                continue;
+            };
+            if request.completion != Some(handle) {
+                continue;
+            }
             if request.state == State::InProgress {
                 request.completion = None;
             } else {
@@ -128,8 +176,12 @@ impl Queue {
     fn release_owner(&mut self, owner: TaskId) -> usize {
         let mut count = 0;
         for entry in &mut self.entries {
-            let Some(request) = entry.as_mut() else { continue; };
-            if request.owner != owner { continue; }
+            let Some(request) = entry.as_mut() else {
+                continue;
+            };
+            if request.owner != owner {
+                continue;
+            }
             count += 1;
             if request.state == State::InProgress {
                 request.completion = None;
@@ -142,10 +194,15 @@ impl Queue {
         count
     }
     fn has_work(&self) -> bool {
-        self.entries.iter().flatten().any(|r| r.state != State::Complete)
+        self.entries
+            .iter()
+            .flatten()
+            .any(|r| r.state != State::Complete)
     }
     #[cfg(any(feature = "stage10-6-test", feature = "stage10-7-test"))]
-    fn active(&self) -> usize { self.entries.iter().filter(|e| e.is_some()).count() }
+    fn active(&self) -> usize {
+        self.entries.iter().filter(|e| e.is_some()).count()
+    }
 }
 
 static QUEUE: Mutex<Queue> = Mutex::with_rank(Queue::new(), 10);
@@ -165,12 +222,23 @@ pub struct UserResult {
 
 #[cfg(any(feature = "stage10-6-test", feature = "stage10-7-test"))]
 #[derive(Clone, Copy)]
-pub struct Stats { pub submitted: u64, pub completed: u64, pub cancelled: u64, pub owner_reaped: u64, pub active: usize }
+pub struct Stats {
+    pub submitted: u64,
+    pub completed: u64,
+    pub cancelled: u64,
+    pub owner_reaped: u64,
+    pub active: usize,
+}
 
 pub fn start_worker() -> bool {
-    if WORKER.lock().is_some() { return true; }
+    if WORKER.lock().is_some() {
+        return true;
+    }
     match spawn_worker() {
-        Ok(id) => { *WORKER.lock() = Some(id); true }
+        Ok(id) => {
+            *WORKER.lock() = Some(id);
+            true
+        }
         Err(_) => false,
     }
 }
@@ -185,19 +253,44 @@ fn spawn_worker() -> Result<TaskId, ()> {
     task::spawn_with_priority("async-net", worker_task, TaskPriority::NORMAL)
 }
 
-fn submit(operation: Operation, descriptor: u64, endpoint: Option<IpEndpoint>, data: [u8; MAX_IO_SIZE], length: usize) -> Result<async_op::Handle, ()> {
-    if length > MAX_IO_SIZE || WORKER.lock().is_none() { return Err(()); }
+fn submit(
+    operation: Operation,
+    descriptor: u64,
+    endpoint: Option<IpEndpoint>,
+    data: [u8; MAX_IO_SIZE],
+    length: usize,
+) -> Result<async_op::Handle, ()> {
+    if length > MAX_IO_SIZE || WORKER.lock().is_none() {
+        return Err(());
+    }
     let process = task::current_process_id();
     let socket = network::pin_socket(process, descriptor).map_err(|_| ())?;
     let owner = match task::current_task_id_if_running() {
         Some(owner) => owner,
-        None => { network::unpin_socket(socket); return Err(()); }
+        None => {
+            network::unpin_socket(socket);
+            return Err(());
+        }
     };
     let completion = match async_op::allocate_current(AsyncClass::Network) {
         Ok(handle) => handle,
-        Err(_) => { network::unpin_socket(socket); return Err(()); }
+        Err(_) => {
+            network::unpin_socket(socket);
+            return Err(());
+        }
     };
-    let request = Request { id: 0, owner, operation, socket, length, endpoint, data, result: Ok(0), state: State::Pending, completion: Some(completion) };
+    let request = Request {
+        id: 0,
+        owner,
+        operation,
+        socket,
+        length,
+        endpoint,
+        data,
+        result: Ok(0),
+        state: State::Pending,
+        completion: Some(completion),
+    };
     if !QUEUE.lock().push(request) {
         network::unpin_socket(socket);
         let _ = async_op::release_current(completion);
@@ -209,28 +302,53 @@ fn submit(operation: Operation, descriptor: u64, endpoint: Option<IpEndpoint>, d
 }
 
 pub fn submit_send(descriptor: u64, input: &[u8]) -> Result<async_op::Handle, ()> {
-    if input.len() > MAX_IO_SIZE { return Err(()); }
+    if input.len() > MAX_IO_SIZE {
+        return Err(());
+    }
     let mut data = [0u8; MAX_IO_SIZE];
     data[..input.len()].copy_from_slice(input);
     submit(Operation::Send, descriptor, None, data, input.len())
 }
 
 pub fn submit_recv(descriptor: u64, capacity: usize) -> Result<async_op::Handle, ()> {
-    if capacity > MAX_IO_SIZE { return Err(()); }
-    submit(Operation::Recv, descriptor, None, [0u8; MAX_IO_SIZE], capacity)
+    if capacity > MAX_IO_SIZE {
+        return Err(());
+    }
+    submit(
+        Operation::Recv,
+        descriptor,
+        None,
+        [0u8; MAX_IO_SIZE],
+        capacity,
+    )
 }
 
 pub fn submit_connect(descriptor: u64, endpoint: IpEndpoint) -> Result<async_op::Handle, ()> {
-    submit(Operation::Connect, descriptor, Some(endpoint), [0u8; MAX_IO_SIZE], 0)
+    submit(
+        Operation::Connect,
+        descriptor,
+        Some(endpoint),
+        [0u8; MAX_IO_SIZE],
+        0,
+    )
 }
 
 pub fn peek_result(handle: async_op::Handle) -> Option<UserResult> {
-    QUEUE.lock().find_complete(handle).map(|r| UserResult { operation: r.operation, result: r.result, length: r.length, data: r.data })
+    QUEUE.lock().find_complete(handle).map(|r| UserResult {
+        operation: r.operation,
+        result: r.result,
+        length: r.length,
+        data: r.data,
+    })
 }
-pub fn consume(handle: async_op::Handle) -> bool { QUEUE.lock().consume(handle) }
+pub fn consume(handle: async_op::Handle) -> bool {
+    QUEUE.lock().consume(handle)
+}
 pub fn cancel(handle: async_op::Handle) -> bool {
     let ok = QUEUE.lock().cancel(handle);
-    if ok { CANCELLED.fetch_add(1, Ordering::Relaxed); }
+    if ok {
+        CANCELLED.fetch_add(1, Ordering::Relaxed);
+    }
     ok
 }
 pub fn release_owner(owner: TaskId) -> usize {
@@ -243,13 +361,18 @@ pub fn release_owner(owner: TaskId) -> usize {
 pub fn stats() -> Stats {
     let queue = QUEUE.lock();
     Stats {
-        submitted: SUBMITTED.load(Ordering::Acquire), completed: COMPLETED.load(Ordering::Acquire),
-        cancelled: CANCELLED.load(Ordering::Acquire), owner_reaped: OWNER_REAPED.load(Ordering::Acquire), active: queue.active(),
+        submitted: SUBMITTED.load(Ordering::Acquire),
+        completed: COMPLETED.load(Ordering::Acquire),
+        cancelled: CANCELLED.load(Ordering::Acquire),
+        owner_reaped: OWNER_REAPED.load(Ordering::Acquire),
+        active: queue.active(),
     }
 }
 
 fn signal_worker() {
-    if let Some(worker) = *WORKER.lock() { let _ = task::signal_event(worker); }
+    if let Some(worker) = *WORKER.lock() {
+        let _ = task::signal_event(worker);
+    }
 }
 
 pub fn network_progress() {
@@ -259,7 +382,9 @@ pub fn network_progress() {
     // read Pending=false, then the worker retries and clears the bridge, then
     // read bridge=false. The request never leaves this queue while being tried.
     let active = QUEUE.lock().has_work();
-    if let Some(worker) = worker.filter(|_| active) { let _ = task::signal_event(worker); }
+    if let Some(worker) = worker.filter(|_| active) {
+        let _ = task::signal_event(worker);
+    }
 }
 
 fn worker_task() -> ! {
@@ -302,8 +427,13 @@ fn process_one(next_slot: &mut usize) -> bool {
             };
             network::socket_connect_pinned(work.request.socket, endpoint).map(|()| (0, None))
         }
-        Operation::Send => network::socket_send_pinned(work.request.socket, &data[..work.request.length]).map(|n| (n, None)),
-        Operation::Recv => network::socket_recv_pinned(work.request.socket, &mut data[..work.request.length]),
+        Operation::Send => {
+            network::socket_send_pinned(work.request.socket, &data[..work.request.length])
+                .map(|n| (n, None))
+        }
+        Operation::Recv => {
+            network::socket_recv_pinned(work.request.socket, &mut data[..work.request.length])
+        }
     };
     match result {
         Err(SocketError::WouldBlock) | Err(SocketError::BufferFull) => {

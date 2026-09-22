@@ -6,41 +6,39 @@
 
 extern crate alloc;
 
-mod ata;
-mod async_op;
-mod async_file;
-mod async_network;
-mod async_events;
-mod deadline;
-#[allow(dead_code)]
-mod thread;
-mod notifications;
-#[cfg(feature = "stage12-1-test")]
-mod vfs_api;
-#[cfg(any(feature = "stage12-2-test", feature = "stage12-3-test", feature = "stage12-4-test", feature = "stage12-5-test"))]
-mod wovenfs;
-#[cfg(feature = "stage12-3-test")]
-mod volume_crypto;
-#[cfg(feature = "stage12-4-test")]
-mod snapshots;
-#[cfg(feature = "stage12-5-test")]
-mod storage_manager;
+#[cfg(feature = "stage13-4-test")]
+mod ahci;
 #[cfg(feature = "stage10-8-test")]
 mod async_acceptance;
+mod async_events;
+mod async_file;
+mod async_network;
+mod async_op;
+mod ata;
 mod audit;
 mod benchmark;
 mod block;
 mod block_cache;
 mod block_io;
 mod capability;
+mod completion_port;
+mod completion_queue;
 mod config;
 mod console;
-mod completion_queue;
-mod completion_port;
+mod deadline;
 mod device;
-#[cfg(any(feature = "stage13-1-test", feature = "stage13-2-test", feature = "stage13-3-test", feature = "stage13-4-test", feature = "stage13-5-test", feature = "stage13-6-test", feature = "stage13-7-test", feature = "stage13-8-test", feature = "stage13-9-test"))]
+#[cfg(any(
+    feature = "stage13-1-test",
+    feature = "stage13-2-test",
+    feature = "stage13-3-test",
+    feature = "stage13-4-test",
+    feature = "stage13-5-test",
+    feature = "stage13-6-test",
+    feature = "stage13-7-test",
+    feature = "stage13-8-test",
+    feature = "stage13-9-test"
+))]
 mod driver;
-mod journal;
 mod elf;
 mod entropy;
 mod fat32;
@@ -51,57 +49,19 @@ mod gpt;
 mod graphics;
 mod gui;
 mod hal;
+#[cfg(feature = "stage13-8-test")]
+mod hda;
 mod heap;
 mod interrupts;
 mod ipc;
 mod irq_lock;
+mod journal;
 mod keyboard;
-mod woven_input;
-#[cfg(feature = "stage13-8-test")]
-mod hda;
-#[cfg(feature = "stage13-8-test")]
-mod woven_audio;
-#[cfg(feature = "stage13-9-test")]
-mod wifi;
-#[cfg(feature = "stage13-9-test")]
-mod wifi80211;
-#[cfg(feature = "stage13-9-test")]
-mod wifi_scan;
-#[cfg(feature = "stage13-9-test")]
-mod wifi_link;
-#[cfg(feature = "stage13-9-test")]
-mod wifi_rsn;
-#[cfg(feature = "stage13-9-test")]
-mod wifi_crypto;
-#[cfg(feature = "stage13-9-test")]
-mod wifi_wpa2;
-#[cfg(feature = "stage13-9-test")]
-mod wifi_gtk;
-#[cfg(feature = "stage13-9-test")]
-mod wifi_ccmp;
-#[cfg(feature = "stage13-9-test")]
-mod wifi_net;
-#[cfg(feature = "stage13-9-test")]
-mod wifi_backend;
-#[cfg(feature = "stage13-9-test")]
-mod wifi_hw;
-#[cfg(feature = "stage13-9-test")]
-mod wifi_firmware;
-#[cfg(feature = "stage13-9-test")]
-mod wifi_recovery;
-#[cfg(feature = "stage13-9-test")]
-mod wifi_session;
-mod wifi_smol;
-#[cfg(feature = "stage13-9-test")]
-mod wifi_security;
 mod memory;
 mod network;
+mod notifications;
 #[cfg(feature = "stage13-3-test")]
 mod nvme;
-#[cfg(feature = "stage13-4-test")]
-mod ahci;
-#[cfg(any(feature = "stage13-5-test", feature = "stage13-6-test", feature = "stage13-7-test", feature = "stage13-8-test", feature = "stage13-9-test"))]
-mod xhci;
 mod page_cache;
 mod paging;
 mod panic;
@@ -110,17 +70,77 @@ mod pic;
 mod pipe;
 mod serial;
 mod shell;
-mod storage;
-mod swap;
 mod smp;
+#[cfg(feature = "stage12-4-test")]
+mod snapshots;
+mod storage;
+#[cfg(feature = "stage12-5-test")]
+mod storage_manager;
+mod swap;
 mod syscall;
 mod task;
 mod terminal;
+#[allow(dead_code)]
+mod thread;
 mod timer;
 mod userspace;
 mod vfs;
+#[cfg(feature = "stage12-1-test")]
+mod vfs_api;
 mod virtio_net;
+#[cfg(feature = "stage12-3-test")]
+mod volume_crypto;
+#[cfg(feature = "stage13-9-test")]
+mod wifi;
+#[cfg(feature = "stage13-9-test")]
+mod wifi80211;
+#[cfg(feature = "stage13-9-test")]
+mod wifi_backend;
+#[cfg(feature = "stage13-9-test")]
+mod wifi_ccmp;
+#[cfg(feature = "stage13-9-test")]
+mod wifi_crypto;
+#[cfg(feature = "stage13-9-test")]
+mod wifi_firmware;
+#[cfg(feature = "stage13-9-test")]
+mod wifi_gtk;
+#[cfg(feature = "stage13-9-test")]
+mod wifi_hw;
+#[cfg(feature = "stage13-9-test")]
+mod wifi_link;
+#[cfg(feature = "stage13-9-test")]
+mod wifi_net;
+#[cfg(feature = "stage13-9-test")]
+mod wifi_recovery;
+#[cfg(feature = "stage13-9-test")]
+mod wifi_rsn;
+#[cfg(feature = "stage13-9-test")]
+mod wifi_scan;
+#[cfg(feature = "stage13-9-test")]
+mod wifi_security;
+mod wifi_session;
+mod wifi_smol;
+#[cfg(feature = "stage13-9-test")]
+mod wifi_wpa2;
+#[cfg(feature = "stage13-8-test")]
+mod woven_audio;
+mod woven_input;
+#[cfg(any(
+    feature = "stage12-2-test",
+    feature = "stage12-3-test",
+    feature = "stage12-4-test",
+    feature = "stage12-5-test"
+))]
+mod wovenfs;
 mod wovenguard;
+#[cfg(any(
+    feature = "stage13-5-test",
+    feature = "stage13-6-test",
+    feature = "stage13-7-test",
+    feature = "stage13-8-test",
+    feature = "stage13-9-test"
+))]
+mod xhci;
 
 use bootloader_api::{config::Mapping, entry_point, info::Optional, BootInfo, BootloaderConfig};
 
@@ -212,8 +232,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         let memory_stats = memory::stats();
         serial::write_line(format_args!(
             "[MEMORY] frame allocator NUMA domains={} regions={}",
-            memory_stats.numa_domains,
-            memory_stats.usable_regions
+            memory_stats.numa_domains, memory_stats.usable_regions
         ));
     } else {
         console.println("FRAME ALLOCATOR: SELF TEST FAILED");
@@ -252,11 +271,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     serial::init();
     #[cfg(feature = "qemu-test")]
     if !paging::table_allocation_rollback_self_test() {
-        serial::write_line(format_args!("[S6.PAGING] table allocation rollback: FAILED"));
+        serial::write_line(format_args!(
+            "[S6.PAGING] table allocation rollback: FAILED"
+        ));
         qemu_test_exit_failure();
     }
     #[cfg(feature = "qemu-test")]
-    serial::write_line(format_args!("[S6.PAGING] table allocation rollback: PASSED"));
+    serial::write_line(format_args!(
+        "[S6.PAGING] table allocation rollback: PASSED"
+    ));
 
     let hardware = hal::init(acpi.as_ref().ok());
     if !hal::acpi::self_test() {
@@ -331,23 +354,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             wifi_pci.wireless_candidates
         ));
         if !wifi80211::self_test() {
-            serial::write_line(format_args!(
-                "[S13.9B] IEEE 802.11 frame/IE core: FAILED"
-            ));
+            serial::write_line(format_args!("[S13.9B] IEEE 802.11 frame/IE core: FAILED"));
             halt();
         }
-        serial::write_line(format_args!(
-            "[S13.9B] IEEE 802.11 frame/IE core: PASSED"
-        ));
+        serial::write_line(format_args!("[S13.9B] IEEE 802.11 frame/IE core: PASSED"));
         if !wifi_scan::self_test() {
-            serial::write_line(format_args!(
-                "[S13.9C] beacon/probe scan pipeline: FAILED"
-            ));
+            serial::write_line(format_args!("[S13.9C] beacon/probe scan pipeline: FAILED"));
             halt();
         }
-        serial::write_line(format_args!(
-            "[S13.9C] beacon/probe scan pipeline: PASSED"
-        ));
+        serial::write_line(format_args!("[S13.9C] beacon/probe scan pipeline: PASSED"));
         if !wifi_link::self_test() {
             serial::write_line(format_args!(
                 "[S13.9D] Open System authentication + association: FAILED"
@@ -385,23 +400,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             "[S13.9G] WPA2 4-way handshake integration: PASSED"
         ));
         if !wifi_gtk::self_test() {
-            serial::write_line(format_args!(
-                "[S13.9H] GTK + encrypted key data: FAILED"
-            ));
+            serial::write_line(format_args!("[S13.9H] GTK + encrypted key data: FAILED"));
             halt();
         }
-        serial::write_line(format_args!(
-            "[S13.9H] GTK + encrypted key data: PASSED"
-        ));
+        serial::write_line(format_args!("[S13.9H] GTK + encrypted key data: PASSED"));
         if !wifi_ccmp::self_test() {
-            serial::write_line(format_args!(
-                "[S13.9I] CCMP protected data path: FAILED"
-            ));
+            serial::write_line(format_args!("[S13.9I] CCMP protected data path: FAILED"));
             halt();
         }
-        serial::write_line(format_args!(
-            "[S13.9I] CCMP protected data path: PASSED"
-        ));
+        serial::write_line(format_args!("[S13.9I] CCMP protected data path: PASSED"));
         if !wifi_net::self_test() {
             serial::write_line(format_args!(
                 "[S13.9J] WovenWiFi <-> WovenNet integration: FAILED"
@@ -412,22 +419,32 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             "[S13.9J] WovenWiFi <-> WovenNet integration: PASSED"
         ));
         if !wifi_net::group_ccmp_self_test() {
-            serial::write_line(format_args!("[S13.9X] GTK/group-addressed CCMP data path: FAILED"));
+            serial::write_line(format_args!(
+                "[S13.9X] GTK/group-addressed CCMP data path: FAILED"
+            ));
             qemu_test_exit_failure();
         }
-        serial::write_line(format_args!("[S13.9X] GTK/group-addressed CCMP data path: PASSED"));
+        serial::write_line(format_args!(
+            "[S13.9X] GTK/group-addressed CCMP data path: PASSED"
+        ));
         if !wifi_wpa2::lifecycle_self_test() {
-            serial::write_line(format_args!("[S13.9Y] WPA2 reconnect/rekey lifecycle: FAILED"));
+            serial::write_line(format_args!(
+                "[S13.9Y] WPA2 reconnect/rekey lifecycle: FAILED"
+            ));
             qemu_test_exit_failure();
         }
-        serial::write_line(format_args!("[S13.9Y] WPA2 reconnect/rekey lifecycle: PASSED"));
+        serial::write_line(format_args!(
+            "[S13.9Y] WPA2 reconnect/rekey lifecycle: PASSED"
+        ));
         if !wifi_wpa2::group_rekey_self_test() {
             serial::write_line(format_args!("[S13.9Z] WPA2 live group-key rekey: FAILED"));
             qemu_test_exit_failure();
         }
         serial::write_line(format_args!("[S13.9Z] WPA2 live group-key rekey: PASSED"));
         if !wifi_hw::self_test() {
-            serial::write_line(format_args!("[S13.10A] physical PCI Wi-Fi backend boundary: FAILED"));
+            serial::write_line(format_args!(
+                "[S13.10A] physical PCI Wi-Fi backend boundary: FAILED"
+            ));
             qemu_test_exit_failure();
         }
         let hw_candidate = wifi_hw::discover_first();
@@ -436,22 +453,36 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             hw_candidate.is_some() as u8
         ));
         if !wifi_hw::stage13_10b_self_test() {
-            serial::write_line(format_args!("[S13.10B] Wi-Fi MMIO/DMA/interrupt scaffolding: FAILED"));
+            serial::write_line(format_args!(
+                "[S13.10B] Wi-Fi MMIO/DMA/interrupt scaffolding: FAILED"
+            ));
             qemu_test_exit_failure();
         }
-        serial::write_line(format_args!("[S13.10B] Wi-Fi MMIO/DMA/interrupt scaffolding: PASSED"));
+        serial::write_line(format_args!(
+            "[S13.10B] Wi-Fi MMIO/DMA/interrupt scaffolding: PASSED"
+        ));
         if !wifi_hw::stage13_10c_self_test() {
-            serial::write_line(format_args!("[S13.10C] Wi-Fi real MMIO + DMA memory ownership: FAILED"));
+            serial::write_line(format_args!(
+                "[S13.10C] Wi-Fi real MMIO + DMA memory ownership: FAILED"
+            ));
             qemu_test_exit_failure();
         }
-        serial::write_line(format_args!("[S13.10C] Wi-Fi real MMIO + DMA memory ownership: PASSED"));
+        serial::write_line(format_args!(
+            "[S13.10C] Wi-Fi real MMIO + DMA memory ownership: PASSED"
+        ));
         if !wifi_hw::stage13_10d_self_test() {
-            serial::write_line(format_args!("[S13.10D] Wi-Fi DMA descriptor ownership + queue lifecycle: FAILED"));
+            serial::write_line(format_args!(
+                "[S13.10D] Wi-Fi DMA descriptor ownership + queue lifecycle: FAILED"
+            ));
             qemu_test_exit_failure();
         }
-        serial::write_line(format_args!("[S13.10D] Wi-Fi DMA descriptor ownership + queue lifecycle: PASSED"));
+        serial::write_line(format_args!(
+            "[S13.10D] Wi-Fi DMA descriptor ownership + queue lifecycle: PASSED"
+        ));
         if !wifi_hw::stage13_10e_self_test() {
-            serial::write_line(format_args!("[S13.10E] Wi-Fi supported chipset binding boundary: FAILED"));
+            serial::write_line(format_args!(
+                "[S13.10E] Wi-Fi supported chipset binding boundary: FAILED"
+            ));
             qemu_test_exit_failure();
         }
         let supported_hw = wifi_hw::discover_first_supported();
@@ -460,40 +491,105 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             supported_hw.is_some() as u8
         ));
         if !wifi_hw::stage13_10f_self_test() {
-            serial::write_line(format_args!("[S13.10F] Wi-Fi DMA buffer ownership binding: FAILED"));
+            serial::write_line(format_args!(
+                "[S13.10F] Wi-Fi DMA buffer ownership binding: FAILED"
+            ));
             qemu_test_exit_failure();
         }
-        serial::write_line(format_args!("[S13.10F] Wi-Fi DMA buffer ownership binding: PASSED"));
+        serial::write_line(format_args!(
+            "[S13.10F] Wi-Fi DMA buffer ownership binding: PASSED"
+        ));
         if !wifi_hw::stage13_10g_self_test() {
-            serial::write_line(format_args!("[S13.10G] Wi-Fi activation authority hardening: FAILED"));
+            serial::write_line(format_args!(
+                "[S13.10G] Wi-Fi activation authority hardening: FAILED"
+            ));
             qemu_test_exit_failure();
         }
-        serial::write_line(format_args!("[S13.10G] Wi-Fi activation authority hardening: PASSED"));
+        serial::write_line(format_args!(
+            "[S13.10G] Wi-Fi activation authority hardening: PASSED"
+        ));
         if !wifi_hw::stage13_10h_self_test() {
             serial::write_line(format_args!("[S13.10H] Intel AX200 CSR boundary: FAILED"));
             qemu_test_exit_failure();
         }
         serial::write_line(format_args!("[S13.10H] Intel AX200 CSR boundary: PASSED"));
         if !wifi_hw::stage13_10i_self_test() {
-            serial::write_line(format_args!("[S13.10I] Intel reset/readiness state machine: FAILED"));
+            serial::write_line(format_args!(
+                "[S13.10I] Intel reset/readiness state machine: FAILED"
+            ));
             qemu_test_exit_failure();
         }
-        serial::write_line(format_args!("[S13.10I] Intel reset/readiness state machine: PASSED"));
+        serial::write_line(format_args!(
+            "[S13.10I] Intel reset/readiness state machine: PASSED"
+        ));
         if !wifi_hw::stage13_10j_self_test() {
-            serial::write_line(format_args!("[S13.10J] Intel MAC access/device initialization: FAILED"));
+            serial::write_line(format_args!(
+                "[S13.10J] Intel MAC access/device initialization: FAILED"
+            ));
             qemu_test_exit_failure();
         }
-        serial::write_line(format_args!("[S13.10J] Intel MAC access/device initialization: PASSED"));
+        serial::write_line(format_args!(
+            "[S13.10J] Intel MAC access/device initialization: PASSED"
+        ));
         if !wifi_firmware::stage13_10k_self_test() {
-            serial::write_line(format_args!("[S13.10K] Wi-Fi firmware validation/lifecycle foundation: FAILED"));
+            serial::write_line(format_args!(
+                "[S13.10K] Wi-Fi firmware validation/lifecycle foundation: FAILED"
+            ));
             qemu_test_exit_failure();
         }
-        serial::write_line(format_args!("[S13.10K] Wi-Fi firmware validation/lifecycle foundation: PASSED"));
+        serial::write_line(format_args!(
+            "[S13.10K] Wi-Fi firmware validation/lifecycle foundation: PASSED"
+        ));
         if !wifi_firmware::stage13_10l_self_test() {
             serial::write_line(format_args!("[S13.10L] Intel TLV firmware parser: FAILED"));
             qemu_test_exit_failure();
         }
         serial::write_line(format_args!("[S13.10L] Intel TLV firmware parser: PASSED"));
+        if !wifi_firmware::stage13_10m_self_test() {
+            serial::write_line(format_args!(
+                "[S13.10M] Intel firmware DMA staging/transfer boundary: FAILED"
+            ));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!(
+            "[S13.10M] Intel firmware DMA staging/transfer boundary: PASSED"
+        ));
+        if !wifi_firmware::stage13_10n_self_test() {
+            serial::write_line(format_args!(
+                "[S13.10N] Intel firmware transfer executor boundary: FAILED"
+            ));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!(
+            "[S13.10N] Intel firmware transfer executor boundary: PASSED"
+        ));
+        if !wifi_firmware::stage13_10o_self_test() {
+            serial::write_line(format_args!(
+                "[S13.10O] Intel 22000 firmware transport contract: FAILED"
+            ));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!(
+            "[S13.10O] Intel 22000 firmware transport contract: PASSED"
+        ));
+        if !wifi_firmware::stage13_10p_self_test() {
+            serial::write_line(format_args!(
+                "[S13.10P] AX200 context-info self-load manifest: FAILED"
+            ));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!(
+            "[S13.10P] AX200 context-info self-load manifest: PASSED"
+        ));
+        if !wifi_firmware::stage13_10q_self_test() {
+            serial::write_line(format_args!(
+                "[S13.10Q] AX200 DMA-backed context-info construction: FAILED"
+            ));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!(
+            "[S13.10Q] AX200 DMA-backed context-info construction: PASSED"
+        ));
         if !wifi_backend::self_test() {
             serial::write_line(format_args!(
                 "[S13.9K] Wi-Fi transport/backend contract: FAILED"
@@ -540,49 +636,73 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             "[S13.9O] kernel entropy/secure SNonce boundary: PASSED"
         ));
         if !wifi_wpa2::self_test() {
-            serial::write_line(format_args!("[S13.9P] live WPA2 GTK/KRACK integration: FAILED"));
-            halt();
-        }
-        serial::write_line(format_args!("[S13.9P] live WPA2 GTK/KRACK integration: PASSED"));
-        if !wifi_link::self_test() {
-            serial::write_line(format_args!("[S13.9Q] WPA2 association + RSN integration: FAILED"));
-            halt();
-        }
-        serial::write_line(format_args!("[S13.9Q] WPA2 association + RSN integration: PASSED"));
-        if !entropy::self_test() {
-            serial::write_line(format_args!("[S13.9R] entropy/network randomness split: FAILED"));
-            halt();
-        }
-        serial::write_line(format_args!("[S13.9R] entropy/network randomness split: PASSED"));
-        if !wifi_session::wpa2_handoff_self_test() {
-            serial::write_line(format_args!("[S13.9S] WPA2 supplicant/session key handoff: FAILED"));
-            halt();
-        }
-        serial::write_line(format_args!("[S13.9S] WPA2 supplicant/session key handoff: PASSED"));
-        if !wifi_session::rx_path_self_test() {
-            serial::write_line(format_args!("[S13.9T] backend RX/CCMP/Ethernet integration: FAILED"));
-            halt();
-        }
-        serial::write_line(format_args!("[S13.9T] backend RX/CCMP/Ethernet integration: PASSED"));
-        if !wifi_smol::self_test() {
-            serial::write_line(format_args!("[S13.9U] WovenWiFi/smoltcp transport adapter: FAILED"));
-            halt();
-        }
-        serial::write_line(format_args!("[S13.9U] WovenWiFi/smoltcp transport adapter: PASSED"));
-        if !wifi_smol::transport_selector_self_test() {
-            serial::write_line(format_args!("[S13.9V] selectable WovenNet transport integration: FAILED"));
-            halt();
-        }
-        serial::write_line(format_args!("[S13.9V] selectable WovenNet transport integration: PASSED"));
-        if !wifi_scan::self_test() {
             serial::write_line(format_args!(
-                "[S13.9C] beacon/probe scan pipeline: FAILED"
+                "[S13.9P] live WPA2 GTK/KRACK integration: FAILED"
             ));
             halt();
         }
         serial::write_line(format_args!(
-            "[S13.9C] beacon/probe scan pipeline: PASSED"
+            "[S13.9P] live WPA2 GTK/KRACK integration: PASSED"
         ));
+        if !wifi_link::self_test() {
+            serial::write_line(format_args!(
+                "[S13.9Q] WPA2 association + RSN integration: FAILED"
+            ));
+            halt();
+        }
+        serial::write_line(format_args!(
+            "[S13.9Q] WPA2 association + RSN integration: PASSED"
+        ));
+        if !entropy::self_test() {
+            serial::write_line(format_args!(
+                "[S13.9R] entropy/network randomness split: FAILED"
+            ));
+            halt();
+        }
+        serial::write_line(format_args!(
+            "[S13.9R] entropy/network randomness split: PASSED"
+        ));
+        if !wifi_session::wpa2_handoff_self_test() {
+            serial::write_line(format_args!(
+                "[S13.9S] WPA2 supplicant/session key handoff: FAILED"
+            ));
+            halt();
+        }
+        serial::write_line(format_args!(
+            "[S13.9S] WPA2 supplicant/session key handoff: PASSED"
+        ));
+        if !wifi_session::rx_path_self_test() {
+            serial::write_line(format_args!(
+                "[S13.9T] backend RX/CCMP/Ethernet integration: FAILED"
+            ));
+            halt();
+        }
+        serial::write_line(format_args!(
+            "[S13.9T] backend RX/CCMP/Ethernet integration: PASSED"
+        ));
+        if !wifi_smol::self_test() {
+            serial::write_line(format_args!(
+                "[S13.9U] WovenWiFi/smoltcp transport adapter: FAILED"
+            ));
+            halt();
+        }
+        serial::write_line(format_args!(
+            "[S13.9U] WovenWiFi/smoltcp transport adapter: PASSED"
+        ));
+        if !wifi_smol::transport_selector_self_test() {
+            serial::write_line(format_args!(
+                "[S13.9V] selectable WovenNet transport integration: FAILED"
+            ));
+            halt();
+        }
+        serial::write_line(format_args!(
+            "[S13.9V] selectable WovenNet transport integration: PASSED"
+        ));
+        if !wifi_scan::self_test() {
+            serial::write_line(format_args!("[S13.9C] beacon/probe scan pipeline: FAILED"));
+            halt();
+        }
+        serial::write_line(format_args!("[S13.9C] beacon/probe scan pipeline: PASSED"));
     }
 
     if heap::init().is_err() {
@@ -606,11 +726,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     serial::write_line(format_args!("[S6.HEAP] unbounded live metadata: PASSED"));
     #[cfg(feature = "qemu-test")]
     if !memory::reclaimed_overflow_self_test() {
-        serial::write_line(format_args!("[S6.MEMORY] reclaimed overflow/double-free: FAILED"));
+        serial::write_line(format_args!(
+            "[S6.MEMORY] reclaimed overflow/double-free: FAILED"
+        ));
         qemu_test_exit_failure();
     }
     #[cfg(feature = "qemu-test")]
-    serial::write_line(format_args!("[S6.MEMORY] reclaimed overflow/double-free: PASSED"));
+    serial::write_line(format_args!(
+        "[S6.MEMORY] reclaimed overflow/double-free: PASSED"
+    ));
 
     // Normal boots are shell-first. Do not make the interactive console wait
     // for the exhaustive storage/network/ring3 validation suite. Those tests
@@ -669,7 +793,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             console.println("ASYNC FILE WORKER: START FAILED");
             halt();
         }
-        if !async_events::start_worker() { panic!("timer/event worker startup failed"); }
+        if !async_events::start_worker() {
+            panic!("timer/event worker startup failed");
+        }
         if !async_network::start_worker() {
             console.println("ASYNC NETWORK WORKER: START FAILED");
             halt();
@@ -1188,10 +1314,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         "[S6.HEAP] runtime growth: PASSED mapped={} bytes",
         heap::stats().size
     ));
-    if ipc::stage8_1_runtime_probe()
-        && ipc::object_count() == 0
-        && ipc::endpoint_count() == 0
-    {
+    if ipc::stage8_1_runtime_probe() && ipc::object_count() == 0 && ipc::endpoint_count() == 0 {
         serial::write_line(format_args!(
             "[S8.1] kernel endpoint objects + process-local handles: PASSED"
         ));
@@ -1201,10 +1324,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         ));
         halt();
     }
-    if ipc::stage8_2_runtime_probe()
-        && ipc::object_count() == 0
-        && ipc::endpoint_count() == 0
-    {
+    if ipc::stage8_2_runtime_probe() && ipc::object_count() == 0 && ipc::endpoint_count() == 0 {
         serial::write_line(format_args!(
             "[S8.2] handle-addressed bounded message passing: PASSED"
         ));
@@ -1214,10 +1334,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         ));
         halt();
     }
-    if ipc::stage8_3_runtime_probe()
-        && ipc::object_count() == 0
-        && ipc::endpoint_count() == 0
-    {
+    if ipc::stage8_3_runtime_probe() && ipc::object_count() == 0 && ipc::endpoint_count() == 0 {
         serial::write_line(format_args!(
             "[S8.3] race-free blocking IPC events/waits: PASSED"
         ));
@@ -1421,17 +1538,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     {
         match network::init() {
             Ok(()) => {
-                serial::write_line(format_args!(
-                    "[NETTEST] virtio-net + smoltcp initialized"
-                ));
+                serial::write_line(format_args!("[NETTEST] virtio-net + smoltcp initialized"));
                 if network::qemu_runtime_self_test() {
-                    serial::write_line(format_args!(
-                        "[NETTEST] DHCP/DNS/ICMP/UDP/TCP: PASSED"
-                    ));
+                    serial::write_line(format_args!("[NETTEST] DHCP/DNS/ICMP/UDP/TCP: PASSED"));
                 } else {
-                    serial::write_line(format_args!(
-                        "[NETTEST] runtime regression: FAILED"
-                    ));
+                    serial::write_line(format_args!("[NETTEST] runtime regression: FAILED"));
                     halt();
                 }
             }
@@ -1639,9 +1750,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     // could leave the boot validation waiting forever before the identity audit.
     // APs may continue taking timer interrupts, but their scheduler path uses
     // try_lock and cannot run CPU-0-owned userspace tasks.
-    serial::write_line(format_args!(
-        "[BOOT] paired userspace spawn: BEGIN"
-    ));
+    serial::write_line(format_args!("[BOOT] paired userspace spawn: BEGIN"));
     let (first_spawn, second_spawn) = x86_64::instructions::interrupts::without_interrupts(|| {
         let first = task::spawn_user_process("init-user-a", first_program);
         let second = if first.is_ok() {
@@ -1672,26 +1781,20 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             halt();
         }
     };
-    serial::write_line(format_args!(
-        "[BOOT] paired userspace spawn: READY"
-    ));
+    serial::write_line(format_args!("[BOOT] paired userspace spawn: READY"));
     serial::write_line(format_args!(
         "[PROC-DIAG] first credentials lookup: BEGIN pid={}",
         first_pid.as_u64()
     ));
     let first_credentials = task::process_credentials(first_pid);
-    serial::write_line(format_args!(
-        "[PROC-DIAG] first credentials lookup: DONE"
-    ));
+    serial::write_line(format_args!("[PROC-DIAG] first credentials lookup: DONE"));
 
     serial::write_line(format_args!(
         "[PROC-DIAG] second credentials lookup: BEGIN pid={}",
         second_pid.as_u64()
     ));
     let second_credentials = task::process_credentials(second_pid);
-    serial::write_line(format_args!(
-        "[PROC-DIAG] second credentials lookup: DONE"
-    ));
+    serial::write_line(format_args!("[PROC-DIAG] second credentials lookup: DONE"));
 
     if first_credentials != Some(task::Credentials::USERSPACE)
         || second_credentials != Some(task::Credentials::USERSPACE)
@@ -1721,9 +1824,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         }
         x86_64::instructions::hlt();
     }
-    serial::write_line(format_args!(
-        "[BOOT] paired userspace execution: PASSED"
-    ));
+    serial::write_line(format_args!("[BOOT] paired userspace execution: PASSED"));
 
     // Stage 7.3: prove that the already-established per-CPU privilege and
     // scheduler machinery can execute a deliberately pinned Ring-3 task on
@@ -1819,32 +1920,27 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         // without this local interrupt boundary, a timer tick can dispatch the
         // tiny `/bin/true` probe before the test applies the intended migration.
         // The scheduler's Ready-only contract remains unchanged.
-        let (migration_pid, _, _) =
-            x86_64::instructions::interrupts::without_interrupts(|| {
-                let result = match task::spawn_migratable_user_probe("s7.4-migrate", program) {
-                    Ok(result) => result,
-                    Err(_) => {
-                        serial::write_line(format_args!(
-                            "[S7.4] migratable Ring-3 spawn: FAILED"
-                        ));
-                        halt();
-                    }
-                };
-                if task::task_affinity(result.1) != Some(smp::online_mask()) {
-                    serial::write_line(format_args!(
-                        "[S7.4] initial migratable affinity: FAILED"
-                    ));
+        let (migration_pid, _, _) = x86_64::instructions::interrupts::without_interrupts(|| {
+            let result = match task::spawn_migratable_user_probe("s7.4-migrate", program) {
+                Ok(result) => result,
+                Err(_) => {
+                    serial::write_line(format_args!("[S7.4] migratable Ring-3 spawn: FAILED"));
                     halt();
                 }
-                if task::migrate_ready_task(result.1, target_cpu).is_err() {
-                    serial::write_line(format_args!(
-                        "[S7.4] explicit Ready migration to cpu={}: FAILED",
-                        target_cpu
-                    ));
-                    halt();
-                }
-                result
-            });
+            };
+            if task::task_affinity(result.1) != Some(smp::online_mask()) {
+                serial::write_line(format_args!("[S7.4] initial migratable affinity: FAILED"));
+                halt();
+            }
+            if task::migrate_ready_task(result.1, target_cpu).is_err() {
+                serial::write_line(format_args!(
+                    "[S7.4] explicit Ready migration to cpu={}: FAILED",
+                    target_cpu
+                ));
+                halt();
+            }
+            result
+        });
         let migration_start = timer::ticks();
         while !task::process_exited(migration_pid) {
             if timer::ticks().wrapping_sub(migration_start) > 500 {
@@ -1877,26 +1973,23 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         // As above, do not expose a dispatch window between publishing the
         // CPU0-owned Ready probe and applying its hard affinity. Once the
         // affinity call moves ownership to the AP, normal SMP execution resumes.
-        let (affinity_pid, _, _) =
-            x86_64::instructions::interrupts::without_interrupts(|| {
-                let result = match task::spawn_migratable_user_probe("s7.4-affinity", program) {
-                    Ok(result) => result,
-                    Err(_) => {
-                        serial::write_line(format_args!(
-                            "[S7.4] affinity Ring-3 spawn: FAILED"
-                        ));
-                        halt();
-                    }
-                };
-                if task::set_ready_task_affinity(result.1, target_mask).is_err() {
-                    serial::write_line(format_args!(
-                        "[S7.4] hard affinity transfer to cpu={}: FAILED",
-                        target_cpu
-                    ));
+        let (affinity_pid, _, _) = x86_64::instructions::interrupts::without_interrupts(|| {
+            let result = match task::spawn_migratable_user_probe("s7.4-affinity", program) {
+                Ok(result) => result,
+                Err(_) => {
+                    serial::write_line(format_args!("[S7.4] affinity Ring-3 spawn: FAILED"));
                     halt();
                 }
-                result
-            });
+            };
+            if task::set_ready_task_affinity(result.1, target_mask).is_err() {
+                serial::write_line(format_args!(
+                    "[S7.4] hard affinity transfer to cpu={}: FAILED",
+                    target_cpu
+                ));
+                halt();
+            }
+            result
+        });
         let affinity_start = timer::ticks();
         while !task::process_exited(affinity_pid) {
             if timer::ticks().wrapping_sub(affinity_start) > 500 {
@@ -1948,15 +2041,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                     ));
                     halt();
                 };
-                let (pid, _, _) = match task::spawn_migratable_user_probe(
-                    "s7.6-rebalance",
-                    program,
-                ) {
+                let (pid, _, _) = match task::spawn_migratable_user_probe("s7.6-rebalance", program)
+                {
                     Ok(result) => result,
                     Err(_) => {
-                        serial::write_line(format_args!(
-                            "[S7.6] rebalance probe spawn: FAILED"
-                        ));
+                        serial::write_line(format_args!("[S7.6] rebalance probe spawn: FAILED"));
                         halt();
                     }
                 };
@@ -1991,9 +2080,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 x86_64::instructions::hlt();
             }
             if task::wait_process(pid.as_u64()) != Ok(0) {
-                serial::write_line(format_args!(
-                    "[S7.6] rebalanced Ring-3 reap: FAILED"
-                ));
+                serial::write_line(format_args!("[S7.6] rebalanced Ring-3 reap: FAILED"));
                 halt();
             }
         }
@@ -2010,16 +2097,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             halt();
         };
         let (placement_pid, _placement_task, _, placement) =
-            match task::spawn_multicore_user_process(
-                "s7.6-placement",
-                program,
-                smp::online_mask(),
-            ) {
+            match task::spawn_multicore_user_process("s7.6-placement", program, smp::online_mask())
+            {
                 Ok(result) => result,
                 Err(_) => {
-                    serial::write_line(format_args!(
-                        "[S7.6] multicore placement spawn: FAILED"
-                    ));
+                    serial::write_line(format_args!("[S7.6] multicore placement spawn: FAILED"));
                     halt();
                 }
             };
@@ -2046,9 +2128,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             x86_64::instructions::hlt();
         }
         if task::wait_process(placement_pid.as_u64()) != Ok(0) {
-            serial::write_line(format_args!(
-                "[S7.6] least-loaded Ring-3 reap: FAILED"
-            ));
+            serial::write_line(format_args!("[S7.6] least-loaded Ring-3 reap: FAILED"));
             halt();
         }
         serial::write_line(format_args!(
@@ -2069,7 +2149,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     if !syscall::user_async_verified() || async_stats.active != 0 || async_stats.owner_reaped < 2 {
         serial::write_line(format_args!(
             "[S10.3] userspace async completion ABI: FAILED verified={} active={} owner_reaped={}",
-            syscall::user_async_verified(), async_stats.active, async_stats.owner_reaped
+            syscall::user_async_verified(),
+            async_stats.active,
+            async_stats.owner_reaped
         ));
         halt();
     }
@@ -2107,28 +2189,38 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         for cycle in 0..CYCLES {
             let offline_cpu = smp::online_count().saturating_sub(1);
             if smp::online_count() < 2 || !smp::request_cpu_offline(offline_cpu) {
-                serial::write_line(format_args!("[S6.HOTPLUG] offline AP: FAILED cycle={}", cycle));
+                serial::write_line(format_args!(
+                    "[S6.HOTPLUG] offline AP: FAILED cycle={}",
+                    cycle
+                ));
                 qemu_test_exit_failure();
             }
             if cycle == 0 {
                 serial::write_line(format_args!(
                     "[S6.HOTPLUG] offline AP: PASSED online={} mask={:#x}",
-                    smp::online_count(), smp::online_mask()
+                    smp::online_count(),
+                    smp::online_mask()
                 ));
             }
             if !smp::request_cpu_online(offline_cpu) {
-                serial::write_line(format_args!("[S6.HOTPLUG] online AP: FAILED cycle={}", cycle));
+                serial::write_line(format_args!(
+                    "[S6.HOTPLUG] online AP: FAILED cycle={}",
+                    cycle
+                ));
                 qemu_test_exit_failure();
             }
             serial::write_line(format_args!(
                 "[S6.HOTPLUG] cycle={} PASSED online={} mask={:#x}",
-                cycle + 1, smp::online_count(), smp::online_mask()
+                cycle + 1,
+                smp::online_count(),
+                smp::online_mask()
             ));
         }
         serial::write_line(format_args!(
             "[S6.HOTPLUG] lifecycle: PASSED cycles={} online={} mask={:#x}",
             CYCLES,
-            smp::online_count(), smp::online_mask()
+            smp::online_count(),
+            smp::online_mask()
         ));
         if smp::online_count() == 4 {
             for cycle in 0..CYCLES {
@@ -2139,13 +2231,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                     || !smp::reschedule_cpu(3)
                 {
                     serial::write_line(format_args!(
-                        "[S6.HOTPLUG] middle offline: FAILED cycle={}", cycle
+                        "[S6.HOTPLUG] middle offline: FAILED cycle={}",
+                        cycle
                     ));
                     qemu_test_exit_failure();
                 }
                 if !smp::hotplug_hole_worker_probe(cycle + 1) {
                     serial::write_line(format_args!(
-                        "[S6.HOTPLUG] hole worker: FAILED cycle={}", cycle
+                        "[S6.HOTPLUG] hole worker: FAILED cycle={}",
+                        cycle
                     ));
                     qemu_test_exit_failure();
                 }
@@ -2155,14 +2249,17 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                     || smp::online_mask() != 0xf
                 {
                     serial::write_line(format_args!(
-                        "[S6.HOTPLUG] middle online: FAILED cycle={}", cycle
+                        "[S6.HOTPLUG] middle online: FAILED cycle={}",
+                        cycle
                     ));
                     qemu_test_exit_failure();
                 }
             }
             serial::write_line(format_args!(
                 "[S6.HOTPLUG] middle lifecycle: PASSED cycles={} online={} mask={:#x}",
-                CYCLES, smp::online_count(), smp::online_mask()
+                CYCLES,
+                smp::online_count(),
+                smp::online_mask()
             ));
         }
         qemu_test_exit_success();
@@ -2195,14 +2292,27 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         qemu_test_exit_success();
     }
     #[cfg(feature = "stage13-1-test")]
-    { if !driver::register("pit", device::DeviceKind::Timer) || !driver::bind("pit") || !driver::suspend("pit") || !driver::resume("pit") { serial::write_line(format_args!("[S13.1] driver framework: FAILED")); qemu_test_exit_failure(); } serial::write_line(format_args!("[S13.1] driver framework: PASSED")); qemu_test_exit_success(); }
+    {
+        if !driver::register("pit", device::DeviceKind::Timer)
+            || !driver::bind("pit")
+            || !driver::suspend("pit")
+            || !driver::resume("pit")
+        {
+            serial::write_line(format_args!("[S13.1] driver framework: FAILED"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!("[S13.1] driver framework: PASSED"));
+        qemu_test_exit_success();
+    }
     #[cfg(feature = "stage13-2-test")]
     {
         let pci_ok = hal::pci::self_test()
             && hardware.pci.discovered >= u16::from(hardware.pci.recorded)
             && hardware.pci.recorded != 0;
         if !pci_ok {
-            serial::write_line(format_args!("[S13.2] PCI/PCIe configuration + inventory: FAILED"));
+            serial::write_line(format_args!(
+                "[S13.2] PCI/PCIe configuration + inventory: FAILED"
+            ));
             qemu_test_exit_failure();
         }
         serial::write_line(format_args!(
@@ -2215,13 +2325,18 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     {
         use block::BlockDevice;
         if !nvme::self_test() || !nvme::probe() {
-            serial::write_line(format_args!("[S13.3] NVMe controller/queue foundation: FAILED probe"));
+            serial::write_line(format_args!(
+                "[S13.3] NVMe controller/queue foundation: FAILED probe"
+            ));
             qemu_test_exit_failure();
         }
         let sectors = match nvme::init() {
             Ok(sectors) => sectors,
             Err(error) => {
-                serial::write_line(format_args!("[S13.3] NVMe controller/queue foundation: FAILED init {:?}", error));
+                serial::write_line(format_args!(
+                    "[S13.3] NVMe controller/queue foundation: FAILED init {:?}",
+                    error
+                ));
                 qemu_test_exit_failure();
             }
         };
@@ -2242,7 +2357,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         })
         .unwrap_or(false);
         if !io_ok {
-            serial::write_line(format_args!("[S13.3] NVMe controller/queue foundation: FAILED I/O"));
+            serial::write_line(format_args!(
+                "[S13.3] NVMe controller/queue foundation: FAILED I/O"
+            ));
             qemu_test_exit_failure();
         }
         serial::write_line(format_args!(
@@ -2255,13 +2372,18 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     {
         use block::BlockDevice;
         if !ahci::self_test() || !ahci::probe() {
-            serial::write_line(format_args!("[S13.4] AHCI/SATA DMA block I/O: FAILED probe"));
+            serial::write_line(format_args!(
+                "[S13.4] AHCI/SATA DMA block I/O: FAILED probe"
+            ));
             qemu_test_exit_failure();
         }
         let sectors = match ahci::init() {
             Ok(sectors) => sectors,
             Err(error) => {
-                serial::write_line(format_args!("[S13.4] AHCI/SATA DMA block I/O: FAILED init {:?}", error));
+                serial::write_line(format_args!(
+                    "[S13.4] AHCI/SATA DMA block I/O: FAILED init {:?}",
+                    error
+                ));
                 qemu_test_exit_failure();
             }
         };
@@ -2306,7 +2428,10 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 qemu_test_exit_success();
             }
             Err(error) => {
-                serial::write_line(format_args!("[S13.5] xHCI USB core: FAILED init {:?}", error));
+                serial::write_line(format_args!(
+                    "[S13.5] xHCI USB core: FAILED init {:?}",
+                    error
+                ));
                 qemu_test_exit_failure();
             }
         }
@@ -2314,7 +2439,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     #[cfg(feature = "stage13-8-test")]
     {
         if !hda::self_test() || !woven_audio::self_test() || !hda::probe() {
-            serial::write_line(format_args!("[S13.8] WovenAudio HDA foundation: FAILED probe/self-test"));
+            serial::write_line(format_args!(
+                "[S13.8] WovenAudio HDA foundation: FAILED probe/self-test"
+            ));
             qemu_test_exit_failure();
         }
         match woven_audio::init() {
@@ -2348,22 +2475,25 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                         ));
                     }
                     Err(error) => {
-                        serial::write_line(format_args!("[S13.8] HDA codec topology: FAILED {:?}", error));
+                        serial::write_line(format_args!(
+                            "[S13.8] HDA codec topology: FAILED {:?}",
+                            error
+                        ));
                         qemu_test_exit_failure();
                     }
                 }
 
-        let audio_api = match woven_audio::integration_smoke_test() {
-        Ok(summary) => summary,
-        Err(error) => {
-            serial::write_line(format_args!(
-                "[S13.8] WovenAudio stream/API integration: FAILED {:?}",
-                error
-            ));
-            qemu_test_exit_failure();
-        }
-    };
-    serial::write_line(format_args!(
+                let audio_api = match woven_audio::integration_smoke_test() {
+                    Ok(summary) => summary,
+                    Err(error) => {
+                        serial::write_line(format_args!(
+                            "[S13.8] WovenAudio stream/API integration: FAILED {:?}",
+                            error
+                        ));
+                        qemu_test_exit_failure();
+                    }
+                };
+                serial::write_line(format_args!(
         "[S13.8] WovenAudio stream/API integration: PASSED playback_stream={} capture_stream={} playback_bytes={} capture_bytes={} rate={} channels={} bits={} gain={} mute={}",
         audio_api.playback.hardware_stream,
         audio_api.capture.hardware_stream,
@@ -2378,7 +2508,10 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 qemu_test_exit_success();
             }
             Err(error) => {
-                serial::write_line(format_args!("[S13.8] WovenAudio HDA foundation: FAILED init {:?}", error));
+                serial::write_line(format_args!(
+                    "[S13.8] WovenAudio HDA foundation: FAILED init {:?}",
+                    error
+                ));
                 qemu_test_exit_failure();
             }
         }
@@ -2407,8 +2540,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                     Ok(report) => report,
                     Err(error) => {
                         match hda::discover_topology() {
-                        Ok(topology) => {
-                            serial::write_line(format_args!(
+                            Ok(topology) => {
+                                serial::write_line(format_args!(
                                 "[S13.8] HDA codec topology: PASSED afg={} widgets={} dac={} adc={} mixers={} selectors={} pins={}",
                                 topology.audio_function_groups,
                                 topology.widgets,
@@ -2418,16 +2551,19 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                 topology.selectors,
                                 topology.pin_complexes
                             ));
+                            }
+                            Err(error) => {
+                                serial::write_line(format_args!(
+                                    "[S13.8] HDA codec topology: FAILED {:?}",
+                                    error
+                                ));
+                                qemu_test_exit_failure();
+                            }
                         }
-                        Err(error) => {
-                            serial::write_line(format_args!(
-                                "[S13.8] HDA codec topology: FAILED {:?}",
-                                error
-                            ));
-                            qemu_test_exit_failure();
-                        }
-                    }
-                    serial::write_line(format_args!("[S13.6] USB HID: FAILED report {:?}", error));
+                        serial::write_line(format_args!(
+                            "[S13.6] USB HID: FAILED report {:?}",
+                            error
+                        ));
                         qemu_test_exit_failure();
                     }
                 };
@@ -2444,15 +2580,50 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         }
     }
     #[cfg(feature = "stage1-5-test")]
-    { if !journal::structural_self_test() { serial::write_line(format_args!("[S1-5] storage journal: FAILED")); qemu_test_exit_failure(); } serial::write_line(format_args!("[S1-5] storage journal: PASSED")); qemu_test_exit_success(); }
+    {
+        if !journal::structural_self_test() {
+            serial::write_line(format_args!("[S1-5] storage journal: FAILED"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!("[S1-5] storage journal: PASSED"));
+        qemu_test_exit_success();
+    }
     #[cfg(feature = "stage12-2-test")]
-    { if !wovenfs::structural_self_test() { serial::write_line(format_args!("[S12.2] WovenFS: FAILED")); qemu_test_exit_failure(); } serial::write_line(format_args!("[S12.2] WovenFS: PASSED")); qemu_test_exit_success(); }
+    {
+        if !wovenfs::structural_self_test() {
+            serial::write_line(format_args!("[S12.2] WovenFS: FAILED"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!("[S12.2] WovenFS: PASSED"));
+        qemu_test_exit_success();
+    }
     #[cfg(feature = "stage12-3-test")]
-    { if !volume_crypto::structural_self_test() { serial::write_line(format_args!("[S12.3] encryption: FAILED")); qemu_test_exit_failure(); } serial::write_line(format_args!("[S12.3] encryption: PASSED")); qemu_test_exit_success(); }
+    {
+        if !volume_crypto::structural_self_test() {
+            serial::write_line(format_args!("[S12.3] encryption: FAILED"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!("[S12.3] encryption: PASSED"));
+        qemu_test_exit_success();
+    }
     #[cfg(feature = "stage12-4-test")]
-    { if !snapshots::structural_self_test() { serial::write_line(format_args!("[S12.4] snapshots: FAILED")); qemu_test_exit_failure(); } serial::write_line(format_args!("[S12.4] snapshots: PASSED")); qemu_test_exit_success(); }
+    {
+        if !snapshots::structural_self_test() {
+            serial::write_line(format_args!("[S12.4] snapshots: FAILED"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!("[S12.4] snapshots: PASSED"));
+        qemu_test_exit_success();
+    }
     #[cfg(feature = "stage12-5-test")]
-    { if !storage_manager::structural_self_test() { serial::write_line(format_args!("[S12.5] storage management: FAILED")); qemu_test_exit_failure(); } serial::write_line(format_args!("[S12.5] storage management: PASSED")); qemu_test_exit_success(); }
+    {
+        if !storage_manager::structural_self_test() {
+            serial::write_line(format_args!("[S12.5] storage management: FAILED"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!("[S12.5] storage management: PASSED"));
+        qemu_test_exit_success();
+    }
     #[cfg(feature = "stage11-4-test")]
     {
         serial::write_line(format_args!("[S11.4] libwoven runtime boundary: PASSED"));
@@ -2476,7 +2647,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             serial::write_line(format_args!("[S10.9] timers/events: FAILED"));
             qemu_test_exit_failure();
         }
-        serial::write_line(format_args!("[S10.9] timers/events/deadlines/cancellation/teardown: PASSED"));
+        serial::write_line(format_args!(
+            "[S10.9] timers/events/deadlines/cancellation/teardown: PASSED"
+        ));
         qemu_test_exit_success();
     }
     #[cfg(feature = "stage10-8-test")]
@@ -2495,13 +2668,17 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             }
             x86_64::instructions::hlt();
         }
-        if task::wait_process(pid.as_u64()) != Ok(0) || async_op::stats().active != 0
-            || completion_port::active_count() != before || !async_acceptance::ports_smp()
+        if task::wait_process(pid.as_u64()) != Ok(0)
+            || async_op::stats().active != 0
+            || completion_port::active_count() != before
+            || !async_acceptance::ports_smp()
         {
             serial::write_line(format_args!("[S10.8] completion ports: FAILED"));
             qemu_test_exit_failure();
         }
-        serial::write_line(format_args!("[S10.8] completion ports + batch/cancel/timeout/teardown/SMP: PASSED"));
+        serial::write_line(format_args!(
+            "[S10.8] completion ports + batch/cancel/timeout/teardown/SMP: PASSED"
+        ));
         qemu_test_exit_success();
     }
     #[cfg(feature = "stage10-4-test")]
@@ -2509,7 +2686,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         let block_before = block_io::stats();
         let async_before = async_op::stats();
         let Some(stage10_4_program) = userspace::create_stage10_4_process() else {
-            serial::write_line(format_args!("[S10.4] userspace async block I/O image: FAILED"));
+            serial::write_line(format_args!(
+                "[S10.4] userspace async block I/O image: FAILED"
+            ));
             qemu_test_exit_failure();
         };
         let stage10_4_caps = capability::CapabilitySet::only(capability::Capability::StorageIo);
@@ -2520,7 +2699,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         ) {
             Ok((pid, _, _)) => pid,
             Err(_) => {
-                serial::write_line(format_args!("[S10.4] userspace async block I/O spawn: FAILED"));
+                serial::write_line(format_args!(
+                    "[S10.4] userspace async block I/O spawn: FAILED"
+                ));
                 qemu_test_exit_failure();
             }
         };
@@ -2533,7 +2714,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             x86_64::instructions::hlt();
         }
         if task::wait_process(stage10_4_pid.as_u64()) != Ok(0) {
-            serial::write_line(format_args!("[S10.4] userspace async block I/O exit: FAILED"));
+            serial::write_line(format_args!(
+                "[S10.4] userspace async block I/O exit: FAILED"
+            ));
             qemu_test_exit_failure();
         }
         let block_after = block_io::stats();
@@ -2661,17 +2844,23 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         let net_before = async_network::stats();
         let sockets_before = network::stats().user_sockets;
         let Some(program) = userspace::create_stage10_6_process() else {
-            serial::write_line(format_args!("[S10.6] userspace async network image: FAILED"));
+            serial::write_line(format_args!(
+                "[S10.6] userspace async network image: FAILED"
+            ));
             qemu_test_exit_failure();
         };
         let pid = match task::spawn_user_process("s10.6-async-net", program) {
             Ok((pid, _)) => pid,
             Err(_) => {
-                serial::write_line(format_args!("[S10.6] userspace async network spawn: FAILED"));
+                serial::write_line(format_args!(
+                    "[S10.6] userspace async network spawn: FAILED"
+                ));
                 qemu_test_exit_failure();
             }
         };
-        serial::write_line(format_args!("[S10.6] async UDP receive target ready on port 7001"));
+        serial::write_line(format_args!(
+            "[S10.6] async UDP receive target ready on port 7001"
+        ));
         let start = timer::ticks();
         while !task::process_exited(pid) {
             network::poll();
@@ -2689,7 +2878,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         while async_network::stats().active != 0 {
             network::poll();
             if timer::ticks().wrapping_sub(cleanup_start) > 200 {
-                serial::write_line(format_args!("[S10.6] async network teardown drain: TIMEOUT"));
+                serial::write_line(format_args!(
+                    "[S10.6] async network teardown drain: TIMEOUT"
+                ));
                 qemu_test_exit_failure();
             }
             task::yield_now();
@@ -2795,7 +2986,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 sockets_before, sockets_after));
             qemu_test_exit_failure();
         }
-        serial::write_line(format_args!("[S10.7] userspace async TCP connect/send/recv + EOF/pinning/cancel/teardown: PASSED"));
+        serial::write_line(format_args!(
+            "[S10.7] userspace async TCP connect/send/recv + EOF/pinning/cancel/teardown: PASSED"
+        ));
         qemu_test_exit_success();
     }
     if !syscall::user_identity_verified() {
@@ -2913,9 +3106,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             halt();
         }
     };
-    serial::write_line(format_args!("[TERM] spawn termination target: DONE pid={}", kill_pid.as_u64()));
+    serial::write_line(format_args!(
+        "[TERM] spawn termination target: DONE pid={}",
+        kill_pid.as_u64()
+    ));
     let exited_before_kill = task::process_exited(kill_pid);
-    serial::write_line(format_args!("[TERM] process_exited before kill={}", exited_before_kill));
+    serial::write_line(format_args!(
+        "[TERM] process_exited before kill={}",
+        exited_before_kill
+    ));
     let kill_result = if exited_before_kill {
         Err(())
     } else {
@@ -2927,7 +3126,10 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         task::yield_now();
     }
     let exited_after_kill = task::process_exited(kill_pid);
-    serial::write_line(format_args!("[TERM] process_exited after kill={}", exited_after_kill));
+    serial::write_line(format_args!(
+        "[TERM] process_exited after kill={}",
+        exited_after_kill
+    ));
     let wait_status = task::wait_process(kill_pid.as_u64());
     let wait_ok = wait_status == Ok(143);
     match wait_status {
@@ -3060,8 +3262,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         if pager_wait_iteration <= 8 || pager_wait_iteration.is_multiple_of(64) {
             serial::write_line(format_args!(
                 "[PAGER-DIAG] process_exited lookup: DONE iteration={} exited={}",
-                pager_wait_iteration,
-                pager_exited
+                pager_wait_iteration, pager_exited
             ));
         }
     }

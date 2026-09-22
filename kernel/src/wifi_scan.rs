@@ -48,10 +48,7 @@ fn classify_security(capability_info: u16, rsn_present: bool) -> Security {
     }
 }
 
-pub fn parse_scan_frame(
-    frame: &[u8],
-    signal_dbm: i8,
-) -> Result<ScanObservation, ScanParseError> {
+pub fn parse_scan_frame(frame: &[u8], signal_dbm: i8) -> Result<ScanObservation, ScanParseError> {
     let header = wifi80211::parse_management_header(frame)?;
     match header.control.management_subtype() {
         Some(ManagementSubtype::Beacon | ManagementSubtype::ProbeResponse) => {}
@@ -117,22 +114,12 @@ fn build_scan_frame(
         return None;
     }
 
-    wifi80211::build_management_header(
-        output,
-        subtype,
-        [0xff; 6],
-        bssid,
-        bssid,
-        0x0010,
-    )
-    .ok()?;
+    wifi80211::build_management_header(output, subtype, [0xff; 6], bssid, bssid, 0x0010).ok()?;
 
     output[MGMT_HEADER_LEN..fixed].fill(0);
-    output[MGMT_HEADER_LEN + 8..MGMT_HEADER_LEN + 10]
-        .copy_from_slice(&100u16.to_le_bytes());
+    output[MGMT_HEADER_LEN + 8..MGMT_HEADER_LEN + 10].copy_from_slice(&100u16.to_le_bytes());
     let capability = if rsn { CAPABILITY_PRIVACY } else { 0 };
-    output[MGMT_HEADER_LEN + 10..MGMT_HEADER_LEN + 12]
-        .copy_from_slice(&capability.to_le_bytes());
+    output[MGMT_HEADER_LEN + 10..MGMT_HEADER_LEN + 12].copy_from_slice(&capability.to_le_bytes());
 
     let mut p = fixed;
     output[p] = wifi80211::IE_SSID;
@@ -183,18 +170,14 @@ pub fn self_test() -> bool {
     if manager.begin_scan().is_err() {
         return false;
     }
-    if record_frame(&mut manager, &frame[..len], -38).is_err()
-        || manager.scan_count() != 1
-    {
+    if record_frame(&mut manager, &frame[..len], -38).is_err() || manager.scan_count() != 1 {
         return false;
     }
 
     let Some(len2) = build_scan_frame(&mut frame, 5, bssid, b"WovenScan", 6, true) else {
         return false;
     };
-    if record_frame(&mut manager, &frame[..len2], -25).is_err()
-        || manager.scan_count() != 1
-    {
+    if record_frame(&mut manager, &frame[..len2], -25).is_err() || manager.scan_count() != 1 {
         return false;
     }
 

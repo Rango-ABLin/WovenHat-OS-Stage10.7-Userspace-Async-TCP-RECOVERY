@@ -3,7 +3,10 @@
 //! lock holder and run a second task that spins on the same CPU. Other CPUs are
 //! serialized by the underlying mutex. Never sleep or switch tasks under a guard.
 
-use core::{marker::PhantomData, ops::{Deref, DerefMut}};
+use core::{
+    marker::PhantomData,
+    ops::{Deref, DerefMut},
+};
 use x86_64::instructions::interrupts;
 
 #[cfg(not(test))]
@@ -35,9 +38,7 @@ mod lock_order {
         if rank != 0 && previous_rank != 0 && rank < previous_rank {
             panic!(
                 "IrqMutex lock-order inversion cpu={} requested={} held={}",
-                cpu,
-                rank,
-                previous_rank
+                cpu, rank, previous_rank
             );
         }
         let depth = DEPTH[cpu].load(Ordering::Relaxed) as usize;
@@ -55,7 +56,12 @@ mod lock_order {
         if rank > previous_rank {
             HIGHEST_RANK[cpu].store(rank, Ordering::Relaxed);
         }
-        Token { cpu, address, previous_rank, line }
+        Token {
+            cpu,
+            address,
+            previous_rank,
+            line,
+        }
     }
 
     pub fn exit(token: Token) {
@@ -65,7 +71,10 @@ mod lock_order {
         if held != token.address {
             panic!(
                 "IrqMutex guards must be released in nesting order cpu={} releasing={:#x} at line={} held={:#x} at line={}",
-                token.cpu, token.address, token.line, held,
+                token.cpu,
+                token.address,
+                token.line,
+                held,
                 HELD_LINE[token.cpu][depth - 1].load(Ordering::Relaxed)
             );
         }
@@ -83,9 +92,13 @@ mod lock_order {
 #[cfg(test)]
 mod lock_order {
     pub struct Token;
-    pub fn enter(_: usize, _: u8) -> Token { Token }
+    pub fn enter(_: usize, _: u8) -> Token {
+        Token
+    }
     pub fn exit(_: Token) {}
-    pub fn highest_rank() -> u8 { 0 }
+    pub fn highest_rank() -> u8 {
+        0
+    }
 }
 
 /// A pager operation acquires rank 10 and can wait for remote TLB flushes.
@@ -104,7 +117,10 @@ impl<T> IrqMutex<T> {
     /// checked against locks already held by this CPU; lower-ranked nesting is
     /// rejected before spinning, making lock-order bugs fail deterministically.
     pub const fn with_rank(value: T, rank: u8) -> Self {
-        Self { inner: spin::Mutex::new(value), rank }
+        Self {
+            inner: spin::Mutex::new(value),
+            rank,
+        }
     }
 
     #[track_caller]
@@ -131,7 +147,9 @@ impl<T> IrqMutex<T> {
         let token = lock_order::enter(self as *const Self as usize, self.rank);
         let Some(guard) = self.inner.try_lock() else {
             lock_order::exit(token);
-            if restore_interrupts { interrupts::enable(); }
+            if restore_interrupts {
+                interrupts::enable();
+            }
             return None;
         };
         Some(IrqMutexGuard {
@@ -152,11 +170,15 @@ pub struct IrqMutexGuard<'a, T> {
 
 impl<T> Deref for IrqMutexGuard<'_, T> {
     type Target = T;
-    fn deref(&self) -> &T { self.guard.as_ref().unwrap() }
+    fn deref(&self) -> &T {
+        self.guard.as_ref().unwrap()
+    }
 }
 
 impl<T> DerefMut for IrqMutexGuard<'_, T> {
-    fn deref_mut(&mut self) -> &mut T { self.guard.as_mut().unwrap() }
+    fn deref_mut(&mut self) -> &mut T {
+        self.guard.as_mut().unwrap()
+    }
 }
 
 impl<T> Drop for IrqMutexGuard<'_, T> {
@@ -166,7 +188,9 @@ impl<T> Drop for IrqMutexGuard<'_, T> {
         // IF=0 and leave restoration to the outermost guard.
         drop(self.guard.take());
         lock_order::exit(self.token.take().unwrap());
-        if self.restore_interrupts { interrupts::enable(); }
+        if self.restore_interrupts {
+            interrupts::enable();
+        }
     }
 }
 
@@ -182,7 +206,10 @@ pub struct PreemptMutex<T> {
 #[cfg(not(test))]
 impl<T> PreemptMutex<T> {
     pub const fn with_rank(value: T, rank: u8) -> Self {
-        Self { inner: spin::Mutex::new(value), rank }
+        Self {
+            inner: spin::Mutex::new(value),
+            rank,
+        }
     }
 
     #[track_caller]
@@ -213,12 +240,16 @@ pub struct PreemptMutexGuard<'a, T> {
 #[cfg(not(test))]
 impl<T> Deref for PreemptMutexGuard<'_, T> {
     type Target = T;
-    fn deref(&self) -> &T { self.guard.as_ref().unwrap() }
+    fn deref(&self) -> &T {
+        self.guard.as_ref().unwrap()
+    }
 }
 
 #[cfg(not(test))]
 impl<T> DerefMut for PreemptMutexGuard<'_, T> {
-    fn deref_mut(&mut self) -> &mut T { self.guard.as_mut().unwrap() }
+    fn deref_mut(&mut self) -> &mut T {
+        self.guard.as_mut().unwrap()
+    }
 }
 
 #[cfg(not(test))]

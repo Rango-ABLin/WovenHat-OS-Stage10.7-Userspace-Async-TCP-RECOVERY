@@ -152,7 +152,13 @@ pub fn discover(
             b"FACP" => summary.fadt = true,
             b"HPET" => summary.hpet = true,
             b"MCFG" => {
-                parse_mcfg(physical_offset, table_address, table.length, regions, &mut summary)?;
+                parse_mcfg(
+                    physical_offset,
+                    table_address,
+                    table.length,
+                    regions,
+                    &mut summary,
+                )?;
                 summary.mcfg = true;
             }
             b"SRAT" => {
@@ -171,7 +177,6 @@ pub fn discover(
     }
     Ok(summary)
 }
-
 
 fn parse_mcfg(
     physical_offset: u64,
@@ -196,9 +201,11 @@ fn parse_mcfg(
         let allocation = decode_mcfg_allocation(&entry)?;
         if summary.mcfg_allocations[..summary.mcfg_allocation_count]
             .iter()
-            .any(|existing| existing.segment_group == allocation.segment_group
-                && existing.start_bus <= allocation.end_bus
-                && allocation.start_bus <= existing.end_bus)
+            .any(|existing| {
+                existing.segment_group == allocation.segment_group
+                    && existing.start_bus <= allocation.end_bus
+                    && allocation.start_bus <= existing.end_bus
+            })
         {
             return Err(Error::InvalidLength);
         }
@@ -222,8 +229,15 @@ fn decode_mcfg_allocation(entry: &[u8; MCFG_ALLOCATION_LENGTH]) -> Result<McfgAl
     }
     let buses = u64::from(end_bus) - u64::from(start_bus) + 1;
     let bytes = buses.checked_mul(1 << 20).ok_or(Error::AddressOverflow)?;
-    base_address.checked_add(bytes).ok_or(Error::AddressOverflow)?;
-    Ok(McfgAllocation { base_address, segment_group, start_bus, end_bus })
+    base_address
+        .checked_add(bytes)
+        .ok_or(Error::AddressOverflow)?;
+    Ok(McfgAllocation {
+        base_address,
+        segment_group,
+        start_bus,
+        end_bus,
+    })
 }
 
 fn parse_srat(
@@ -314,7 +328,11 @@ fn update_srat_summary(entry: &[u8], summary: &mut Summary) -> Result<(), Error>
             if entry.len() < 24 {
                 return Err(Error::InvalidLength);
             }
-            (read_u32(entry, 8), read_u32(entry, 4), read_u32(entry, 12) & 1 != 0)
+            (
+                read_u32(entry, 8),
+                read_u32(entry, 4),
+                read_u32(entry, 12) & 1 != 0,
+            )
         }
         _ => return Ok(()),
     };

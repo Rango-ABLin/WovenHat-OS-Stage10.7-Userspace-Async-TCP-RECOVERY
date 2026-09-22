@@ -5,6 +5,7 @@
 //! owned buffers so sockets can be created and destroyed dynamically without
 //! static-lifetime bookkeeping in user processes.
 
+use crate::irq_lock::IrqMutex as Mutex;
 use alloc::{boxed::Box, vec, vec::Vec};
 use smoltcp::{
     iface::{Config, Interface, SocketHandle, SocketSet},
@@ -14,7 +15,6 @@ use smoltcp::{
     wire::{EthernetAddress, IpAddress, IpCidr, IpEndpoint, Ipv4Address},
 };
 use spin::Once;
-use crate::irq_lock::IrqMutex as Mutex;
 
 use crate::{
     timer,
@@ -115,16 +115,23 @@ impl Device for VirtioSmolDevice {
     }
 }
 
-
 pub struct WifiNetDevice {
     session: WifiSession,
     epoch: u32,
     rx: [u8; wifi_smol::ETHERNET_MTU],
 }
 impl WifiNetDevice {
-    pub fn new(session: WifiSession, epoch: u32) -> Self { Self { session, epoch, rx: [0; wifi_smol::ETHERNET_MTU] } }
+    pub fn new(session: WifiSession, epoch: u32) -> Self {
+        Self {
+            session,
+            epoch,
+            rx: [0; wifi_smol::ETHERNET_MTU],
+        }
+    }
     #[cfg(feature = "stage13-9-test")]
-    pub fn session_mut(&mut self) -> &mut WifiSession { &mut self.session }
+    pub fn session_mut(&mut self) -> &mut WifiSession {
+        &mut self.session
+    }
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -141,52 +148,74 @@ pub enum NetTxToken<'a> {
     Wifi(wifi_smol::WifiTxToken<'a>),
 }
 impl RxToken for NetRxToken<'_> {
-    fn consume<R,F>(self,f:F)->R where F:FnOnce(&[u8])->R {
-        match self { Self::Virtio(t)=>t.consume(f), Self::Wifi(t)=>t.consume(f) }
+    fn consume<R, F>(self, f: F) -> R
+    where
+        F: FnOnce(&[u8]) -> R,
+    {
+        match self {
+            Self::Virtio(t) => t.consume(f),
+            Self::Wifi(t) => t.consume(f),
+        }
     }
 }
 impl TxToken for NetTxToken<'_> {
-    fn consume<R,F>(self,len:usize,f:F)->R where F:FnOnce(&mut[u8])->R {
-        match self { Self::Virtio(t)=>t.consume(len,f), Self::Wifi(t)=>t.consume(len,f) }
+    fn consume<R, F>(self, len: usize, f: F) -> R
+    where
+        F: FnOnce(&mut [u8]) -> R,
+    {
+        match self {
+            Self::Virtio(t) => t.consume(len, f),
+            Self::Wifi(t) => t.consume(len, f),
+        }
     }
 }
 impl Device for NetTransport {
-    type RxToken<'a>=NetRxToken<'a> where Self:'a;
-    type TxToken<'a>=NetTxToken<'a> where Self:'a;
+    type RxToken<'a>
+        = NetRxToken<'a>
+    where
+        Self: 'a;
+    type TxToken<'a>
+        = NetTxToken<'a>
+    where
+        Self: 'a;
 
-    fn receive(&mut self,timestamp:Instant)->Option<(Self::RxToken<'_>,Self::TxToken<'_>)>{
+    fn receive(&mut self, timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         match self {
-            Self::Virtio(d)=>d.receive(timestamp).map(|(r,t)|(NetRxToken::Virtio(r),NetTxToken::Virtio(t))),
-            Self::Wifi(d)=>{
-                let len=match d.session.receive_ethernet(d.epoch,&mut d.rx){
-                    Ok(Some(n))=>n,
-                    Ok(None)|Err(_)=>return None,
+            Self::Virtio(d) => d
+                .receive(timestamp)
+                .map(|(r, t)| (NetRxToken::Virtio(r), NetTxToken::Virtio(t))),
+            Self::Wifi(d) => {
+                let len = match d.session.receive_ethernet(d.epoch, &mut d.rx) {
+                    Ok(Some(n)) => n,
+                    Ok(None) | Err(_) => return None,
                 };
                 Some((
                     NetRxToken::Wifi(wifi_smol::WifiRxToken::new(&mut d.rx[..len])),
-                    NetTxToken::Wifi(wifi_smol::WifiTxToken::new(&mut d.session,d.epoch)),
+                    NetTxToken::Wifi(wifi_smol::WifiTxToken::new(&mut d.session, d.epoch)),
                 ))
             }
         }
     }
-    fn transmit(&mut self,timestamp:Instant)->Option<Self::TxToken<'_>>{
+    fn transmit(&mut self, timestamp: Instant) -> Option<Self::TxToken<'_>> {
         match self {
-            Self::Virtio(d)=>d.transmit(timestamp).map(NetTxToken::Virtio),
-            Self::Wifi(d)=>{
-                d.session.is_active_epoch(d.epoch).then_some(
-                    NetTxToken::Wifi(wifi_smol::WifiTxToken::new(&mut d.session,d.epoch))
-                )
-            }
+            Self::Virtio(d) => d.transmit(timestamp).map(NetTxToken::Virtio),
+            Self::Wifi(d) => d
+                .session
+                .is_active_epoch(d.epoch)
+                .then_some(NetTxToken::Wifi(wifi_smol::WifiTxToken::new(
+                    &mut d.session,
+                    d.epoch,
+                ))),
         }
     }
-    fn capabilities(&self)->DeviceCapabilities{
+    fn capabilities(&self) -> DeviceCapabilities {
         match self {
-            Self::Virtio(d)=>d.capabilities(),
-            Self::Wifi(_)=>{
-                let mut c=DeviceCapabilities::default();
-                c.medium=Medium::Ethernet;
-                c.max_transmission_unit=wifi_smol::ETHERNET_MTU;
-                c.checksum=ChecksumCapabilities::default();
+            Self::Virtio(d) => d.capabilities(),
+            Self::Wifi(_) => {
+                let mut c = DeviceCapabilities::default();
+                c.medium = Medium::Ethernet;
+                c.max_transmission_unit = wifi_smol::ETHERNET_MTU;
+                c.checksum = ChecksumCapabilities::default();
                 c
             }
         }
@@ -337,29 +366,32 @@ pub fn init() -> Result<(), InitError> {
     let ping_handle = sockets.add(ping_socket);
 
     RUNTIME.call_once(|| {
-        Mutex::with_rank(Runtime {
-            iface,
-            device,
-            sockets,
-            user: [None; MAX_USER_SOCKETS],
-            echo_handle: None,
-            echo_port: 0,
-            echo_packets: 0,
-            dhcp_handle: Some(dhcp_handle),
-            dns_handle: Some(dns_handle),
-            dns_queries: [None; 4],
-            dhcp_enabled: true,
-            using_dhcp: false,
-            ipv4: DEFAULT_IPV4,
-            prefix: DEFAULT_PREFIX,
-            gateway: DEFAULT_GATEWAY,
-            dns_server: DEFAULT_DNS,
-            next_ephemeral: 49152,
-            next_socket_generation: 1,
-            ping_handle: Some(ping_handle),
-            ping_pending: None,
-            ping_sequence: 0,
-        }, 20)
+        Mutex::with_rank(
+            Runtime {
+                iface,
+                device,
+                sockets,
+                user: [None; MAX_USER_SOCKETS],
+                echo_handle: None,
+                echo_port: 0,
+                echo_packets: 0,
+                dhcp_handle: Some(dhcp_handle),
+                dns_handle: Some(dns_handle),
+                dns_queries: [None; 4],
+                dhcp_enabled: true,
+                using_dhcp: false,
+                ipv4: DEFAULT_IPV4,
+                prefix: DEFAULT_PREFIX,
+                gateway: DEFAULT_GATEWAY,
+                dns_server: DEFAULT_DNS,
+                next_ephemeral: 49152,
+                next_socket_generation: 1,
+                ping_handle: Some(ping_handle),
+                ping_pending: None,
+                ping_sequence: 0,
+            },
+            20,
+        )
     });
     Ok(())
 }
@@ -755,32 +787,56 @@ pub fn close_process_sockets(owner: u64) {
     }
 }
 
-
 pub fn pin_socket(owner: u64, id: u64) -> Result<SocketToken, SocketError> {
-    let Some(runtime) = RUNTIME.get() else { return Err(SocketError::Offline); };
+    let Some(runtime) = RUNTIME.get() else {
+        return Err(SocketError::Offline);
+    };
     let mut runtime = runtime.lock();
     let entry = find_slot(&runtime, owner, id)?;
     let index = usize::try_from(id).map_err(|_| SocketError::Invalid)?;
-    let Some(socket) = runtime.user.get_mut(index).and_then(Option::as_mut) else { return Err(SocketError::Invalid); };
-    socket.async_refs = socket.async_refs.checked_add(1).ok_or(SocketError::BufferFull)?;
-    Ok(SocketToken { slot: index as u16, generation: entry.generation, owner })
+    let Some(socket) = runtime.user.get_mut(index).and_then(Option::as_mut) else {
+        return Err(SocketError::Invalid);
+    };
+    socket.async_refs = socket
+        .async_refs
+        .checked_add(1)
+        .ok_or(SocketError::BufferFull)?;
+    Ok(SocketToken {
+        slot: index as u16,
+        generation: entry.generation,
+        owner,
+    })
 }
 
 fn find_token(runtime: &Runtime, token: SocketToken) -> Result<UserSocket, SocketError> {
-    let socket = runtime.user.get(token.slot as usize).and_then(|s| *s).ok_or(SocketError::Invalid)?;
-    if socket.owner != token.owner || socket.generation != token.generation { return Err(SocketError::Invalid); }
+    let socket = runtime
+        .user
+        .get(token.slot as usize)
+        .and_then(|s| *s)
+        .ok_or(SocketError::Invalid)?;
+    if socket.owner != token.owner || socket.generation != token.generation {
+        return Err(SocketError::Invalid);
+    }
     Ok(socket)
 }
 
 pub fn unpin_socket(token: SocketToken) {
-    let Some(runtime) = RUNTIME.get() else { return; };
+    let Some(runtime) = RUNTIME.get() else {
+        return;
+    };
     let mut runtime = runtime.lock();
     let index = token.slot as usize;
-    let Some(current) = runtime.user.get(index).and_then(|s| *s) else { return; };
-    if current.owner != token.owner || current.generation != token.generation { return; }
+    let Some(current) = runtime.user.get(index).and_then(|s| *s) else {
+        return;
+    };
+    if current.owner != token.owner || current.generation != token.generation {
+        return;
+    }
     let mut remove = false;
     if let Some(socket) = runtime.user[index].as_mut() {
-        if socket.async_refs != 0 { socket.async_refs -= 1; }
+        if socket.async_refs != 0 {
+            socket.async_refs -= 1;
+        }
         remove = socket.async_refs == 0 && socket.closing;
     }
     if remove {
@@ -790,33 +846,54 @@ pub fn unpin_socket(token: SocketToken) {
     }
 }
 
-
 pub fn socket_connect_pinned(token: SocketToken, endpoint: IpEndpoint) -> Result<(), SocketError> {
-    if endpoint.port == 0 { return Err(SocketError::Address); }
-    let Some(runtime) = RUNTIME.get() else { return Err(SocketError::Offline); };
+    if endpoint.port == 0 {
+        return Err(SocketError::Address);
+    }
+    let Some(runtime) = RUNTIME.get() else {
+        return Err(SocketError::Offline);
+    };
     let mut runtime = runtime.lock();
     let entry = find_token(&runtime, token)?;
-    if entry.kind != SocketKind::Tcp { return Err(SocketError::WrongKind); }
+    if entry.kind != SocketKind::Tcp {
+        return Err(SocketError::WrongKind);
+    }
 
     if let Some(peer) = entry.peer {
-        if peer != endpoint { return Err(SocketError::Address); }
+        if peer != endpoint {
+            return Err(SocketError::Address);
+        }
     } else {
         let local_port = next_ephemeral(&mut runtime);
-        let Runtime { iface, sockets, user, .. } = &mut *runtime;
-        sockets.get_mut::<tcp::Socket>(entry.handle)
+        let Runtime {
+            iface,
+            sockets,
+            user,
+            ..
+        } = &mut *runtime;
+        sockets
+            .get_mut::<tcp::Socket>(entry.handle)
             .connect(iface.context(), endpoint, local_port)
             .map_err(|_| SocketError::Address)?;
-        if let Some(socket) = user[token.slot as usize].as_mut() { socket.peer = Some(endpoint); }
+        if let Some(socket) = user[token.slot as usize].as_mut() {
+            socket.peer = Some(endpoint);
+        }
     }
 
     let socket = runtime.sockets.get::<tcp::Socket>(entry.handle);
-    if socket.may_send() { return Ok(()); }
-    if socket.is_active() { return Err(SocketError::WouldBlock); }
+    if socket.may_send() {
+        return Ok(());
+    }
+    if socket.is_active() {
+        return Err(SocketError::WouldBlock);
+    }
     Err(SocketError::NotConnected)
 }
 
 pub fn socket_send_pinned(token: SocketToken, data: &[u8]) -> Result<usize, SocketError> {
-    let Some(runtime) = RUNTIME.get() else { return Err(SocketError::Offline); };
+    let Some(runtime) = RUNTIME.get() else {
+        return Err(SocketError::Offline);
+    };
     let mut runtime = runtime.lock();
     let entry = find_token(&runtime, token)?;
     match entry.kind {
@@ -847,21 +924,35 @@ pub fn socket_send_pinned(token: SocketToken, data: &[u8]) -> Result<usize, Sock
     }
 }
 
-pub fn socket_recv_pinned(token: SocketToken, out: &mut [u8]) -> Result<(usize, Option<IpEndpoint>), SocketError> {
-    let Some(runtime) = RUNTIME.get() else { return Err(SocketError::Offline); };
+pub fn socket_recv_pinned(
+    token: SocketToken,
+    out: &mut [u8],
+) -> Result<(usize, Option<IpEndpoint>), SocketError> {
+    let Some(runtime) = RUNTIME.get() else {
+        return Err(SocketError::Offline);
+    };
     let mut runtime = runtime.lock();
     let entry = find_token(&runtime, token)?;
     match entry.kind {
         SocketKind::Udp => {
-            let (len, endpoint) = runtime.sockets.get_mut::<udp::Socket>(entry.handle)
-                .recv_slice(out).map(|(len, meta)| (len, meta.endpoint)).map_err(|_| SocketError::WouldBlock)?;
-            if let Some(socket) = runtime.user[token.slot as usize].as_mut() { socket.peer = Some(endpoint); }
+            let (len, endpoint) = runtime
+                .sockets
+                .get_mut::<udp::Socket>(entry.handle)
+                .recv_slice(out)
+                .map(|(len, meta)| (len, meta.endpoint))
+                .map_err(|_| SocketError::WouldBlock)?;
+            if let Some(socket) = runtime.user[token.slot as usize].as_mut() {
+                socket.peer = Some(endpoint);
+            }
             Ok((len, Some(endpoint)))
         }
         SocketKind::Tcp => {
             let socket = runtime.sockets.get_mut::<tcp::Socket>(entry.handle);
             if socket.can_recv() {
-                return socket.recv_slice(out).map(|len| (len, entry.peer)).map_err(|_| SocketError::WouldBlock);
+                return socket
+                    .recv_slice(out)
+                    .map(|len| (len, entry.peer))
+                    .map_err(|_| SocketError::WouldBlock);
             }
             if !socket.may_recv() {
                 return Ok((0, entry.peer));

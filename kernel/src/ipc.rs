@@ -2,18 +2,17 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering
 
 use crate::irq_lock::IrqMutex as Mutex;
 
-use crate::paging;
 use crate::capability::{Capability, CapabilitySet};
-use crate::wovenguard::{self, LineageId, ServiceClass};
-use crate::task::{self, TaskId};
 use crate::config::{
     IPC_QUEUE_DEPTH as QUEUE_DEPTH, MAX_IPC_ENDPOINTS as MAX_ENDPOINTS,
     MAX_IPC_HANDLES_PER_PROCESS as MAX_HANDLES, MAX_IPC_OBJECTS as MAX_OBJECTS,
-    MAX_IPC_SERVICE_NAME as MAX_SERVICE_NAME, MAX_IPC_SERVICES as MAX_SERVICES,
-    MAX_SHARED_MEMORY_MAPPINGS as MAX_SHM_MAPPINGS,
-    MAX_SHARED_MEMORY_OBJECTS as MAX_SHM_OBJECTS,
+    MAX_IPC_SERVICES as MAX_SERVICES, MAX_IPC_SERVICE_NAME as MAX_SERVICE_NAME,
+    MAX_SHARED_MEMORY_MAPPINGS as MAX_SHM_MAPPINGS, MAX_SHARED_MEMORY_OBJECTS as MAX_SHM_OBJECTS,
     MAX_SHARED_MEMORY_PAGES as MAX_SHM_PAGES,
 };
+use crate::paging;
+use crate::task::{self, TaskId};
+use crate::wovenguard::{self, LineageId, ServiceClass};
 
 pub use crate::config::MAX_MESSAGE_SIZE;
 
@@ -98,19 +97,13 @@ impl HandleRights {
     pub const SHM_MAP: u8 = 1 << 6;
     /// Stage 8.6 authority to publish an endpoint in the global service registry.
     pub const PUBLISH_SERVICE: u8 = 1 << 7;
-    pub const ENDPOINT_OWNER: u8 = Self::SEND
-        | Self::RECEIVE
-        | Self::TRANSFER
-        | Self::INSPECT
-        | Self::PUBLISH_SERVICE;
+    pub const ENDPOINT_OWNER: u8 =
+        Self::SEND | Self::RECEIVE | Self::TRANSFER | Self::INSPECT | Self::PUBLISH_SERVICE;
     /// Rights that may be delegated by service discovery. RECEIVE and
     /// PUBLISH_SERVICE stay server-side so discovery cannot mint another server.
     pub const SERVICE_CLIENT: u8 = Self::SEND | Self::TRANSFER | Self::INSPECT;
-    pub const SHARED_MEMORY_OWNER: u8 = Self::TRANSFER
-        | Self::INSPECT
-        | Self::SHM_READ
-        | Self::SHM_WRITE
-        | Self::SHM_MAP;
+    pub const SHARED_MEMORY_OWNER: u8 =
+        Self::TRANSFER | Self::INSPECT | Self::SHM_READ | Self::SHM_WRITE | Self::SHM_MAP;
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -377,7 +370,12 @@ impl HandleSpace {
         generations: [0; MAX_HANDLES],
     };
 
-    fn allocate(&mut self, object: ObjectRef, rights: u8, lineage: Option<LineageId>) -> Result<Handle, Error> {
+    fn allocate(
+        &mut self,
+        object: ObjectRef,
+        rights: u8,
+        lineage: Option<LineageId>,
+    ) -> Result<Handle, Error> {
         self.allocate_tagged(object, rights, lineage, None)
     }
 
@@ -419,7 +417,10 @@ impl HandleSpace {
 
     fn lookup(&self, handle: Handle) -> Result<HandleEntry, Error> {
         let entry = self.lookup_raw(handle)?;
-        if entry.lineage.is_some_and(|lineage| !wovenguard::lineage_authorizes(lineage, Capability::Ipc)) {
+        if entry
+            .lineage
+            .is_some_and(|lineage| !wovenguard::lineage_authorizes(lineage, Capability::Ipc))
+        {
             return Err(Error::AccessDenied);
         }
         Ok(entry)
@@ -450,9 +451,11 @@ impl ServiceName {
         }
         // Keep the kernel namespace deterministic and shell/config friendly.
         // Hierarchical names such as `woven.fs` and `system.net-v1` are valid.
-        if !name.iter().copied().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_')
-        }) {
+        if !name
+            .iter()
+            .copied()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+        {
             return Err(Error::InvalidServiceName);
         }
         let mut bytes = [0_u8; MAX_SERVICE_NAME];
@@ -560,7 +563,9 @@ impl State {
             }
         }
 
-        let mut space = self.handle_spaces[handle_slot].take().ok_or(Error::NoHandleSpace)?;
+        let mut space = self.handle_spaces[handle_slot]
+            .take()
+            .ok_or(Error::NoHandleSpace)?;
         for object in self.objects.iter_mut().flatten() {
             remove_waiters_for_owner(&mut object.receive_waiters, owner);
             remove_waiters_for_owner(&mut object.send_waiters, owner);
@@ -581,7 +586,9 @@ impl State {
         if self.legacy_endpoint(sender).is_none() {
             return Err(Error::NoEndpoint);
         }
-        let endpoint = self.legacy_endpoint_mut(receiver).ok_or(Error::NoEndpoint)?;
+        let endpoint = self
+            .legacy_endpoint_mut(receiver)
+            .ok_or(Error::NoEndpoint)?;
         let mut message = Message {
             sender,
             ..Message::EMPTY
@@ -630,7 +637,14 @@ impl State {
             delegation_lineage: None,
         });
         let handle = match self.handle_space_mut(owner) {
-            Some(space) => space.allocate(ObjectRef { id: object_id, kind: HandleObjectKind::Endpoint }, HandleRights::ENDPOINT_OWNER, None),
+            Some(space) => space.allocate(
+                ObjectRef {
+                    id: object_id,
+                    kind: HandleObjectKind::Endpoint,
+                },
+                HandleRights::ENDPOINT_OWNER,
+                None,
+            ),
             None => Err(Error::NoHandleSpace),
         };
         match handle {
@@ -642,7 +656,11 @@ impl State {
         }
     }
 
-    fn delegation_lineage_for(&mut self, owner: u64, entry: HandleEntry) -> Result<LineageId, Error> {
+    fn delegation_lineage_for(
+        &mut self,
+        owner: u64,
+        entry: HandleEntry,
+    ) -> Result<LineageId, Error> {
         if let Some(lineage) = entry.lineage {
             if wovenguard::lineage_authorizes(lineage, Capability::Ipc) {
                 return Ok(lineage);
@@ -662,12 +680,15 @@ impl State {
                     }
                     object.delegation_lineage = None;
                 }
-                let lineage = wovenguard::issue_lineage_root(owner, rights).map_err(|_| Error::AccessDenied)?;
+                let lineage = wovenguard::issue_lineage_root(owner, rights)
+                    .map_err(|_| Error::AccessDenied)?;
                 object.delegation_lineage = Some(lineage);
                 Ok(lineage)
             }
             HandleObjectKind::SharedMemory => {
-                let object = self.shared_object_mut(entry.object).ok_or(Error::InvalidHandle)?;
+                let object = self
+                    .shared_object_mut(entry.object)
+                    .ok_or(Error::InvalidHandle)?;
                 if object.owner != owner {
                     return Err(Error::AccessDenied);
                 }
@@ -677,7 +698,8 @@ impl State {
                     }
                     object.delegation_lineage = None;
                 }
-                let lineage = wovenguard::issue_lineage_root(owner, rights).map_err(|_| Error::AccessDenied)?;
+                let lineage = wovenguard::issue_lineage_root(owner, rights)
+                    .map_err(|_| Error::AccessDenied)?;
                 object.delegation_lineage = Some(lineage);
                 Ok(lineage)
             }
@@ -713,8 +735,9 @@ impl State {
         match self
             .handle_space_mut(target)
             .ok_or(Error::NoHandleSpace)
-            .and_then(|space| space.allocate_tagged(source.object, rights, Some(lineage), source.service_class))
-        {
+            .and_then(|space| {
+                space.allocate_tagged(source.object, rights, Some(lineage), source.service_class)
+            }) {
             Ok(target_handle) => Ok(target_handle),
             Err(error) => {
                 self.release_object_reference(source.object);
@@ -778,7 +801,9 @@ impl State {
         {
             return Err(Error::AccessDenied);
         }
-        let object = self.shared_object(entry.object).ok_or(Error::InvalidHandle)?;
+        let object = self
+            .shared_object(entry.object)
+            .ok_or(Error::InvalidHandle)?;
         Ok(SharedMemoryInfo {
             object_id: object.id,
             owner: object.owner,
@@ -809,7 +834,9 @@ impl State {
         if entry.rights & required == 0 {
             return Err(Error::AccessDenied);
         }
-        let object = self.shared_object(entry.object).ok_or(Error::InvalidHandle)?;
+        let object = self
+            .shared_object(entry.object)
+            .ok_or(Error::InvalidHandle)?;
         let frames = object.frames;
         let page_count = object.page_count;
         self.retain_object_reference(entry.object)?;
@@ -835,13 +862,12 @@ impl State {
         {
             return Err(Error::AccessDenied);
         }
-        let object = self.shared_object(entry.object).ok_or(Error::InvalidHandle)?;
-        if object
-            .mappings
-            .iter()
-            .flatten()
-            .any(|mapping| mapping.owner == owner && mapping.space == space && mapping.start == start)
-        {
+        let object = self
+            .shared_object(entry.object)
+            .ok_or(Error::InvalidHandle)?;
+        if object.mappings.iter().flatten().any(|mapping| {
+            mapping.owner == owner && mapping.space == space && mapping.start == start
+        }) {
             return Err(Error::AlreadyMapped);
         }
         if object.mappings.iter().all(Option::is_some) {
@@ -861,13 +887,19 @@ impl State {
         start: u64,
         _writable: bool,
     ) -> Result<(), Error> {
-        let object = self.shared_object_mut(object_ref).ok_or(Error::InvalidHandle)?;
+        let object = self
+            .shared_object_mut(object_ref)
+            .ok_or(Error::InvalidHandle)?;
         let slot = object
             .mappings
             .iter_mut()
             .find(|slot| slot.is_none())
             .ok_or(Error::MappingTableFull)?;
-        *slot = Some(SharedMapping { owner, space, start });
+        *slot = Some(SharedMapping {
+            owner,
+            space,
+            start,
+        });
         Ok(())
     }
 
@@ -892,7 +924,9 @@ impl State {
             }) else {
                 continue;
             };
-            let mapping = object.mappings[mapping_slot].take().ok_or(Error::NotMapped)?;
+            let mapping = object.mappings[mapping_slot]
+                .take()
+                .ok_or(Error::NotMapped)?;
             let object_ref = ObjectRef {
                 id: object.id,
                 kind: HandleObjectKind::SharedMemory,
@@ -907,7 +941,9 @@ impl State {
         object_ref: ObjectRef,
         mapping: SharedMapping,
     ) -> Result<(), Error> {
-        let object = self.shared_object_mut(object_ref).ok_or(Error::InvalidHandle)?;
+        let object = self
+            .shared_object_mut(object_ref)
+            .ok_or(Error::InvalidHandle)?;
         let slot = object
             .mappings
             .iter_mut()
@@ -1085,7 +1121,10 @@ impl State {
         if endpoint_entry.rights & HandleRights::RECEIVE == 0 {
             return Err(Error::AccessDenied);
         }
-        let queued = self.object(endpoint_entry.object).ok_or(Error::InvalidHandle)?.head()?;
+        let queued = self
+            .object(endpoint_entry.object)
+            .ok_or(Error::InvalidHandle)?
+            .head()?;
 
         let installed = if let Some(transfer) = queued.transfer {
             // Allocate before dequeue. If the receiver has no free handle slot,
@@ -1196,7 +1235,12 @@ impl State {
         if client_rights == 0 || client_rights & !HandleRights::SERVICE_CLIENT != 0 {
             return Err(Error::AccessDenied);
         }
-        if self.services.iter().flatten().any(|service| service.name.matches(name)) {
+        if self
+            .services
+            .iter()
+            .flatten()
+            .any(|service| service.name.matches(name))
+        {
             return Err(Error::ServiceExists);
         }
         let source = self
@@ -1255,7 +1299,10 @@ impl State {
             .find(|service| service.name.matches(name))
             .copied()
             .ok_or(Error::ServiceNotFound)?;
-        if service.lineage.is_some_and(|lineage| !wovenguard::lineage_authorizes(lineage, Capability::Ipc)) {
+        if service
+            .lineage
+            .is_some_and(|lineage| !wovenguard::lineage_authorizes(lineage, Capability::Ipc))
+        {
             return Err(Error::AccessDenied);
         }
         self.retain_object_reference(service.object)?;
@@ -1269,8 +1316,7 @@ impl State {
                     service.lineage,
                     Some(service.class),
                 )
-            })
-        {
+            }) {
             Ok(handle) => Ok(handle),
             Err(error) => {
                 self.release_object_reference(service.object);
@@ -1310,7 +1356,9 @@ impl State {
                 (object.owner, object.delegation_lineage)
             }
             HandleObjectKind::SharedMemory => {
-                let object = self.shared_object(entry.object).ok_or(Error::InvalidHandle)?;
+                let object = self
+                    .shared_object(entry.object)
+                    .ok_or(Error::InvalidHandle)?;
                 (object.owner, object.delegation_lineage)
             }
         };
@@ -1351,14 +1399,14 @@ impl State {
             .ok_or(Error::NoHandleSpace)?
             .lookup(handle)?;
         let object_owner = match entry.object.kind {
-            HandleObjectKind::Endpoint => self
-                .object(entry.object)
-                .ok_or(Error::InvalidHandle)?
-                .owner,
-            HandleObjectKind::SharedMemory => self
-                .shared_object(entry.object)
-                .ok_or(Error::InvalidHandle)?
-                .owner,
+            HandleObjectKind::Endpoint => {
+                self.object(entry.object).ok_or(Error::InvalidHandle)?.owner
+            }
+            HandleObjectKind::SharedMemory => {
+                self.shared_object(entry.object)
+                    .ok_or(Error::InvalidHandle)?
+                    .owner
+            }
         };
         Ok(HandleInfo {
             object_id: entry.object.id,
@@ -1372,11 +1420,17 @@ impl State {
         match object.kind {
             HandleObjectKind::Endpoint => {
                 let endpoint = self.object_mut(object).ok_or(Error::InvalidHandle)?;
-                endpoint.references = endpoint.references.checked_add(1).ok_or(Error::ObjectTableFull)?;
+                endpoint.references = endpoint
+                    .references
+                    .checked_add(1)
+                    .ok_or(Error::ObjectTableFull)?;
             }
             HandleObjectKind::SharedMemory => {
                 let shared = self.shared_object_mut(object).ok_or(Error::InvalidHandle)?;
-                shared.references = shared.references.checked_add(1).ok_or(Error::ObjectTableFull)?;
+                shared.references = shared
+                    .references
+                    .checked_add(1)
+                    .ok_or(Error::ObjectTableFull)?;
             }
         }
         Ok(())
@@ -1385,10 +1439,16 @@ impl State {
     fn release_object_reference(&mut self, object: ObjectRef) {
         match object.kind {
             HandleObjectKind::Endpoint => {
-                let Some(slot) = self.objects.iter().position(|entry| {
-                    entry.is_some_and(|current| current.id == object.id)
-                }) else { return; };
-                let Some(current) = self.objects[slot].as_mut() else { return; };
+                let Some(slot) = self
+                    .objects
+                    .iter()
+                    .position(|entry| entry.is_some_and(|current| current.id == object.id))
+                else {
+                    return;
+                };
+                let Some(current) = self.objects[slot].as_mut() else {
+                    return;
+                };
                 current.references = current.references.saturating_sub(1);
                 if current.references == 0 {
                     let messages = current.messages;
@@ -1407,10 +1467,16 @@ impl State {
                 }
             }
             HandleObjectKind::SharedMemory => {
-                let Some(slot) = self.shared_memory.iter().position(|entry| {
-                    entry.is_some_and(|current| current.id == object.id)
-                }) else { return; };
-                let Some(current) = self.shared_memory[slot].as_mut() else { return; };
+                let Some(slot) = self
+                    .shared_memory
+                    .iter()
+                    .position(|entry| entry.is_some_and(|current| current.id == object.id))
+                else {
+                    return;
+                };
+                let Some(current) = self.shared_memory[slot].as_mut() else {
+                    return;
+                };
                 current.references = current.references.saturating_sub(1);
                 if current.references == 0 {
                     let frames = current.frames;
@@ -1461,7 +1527,10 @@ impl State {
         if object.kind != HandleObjectKind::Endpoint {
             return None;
         }
-        self.objects.iter().flatten().find(|current| current.id == object.id)
+        self.objects
+            .iter()
+            .flatten()
+            .find(|current| current.id == object.id)
     }
 
     fn object_mut(&mut self, object: ObjectRef) -> Option<&mut EndpointObject> {
@@ -1478,7 +1547,10 @@ impl State {
         if object.kind != HandleObjectKind::SharedMemory {
             return None;
         }
-        self.shared_memory.iter().flatten().find(|current| current.id == object.id)
+        self.shared_memory
+            .iter()
+            .flatten()
+            .find(|current| current.id == object.id)
     }
 
     fn shared_object_mut(&mut self, object: ObjectRef) -> Option<&mut SharedMemoryObject> {
@@ -1491,7 +1563,11 @@ impl State {
             .find(|current| current.id == object.id)
     }
 
-    fn handle_service_class(&self, owner: u64, handle: Handle) -> Result<Option<ServiceClass>, Error> {
+    fn handle_service_class(
+        &self,
+        owner: u64,
+        handle: Handle,
+    ) -> Result<Option<ServiceClass>, Error> {
         Ok(self
             .handle_space(owner)
             .ok_or(Error::NoHandleSpace)?
@@ -1543,15 +1619,11 @@ pub fn create_endpoint_object(owner: u64) -> Result<Handle, Error> {
 /// second process. This is kernel-mediated plumbing for now; general userspace
 /// handle transfer remains a later stage. The requested rights must be a subset
 /// of the source handle's rights and the source must carry TRANSFER authority.
-pub fn grant_handle(
-    owner: u64,
-    handle: Handle,
-    target: u64,
-    rights: u8,
-) -> Result<Handle, Error> {
+pub fn grant_handle(owner: u64, handle: Handle, target: u64, rights: u8) -> Result<Handle, Error> {
     authorize_service_handle_use(owner, handle)?;
     let service_class = STATE.lock().handle_service_class(owner, handle)?;
-    if let (Some(class), Some(profile)) = (service_class, task::sandbox_profile_for_process(target)) {
+    if let (Some(class), Some(profile)) = (service_class, task::sandbox_profile_for_process(target))
+    {
         let decision = wovenguard::authorize_service_discover(profile, class);
         crate::audit::record_detail(
             target,
@@ -1584,7 +1656,10 @@ pub fn create_shared_memory(owner: u64, page_count: usize) -> Result<Handle, Err
         };
         frames[index] = frame;
     }
-    match STATE.lock().install_shared_memory(owner, frames, page_count) {
+    match STATE
+        .lock()
+        .install_shared_memory(owner, frames, page_count)
+    {
         Ok(handle) => Ok(handle),
         Err(error) => {
             for physical in frames.into_iter().take(page_count) {
@@ -1616,11 +1691,7 @@ pub fn read_shared_memory(
                 let page = absolute / 4096;
                 let in_page = absolute % 4096;
                 let count = core::cmp::min(4096 - in_page, output.len() - copied);
-                paging::read_file_frame(
-                    frames[page],
-                    in_page,
-                    &mut output[copied..copied + count],
-                );
+                paging::read_file_frame(frames[page], in_page, &mut output[copied..copied + count]);
                 copied += count;
             }
             Ok(())
@@ -1651,11 +1722,7 @@ pub fn write_shared_memory(
                 let page = absolute / 4096;
                 let in_page = absolute % 4096;
                 let count = core::cmp::min(4096 - in_page, bytes.len() - copied);
-                paging::write_file_frame(
-                    frames[page],
-                    in_page,
-                    &bytes[copied..copied + count],
-                );
+                paging::write_file_frame(frames[page], in_page, &bytes[copied..copied + count]);
                 copied += count;
             }
             Ok(())
@@ -1677,11 +1744,7 @@ pub fn map_shared_memory(
     start: u64,
     writable: bool,
 ) -> Result<usize, Error> {
-    if start & 4095 != 0
-        || start
-            .checked_add((MAX_SHM_PAGES * 4096) as u64)
-            .is_none()
-    {
+    if start & 4095 != 0 || start.checked_add((MAX_SHM_PAGES * 4096) as u64).is_none() {
         return Err(Error::InvalidSize);
     }
     let (object_ref, frames, page_count) = {
@@ -1723,9 +1786,8 @@ pub fn unmap_shared_memory(
     space: paging::AddressSpace,
     start: u64,
 ) -> Result<(), Error> {
-    let (object_ref, mapping, page_count) = STATE
-        .lock()
-        .take_shared_mapping(owner, space, start)?;
+    let (object_ref, mapping, page_count) =
+        STATE.lock().take_shared_mapping(owner, space, start)?;
     if paging::unmap_user_range_in(space, start, page_count * 4096).is_err() {
         let _ = STATE.lock().restore_shared_mapping(object_ref, mapping);
         return Err(Error::MappingFailed);
@@ -1832,7 +1894,9 @@ pub fn publish_service(
 ) -> Result<(), Error> {
     let _ = ServiceName::parse(name)?;
     authorize_service_publish_for(owner, name)?;
-    STATE.lock().publish_service(owner, name, handle, client_rights)
+    STATE
+        .lock()
+        .publish_service(owner, name, handle, client_rights)
 }
 
 /// Remove a service registration. Only the process that published the name may
@@ -2263,7 +2327,6 @@ pub fn stage8_2_runtime_probe() -> bool {
     result && server_clean && client_clean && object_count() == baseline_objects
 }
 
-
 const STAGE8_3_SERVER: u64 = u64::MAX - 24;
 const STAGE8_3_CLIENT: u64 = u64::MAX - 25;
 static STAGE8_3_OWNER_HANDLE: AtomicU32 = AtomicU32::new(0);
@@ -2417,13 +2480,8 @@ pub fn stage8_3_runtime_probe() -> bool {
     let baseline_objects = object_count();
     let setup = (|| {
         let owner = create_endpoint_object(STAGE8_3_SERVER).ok()?;
-        let sender = grant_handle(
-            STAGE8_3_SERVER,
-            owner,
-            STAGE8_3_CLIENT,
-            HandleRights::SEND,
-        )
-        .ok()?;
+        let sender =
+            grant_handle(STAGE8_3_SERVER, owner, STAGE8_3_CLIENT, HandleRights::SEND).ok()?;
         let receiver = grant_handle(
             STAGE8_3_SERVER,
             owner,
@@ -2481,8 +2539,8 @@ pub fn stage8_3_runtime_probe() -> bool {
     let receiver = stage8_3_receive_handle();
     let clean_waiters = waiter_counts(STAGE8_3_SERVER, owner) == Ok((0, 0));
     let queue_empty = receive_handle(STAGE8_3_SERVER, receiver) == Err(Error::QueueEmpty);
-    let workers_ok = STAGE8_3_RECEIVER_OK.load(Ordering::Acquire)
-        && STAGE8_3_SENDER_OK.load(Ordering::Acquire);
+    let workers_ok =
+        STAGE8_3_RECEIVER_OK.load(Ordering::Acquire) && STAGE8_3_SENDER_OK.load(Ordering::Acquire);
 
     let server_clean = unregister(STAGE8_3_SERVER).is_ok();
     let client_clean = unregister(STAGE8_3_CLIENT).is_ok();
@@ -2567,51 +2625,30 @@ pub fn stage8_4_runtime_probe() -> bool {
         if write_shared_memory(STAGE8_4_PEER, peer, 0, b"denied") != Err(Error::AccessDenied)
             || grant_handle(STAGE8_4_OWNER, owner, STAGE8_4_PEER, HandleRights::SEND)
                 != Err(Error::AccessDenied)
-            || map_shared_memory(
-                STAGE8_4_PEER,
-                peer,
-                peer_space,
-                STAGE8_4_ADDRESS,
-                true,
-            ) != Err(Error::AccessDenied)
+            || map_shared_memory(STAGE8_4_PEER, peer, peer_space, STAGE8_4_ADDRESS, true)
+                != Err(Error::AccessDenied)
         {
             return None;
         }
 
         let size = STAGE8_4_PAGES * 4096;
-        if map_shared_memory(
-            STAGE8_4_OWNER,
-            owner,
-            owner_space,
-            STAGE8_4_ADDRESS,
-            true,
-        )
-        .ok()? != size
-            || map_shared_memory(
-                STAGE8_4_PEER,
-                peer,
-                peer_space,
-                STAGE8_4_ADDRESS,
-                false,
-            )
-            .ok()? != size
+        if map_shared_memory(STAGE8_4_OWNER, owner, owner_space, STAGE8_4_ADDRESS, true).ok()?
+            != size
+            || map_shared_memory(STAGE8_4_PEER, peer, peer_space, STAGE8_4_ADDRESS, false).ok()?
+                != size
         {
             return None;
         }
 
-        if !paging::user_range_has_protection_in(
-            owner_space,
-            STAGE8_4_ADDRESS,
-            size,
-            true,
-            false,
-        ) || !paging::user_range_has_protection_in(
-            peer_space,
-            STAGE8_4_ADDRESS,
-            size,
-            false,
-            false,
-        ) {
+        if !paging::user_range_has_protection_in(owner_space, STAGE8_4_ADDRESS, size, true, false)
+            || !paging::user_range_has_protection_in(
+                peer_space,
+                STAGE8_4_ADDRESS,
+                size,
+                false,
+                false,
+            )
+        {
             return None;
         }
 
@@ -2643,12 +2680,7 @@ pub fn stage8_4_runtime_probe() -> bool {
         }
 
         let mut object_observed = [0_u8; 19];
-        paging::read_user_bytes_in(
-            peer_space,
-            STAGE8_4_ADDRESS + 64,
-            &mut object_observed,
-        )
-        .ok()?;
+        paging::read_user_bytes_in(peer_space, STAGE8_4_ADDRESS + 64, &mut object_observed).ok()?;
         if object_observed != *b"kernel-object-write" {
             return None;
         }
@@ -2657,18 +2689,14 @@ pub fn stage8_4_runtime_probe() -> bool {
         // final address-space destruction can reclaim the page-table hierarchy.
         unmap_shared_memory(STAGE8_4_OWNER, owner_space, STAGE8_4_ADDRESS).ok()?;
         if !paging::user_range_is_unmapped_in(owner_space, STAGE8_4_ADDRESS, size)
-            || shared_memory_info(STAGE8_4_OWNER, owner).ok()?.mapping_count != 1
+            || shared_memory_info(STAGE8_4_OWNER, owner)
+                .ok()?
+                .mapping_count
+                != 1
         {
             return None;
         }
-        map_shared_memory(
-            STAGE8_4_OWNER,
-            owner,
-            owner_space,
-            STAGE8_4_ADDRESS,
-            true,
-        )
-        .ok()?;
+        map_shared_memory(STAGE8_4_OWNER, owner, owner_space, STAGE8_4_ADDRESS, true).ok()?;
 
         // Handles may disappear while mappings remain. The mapping references,
         // not the creator handle, own the backing lifetime from this point.
@@ -2691,22 +2719,16 @@ pub fn stage8_4_runtime_probe() -> bool {
     .is_some();
 
     let size = STAGE8_4_PAGES * 4096;
-    let owner_destroyed = paging::destroy_user_address_space(
-        owner_space,
-        &[(STAGE8_4_ADDRESS, size)],
-    )
-    .is_ok();
+    let owner_destroyed =
+        paging::destroy_user_address_space(owner_space, &[(STAGE8_4_ADDRESS, size)]).is_ok();
     let owner_record = owner_destroyed
         && stage8_4_drop_mapping_record_after_space_destroy(
             STAGE8_4_OWNER,
             owner_space,
             STAGE8_4_ADDRESS,
         );
-    let peer_destroyed = paging::destroy_user_address_space(
-        peer_space,
-        &[(STAGE8_4_ADDRESS, size)],
-    )
-    .is_ok();
+    let peer_destroyed =
+        paging::destroy_user_address_space(peer_space, &[(STAGE8_4_ADDRESS, size)]).is_ok();
     let peer_record = peer_destroyed
         && stage8_4_drop_mapping_record_after_space_destroy(
             STAGE8_4_PEER,
@@ -2760,12 +2782,7 @@ const fn stage9_2e_worker_owner(cpu: usize) -> u64 {
 }
 
 fn stage9_2e_fail(cpu: usize, code: usize) {
-    let _ = STAGE9_2E_FAIL[cpu].compare_exchange(
-        0,
-        code,
-        Ordering::AcqRel,
-        Ordering::Acquire,
-    );
+    let _ = STAGE9_2E_FAIL[cpu].compare_exchange(0, code, Ordering::AcqRel, Ordering::Acquire);
 }
 
 fn stage9_2e_worker_task() -> ! {
@@ -2919,7 +2936,8 @@ pub fn stage9_2e_runtime_probe() -> bool {
         for cpu in 0..online {
             // SAFETY: workers access only SMP-safe atomics, scheduler yield/exit,
             // and IPC/shared-memory operations already validated for AP use.
-            if unsafe { task::spawn_on(cpu, "s9.2e-revoke-worker", stage9_2e_worker_task) }.is_err() {
+            if unsafe { task::spawn_on(cpu, "s9.2e-revoke-worker", stage9_2e_worker_task) }.is_err()
+            {
                 return None;
             }
         }
@@ -2945,7 +2963,11 @@ pub fn stage9_2e_runtime_probe() -> bool {
     // recall. This prevents a vacuous post-revocation-only stress pass.
     let live_deadline = crate::timer::ticks().saturating_add(1024);
     loop {
-        if STAGE9_2E_PRE_USES.iter().take(online).all(|count| count.load(Ordering::Acquire) != 0) {
+        if STAGE9_2E_PRE_USES
+            .iter()
+            .take(online)
+            .all(|count| count.load(Ordering::Acquire) != 0)
+        {
             break;
         }
         if crate::timer::ticks() >= live_deadline {
@@ -2973,11 +2995,18 @@ pub fn stage9_2e_runtime_probe() -> bool {
 
     let workers_ok = STAGE9_2E_OK.load(Ordering::Acquire) == online
         && STAGE9_2E_CPU_MASK.load(Ordering::Acquire) == (1usize << online) - 1
-        && STAGE9_2E_PRE_USES.iter().take(online).all(|count| count.load(Ordering::Acquire) != 0)
-        && STAGE9_2E_POST_DENIALS.iter().take(online).all(|count| {
-            count.load(Ordering::Acquire) == STAGE9_2E_POST_REVOKE_CHECKS
-        })
-        && STAGE9_2E_FAIL.iter().take(online).all(|code| code.load(Ordering::Acquire) == 0);
+        && STAGE9_2E_PRE_USES
+            .iter()
+            .take(online)
+            .all(|count| count.load(Ordering::Acquire) != 0)
+        && STAGE9_2E_POST_DENIALS
+            .iter()
+            .take(online)
+            .all(|count| count.load(Ordering::Acquire) == STAGE9_2E_POST_REVOKE_CHECKS)
+        && STAGE9_2E_FAIL
+            .iter()
+            .take(online)
+            .all(|code| code.load(Ordering::Acquire) == 0);
     if !workers_ok {
         stage9_2e_dump_state("worker-validation-failed", online, baseline_lineages);
         return false;
@@ -3021,8 +3050,8 @@ pub fn stage9_2e_runtime_probe() -> bool {
         previous = Some(fresh);
     }
 
-    let cleanup = close_handle(STAGE9_2E_OWNER, shared).is_ok()
-        && unregister(STAGE9_2E_OWNER).is_ok();
+    let cleanup =
+        close_handle(STAGE9_2E_OWNER, shared).is_ok() && unregister(STAGE9_2E_OWNER).is_ok();
     let closed = cleanup
         && object_count() == baseline_objects
         && shared_memory_count() == baseline_shared
@@ -3055,7 +3084,8 @@ pub fn stage9_2d_runtime_probe() -> bool {
             endpoint,
             STAGE9_2D_CLIENT,
             HandleRights::SEND | HandleRights::INSPECT,
-        ).ok()?;
+        )
+        .ok()?;
         if handle_info(STAGE9_2D_CLIENT, delegated).is_err() {
             return None;
         }
@@ -3079,7 +3109,8 @@ pub fn stage9_2d_runtime_probe() -> bool {
             shared,
             HandleRights::SHM_READ | HandleRights::INSPECT,
             b"lineaged-transfer",
-        ).ok()?;
+        )
+        .ok()?;
         let message = receive_handle(STAGE9_2D_OWNER, channel).ok()?;
         let received = message.transferred_handle()?;
         let mut bytes = [0_u8; 8];
@@ -3088,7 +3119,8 @@ pub fn stage9_2d_runtime_probe() -> bool {
             return None;
         }
         if revoke_object_delegations(STAGE9_2D_OWNER, shared).ok()? != 1
-            || read_shared_memory(STAGE9_2D_OWNER, received, 0, &mut bytes) != Err(Error::AccessDenied)
+            || read_shared_memory(STAGE9_2D_OWNER, received, 0, &mut bytes)
+                != Err(Error::AccessDenied)
             || read_shared_memory(STAGE9_2D_OWNER, shared, 0, &mut bytes).is_err()
         {
             return None;
@@ -3105,7 +3137,8 @@ pub fn stage9_2d_runtime_probe() -> bool {
             STAGE9_2D_SERVICE,
             service,
             HandleRights::SEND | HandleRights::INSPECT,
-        ).ok()?;
+        )
+        .ok()?;
         let client = discover_service(STAGE9_2D_CLIENT, STAGE9_2D_SERVICE).ok()?;
         if revoke_object_delegations(STAGE9_2D_OWNER, service).ok()? != 1
             || send_handle(STAGE9_2D_CLIENT, client, b"revoked-service") != Err(Error::AccessDenied)
@@ -3117,7 +3150,8 @@ pub fn stage9_2d_runtime_probe() -> bool {
         close_handle(STAGE9_2D_CLIENT, client).ok()?;
         close_handle(STAGE9_2D_OWNER, service).ok()?;
         Some(())
-    })().is_some();
+    })()
+    .is_some();
 
     let clean = unregister(STAGE9_2D_CLIENT).is_ok()
         && unregister(STAGE9_2D_OWNER).is_ok()
@@ -3367,21 +3401,13 @@ pub fn stage8_6_runtime_probe() -> bool {
         let service_info_before = handle_info(STAGE8_6_SERVER, service).ok()?;
 
         // Names are bounded and deterministic.
-        if publish_service(
-            STAGE8_6_SERVER,
-            b"",
-            service,
-            HandleRights::SEND,
-        ) != Err(Error::InvalidServiceName)
+        if publish_service(STAGE8_6_SERVER, b"", service, HandleRights::SEND)
+            != Err(Error::InvalidServiceName)
         {
             return None;
         }
-        if publish_service(
-            STAGE8_6_SERVER,
-            b"woven/bad",
-            service,
-            HandleRights::SEND,
-        ) != Err(Error::InvalidServiceName)
+        if publish_service(STAGE8_6_SERVER, b"woven/bad", service, HandleRights::SEND)
+            != Err(Error::InvalidServiceName)
         {
             return None;
         }
@@ -3519,7 +3545,6 @@ pub fn stage8_6_runtime_probe() -> bool {
     object_count() == baseline_objects && service_count() == baseline_services
 }
 
-
 // Stage 8.7: integrated multicore IPC stress. One producer is pinned to every
 // online CPU while a blocking receiver drains a single service endpoint. The
 // workers repeatedly discover the service, exercise blocking queue backpressure,
@@ -3541,14 +3566,12 @@ pub fn stage9_4b_runtime_probe() -> bool {
         return false;
     }
 
-    let profile = wovenguard::SandboxProfile::new(
-        0x94b0,
-        CapabilitySet::only(Capability::TimerRead),
-    )
-    .with_service_policy(wovenguard::ServicePolicy::only(
-        ServiceClass::Network,
-        ServiceClass::Network,
-    ));
+    let profile =
+        wovenguard::SandboxProfile::new(0x94b0, CapabilitySet::only(Capability::TimerRead))
+            .with_service_policy(wovenguard::ServicePolicy::only(
+                ServiceClass::Network,
+                ServiceClass::Network,
+            ));
     if task::bind_sandbox_profile(owner_task, profile).is_err() {
         return false;
     }
@@ -3570,11 +3593,9 @@ pub fn stage9_4b_runtime_probe() -> bool {
             return Some(false);
         }
 
-        let tightened = wovenguard::SandboxProfile::new(
-            0x94b1,
-            CapabilitySet::only(Capability::TimerRead),
-        )
-        .with_service_policy(wovenguard::ServicePolicy::NONE);
+        let tightened =
+            wovenguard::SandboxProfile::new(0x94b1, CapabilitySet::only(Capability::TimerRead))
+                .with_service_policy(wovenguard::ServicePolicy::NONE);
         if task::bind_sandbox_profile(owner_task, tightened).is_err() {
             return Some(false);
         }
@@ -3594,11 +3615,8 @@ pub fn stage9_4b_runtime_probe() -> bool {
 
     let _ = unpublish_service(OWNER, SERVICE);
     let _ = unregister(OWNER);
-    let restored = task::bind_sandbox_profile(
-        owner_task,
-        wovenguard::SandboxProfile::RESTRICTED,
-    )
-    .is_ok();
+    let restored =
+        task::bind_sandbox_profile(owner_task, wovenguard::SandboxProfile::RESTRICTED).is_ok();
 
     result
         && restored
@@ -3837,8 +3855,7 @@ fn stage8_7_receiver_task() -> ! {
             }
         };
         let payload = message.payload();
-        if payload != [0xf7, sequence as u8, 1, 0x87]
-            || message.sender != stage8_7_worker_owner(0)
+        if payload != [0xf7, sequence as u8, 1, 0x87] || message.sender != stage8_7_worker_owner(0)
         {
             STAGE8_7_RECEIVER_FAIL.store(3, Ordering::Release);
             ok = false;
@@ -3922,7 +3939,10 @@ fn stage8_7_receiver_task() -> ! {
         .iter()
         .take(online)
         .all(|count| *count == STAGE8_7_ROUNDS)
-        && seen_rounds.iter().take(online).all(|seen| *seen == u32::MAX);
+        && seen_rounds
+            .iter()
+            .take(online)
+            .all(|seen| *seen == u32::MAX);
     if !ok && STAGE8_7_RECEIVER_FAIL.load(Ordering::Acquire) == 0 {
         STAGE8_7_RECEIVER_FAIL.store(10, Ordering::Release);
     }
@@ -3931,7 +3951,13 @@ fn stage8_7_receiver_task() -> ! {
     task::exit_current_task();
 }
 
-fn stage8_7_dump_state(label: &str, online: usize, baseline_objects: usize, baseline_shared: usize, baseline_services: usize) {
+fn stage8_7_dump_state(
+    label: &str,
+    online: usize,
+    baseline_objects: usize,
+    baseline_shared: usize,
+    baseline_services: usize,
+) {
     crate::serial::write_line(format_args!(
         "[S8.7][DIAG] {} online={} ready={} done={} ok={} mask={:#x} qfull={} prefill={}/{} sent={} recv={} xfer={}/{} receiver_done={} receiver_ok={} receiver_fail={}",
         label,
@@ -4075,14 +4101,26 @@ pub fn stage8_7_runtime_probe() -> bool {
     .is_some();
 
     if !setup {
-        stage8_7_dump_state("setup-failed", online, baseline_objects, baseline_shared, baseline_services);
+        stage8_7_dump_state(
+            "setup-failed",
+            online,
+            baseline_objects,
+            baseline_shared,
+            baseline_services,
+        );
         return false;
     }
 
     let ready_deadline = crate::timer::ticks().saturating_add(512);
     while STAGE8_7_WORKERS_READY.load(Ordering::Acquire) < online {
         if crate::timer::ticks() >= ready_deadline {
-            stage8_7_dump_state("ready-timeout", online, baseline_objects, baseline_shared, baseline_services);
+            stage8_7_dump_state(
+                "ready-timeout",
+                online,
+                baseline_objects,
+                baseline_shared,
+                baseline_services,
+            );
             return false;
         }
         task::yield_now();
@@ -4094,7 +4132,13 @@ pub fn stage8_7_runtime_probe() -> bool {
         || !STAGE8_7_RECEIVER_DONE.load(Ordering::Acquire)
     {
         if crate::timer::ticks() >= deadline {
-            stage8_7_dump_state("completion-timeout", online, baseline_objects, baseline_shared, baseline_services);
+            stage8_7_dump_state(
+                "completion-timeout",
+                online,
+                baseline_objects,
+                baseline_shared,
+                baseline_services,
+            );
             return false;
         }
         task::yield_now();
@@ -4125,7 +4169,8 @@ pub fn stage8_7_runtime_probe() -> bool {
             .and_then(|space| {
                 space.entries.iter().flatten().find(|entry| {
                     entry.object.kind == HandleObjectKind::SharedMemory
-                        && entry.object.id.as_u64() == STAGE8_7_SHARED_OBJECT.load(Ordering::Acquire)
+                        && entry.object.id.as_u64()
+                            == STAGE8_7_SHARED_OBJECT.load(Ordering::Acquire)
                 })
             })
             .map(|entry| entry.object)
@@ -4152,7 +4197,13 @@ pub fn stage8_7_runtime_probe() -> bool {
         && unregister_ok
         && cleanup_ok;
     if !ok {
-        stage8_7_dump_state("final-invariant", online, baseline_objects, baseline_shared, baseline_services);
+        stage8_7_dump_state(
+            "final-invariant",
+            online,
+            baseline_objects,
+            baseline_shared,
+            baseline_services,
+        );
         crate::serial::write_line(format_args!(
             "[S8.7][DIAG] checks workers={} mask={} saturated={} prefill={} messages={} transfers={} receiver={} waiters={} queue_empty={} shared_alive={} unpublish={} unregister={} cleanup={}",
             workers_ok,

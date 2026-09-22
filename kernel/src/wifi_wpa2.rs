@@ -43,16 +43,24 @@ pub enum SupplicantError {
 }
 
 impl From<EapolError> for SupplicantError {
-    fn from(value: EapolError) -> Self { Self::Protocol(value) }
+    fn from(value: EapolError) -> Self {
+        Self::Protocol(value)
+    }
 }
 impl From<FourWayError> for SupplicantError {
-    fn from(value: FourWayError) -> Self { Self::Handshake(value) }
+    fn from(value: FourWayError) -> Self {
+        Self::Handshake(value)
+    }
 }
 impl From<CryptoError> for SupplicantError {
-    fn from(value: CryptoError) -> Self { Self::Crypto(value) }
+    fn from(value: CryptoError) -> Self {
+        Self::Crypto(value)
+    }
 }
 impl From<GtkError> for SupplicantError {
-    fn from(value: GtkError) -> Self { Self::Gtk(value) }
+    fn from(value: GtkError) -> Self {
+        Self::Gtk(value)
+    }
 }
 
 pub struct Wpa2Supplicant {
@@ -80,7 +88,9 @@ impl Wpa2Supplicant {
         }
     }
 
-    pub const fn state(&self) -> SupplicantState { self.state }
+    pub const fn state(&self) -> SupplicantState {
+        self.state
+    }
 
     pub fn begin(
         &mut self,
@@ -125,13 +135,8 @@ impl Wpa2Supplicant {
         }
         self.handshake.receive_message1(key)?;
         let anonce = self.handshake.anonce();
-        let ptk = wifi_crypto::derive_ptk(
-            pmk,
-            self.authenticator,
-            self.station,
-            anonce,
-            self.snonce,
-        )?;
+        let ptk =
+            wifi_crypto::derive_ptk(pmk, self.authenticator, self.station, anonce, self.snonce)?;
 
         let len = build_eapol_key(
             output,
@@ -158,38 +163,76 @@ impl Wpa2Supplicant {
             return Err(SupplicantError::UnsupportedDescriptorVersion);
         }
         if self.state == SupplicantState::Completed {
-            let Some(ptk) = self.ptk.as_ref() else { return Err(SupplicantError::WrongState); };
+            let Some(ptk) = self.ptk.as_ref() else {
+                return Err(SupplicantError::WrongState);
+            };
             if self.completed_replay != Some(key.replay_counter)
                 || key.nonce != self.handshake.anonce()
                 || !key.key_info.encrypted_key_data()
                 || key.key_data.is_empty()
-            { return Err(SupplicantError::WrongState); }
+            {
+                return Err(SupplicantError::WrongState);
+            }
             wifi_crypto::verify_eapol_mic(ptk.kck(), message3)?;
             let gtk = wifi_gtk::unwrap_gtk(ptk.kek(), key.key_data)?;
-            if self.group.install_verified(key.replay_counter, gtk)? != InstallOutcome::Retransmission {
+            if self.group.install_verified(key.replay_counter, gtk)?
+                != InstallOutcome::Retransmission
+            {
                 return Err(SupplicantError::WrongState);
             }
             return build_message4(ptk, key.replay_counter, output);
         }
-        if self.state != SupplicantState::AwaitingMessage3 { return Err(SupplicantError::WrongState); }
+        if self.state != SupplicantState::AwaitingMessage3 {
+            return Err(SupplicantError::WrongState);
+        }
         match self.handshake.receive_message3_metadata(key) {
             Err(FourWayError::CryptoNotVerified) => {}
-            Err(error) => { self.fail(); return Err(SupplicantError::Handshake(error)); }
-            Ok(()) => { self.fail(); return Err(SupplicantError::Handshake(FourWayError::CryptoNotVerified)); }
+            Err(error) => {
+                self.fail();
+                return Err(SupplicantError::Handshake(error));
+            }
+            Ok(()) => {
+                self.fail();
+                return Err(SupplicantError::Handshake(FourWayError::CryptoNotVerified));
+            }
         }
-        let Some(ptk) = self.ptk.as_ref() else { self.fail(); return Err(SupplicantError::WrongState); };
-        if key.nonce != self.handshake.anonce() { self.fail(); return Err(SupplicantError::WrongNonce); }
-        if let Err(error)=wifi_crypto::verify_eapol_mic(ptk.kck(),message3){self.fail();return Err(SupplicantError::Crypto(error));}
-        if !key.key_info.encrypted_key_data() || key.key_data.is_empty(){self.fail();return Err(SupplicantError::Gtk(GtkError::MissingGtk));}
-        let gtk=match wifi_gtk::unwrap_gtk(ptk.kek(),key.key_data){Ok(v)=>v,Err(e)=>{self.fail();return Err(SupplicantError::Gtk(e));}};
-        match self.group.install_verified(key.replay_counter,gtk){
-            Ok(InstallOutcome::Installed)=>{}
-            Ok(InstallOutcome::Retransmission)|Err(_)=>{self.fail();return Err(SupplicantError::WrongState);}
+        let Some(ptk) = self.ptk.as_ref() else {
+            self.fail();
+            return Err(SupplicantError::WrongState);
+        };
+        if key.nonce != self.handshake.anonce() {
+            self.fail();
+            return Err(SupplicantError::WrongNonce);
         }
-        if let Err(e)=self.handshake.mark_message3_verified(key.replay_counter){self.fail();return Err(SupplicantError::Handshake(e));}
-        let len=build_message4(ptk,key.replay_counter,output)?;
-        self.completed_replay=Some(key.replay_counter);
-        self.state=SupplicantState::Completed;
+        if let Err(error) = wifi_crypto::verify_eapol_mic(ptk.kck(), message3) {
+            self.fail();
+            return Err(SupplicantError::Crypto(error));
+        }
+        if !key.key_info.encrypted_key_data() || key.key_data.is_empty() {
+            self.fail();
+            return Err(SupplicantError::Gtk(GtkError::MissingGtk));
+        }
+        let gtk = match wifi_gtk::unwrap_gtk(ptk.kek(), key.key_data) {
+            Ok(v) => v,
+            Err(e) => {
+                self.fail();
+                return Err(SupplicantError::Gtk(e));
+            }
+        };
+        match self.group.install_verified(key.replay_counter, gtk) {
+            Ok(InstallOutcome::Installed) => {}
+            Ok(InstallOutcome::Retransmission) | Err(_) => {
+                self.fail();
+                return Err(SupplicantError::WrongState);
+            }
+        }
+        if let Err(e) = self.handshake.mark_message3_verified(key.replay_counter) {
+            self.fail();
+            return Err(SupplicantError::Handshake(e));
+        }
+        let len = build_message4(ptk, key.replay_counter, output)?;
+        self.completed_replay = Some(key.replay_counter);
+        self.state = SupplicantState::Completed;
         Ok(len)
     }
     pub fn receive_group_key_message1_build_message2(
@@ -197,22 +240,32 @@ impl Wpa2Supplicant {
         message1: &[u8],
         output: &mut [u8],
     ) -> Result<usize, SupplicantError> {
-        if self.state != SupplicantState::Completed { return Err(SupplicantError::WrongState); }
+        if self.state != SupplicantState::Completed {
+            return Err(SupplicantError::WrongState);
+        }
         let key = wifi_rsn::parse_eapol_key(message1)?;
         if key.key_info.descriptor_version() != KEY_DESCRIPTOR_VERSION_HMAC_SHA1_AES as u8 {
             return Err(SupplicantError::UnsupportedDescriptorVersion);
         }
-        if key.key_info.key_type_pairwise() || !key.key_info.ack() || !key.key_info.mic()
-            || !key.key_info.secure() || !key.key_info.encrypted_key_data() || key.key_data.is_empty()
-        { return Err(SupplicantError::WrongState); }
-        let Some(ptk)=self.ptk.as_ref() else{return Err(SupplicantError::WrongState);};
-        wifi_crypto::verify_eapol_mic(ptk.kck(),message1)?;
-        let gtk=wifi_gtk::unwrap_gtk(ptk.kek(),key.key_data)?;
-        let outcome=self.group.install_verified(key.replay_counter,gtk)?;
-        if outcome==InstallOutcome::Retransmission {
-            return build_group_key_message2(ptk,key.replay_counter,output);
+        if key.key_info.key_type_pairwise()
+            || !key.key_info.ack()
+            || !key.key_info.mic()
+            || !key.key_info.secure()
+            || !key.key_info.encrypted_key_data()
+            || key.key_data.is_empty()
+        {
+            return Err(SupplicantError::WrongState);
         }
-        build_group_key_message2(ptk,key.replay_counter,output)
+        let Some(ptk) = self.ptk.as_ref() else {
+            return Err(SupplicantError::WrongState);
+        };
+        wifi_crypto::verify_eapol_mic(ptk.kck(), message1)?;
+        let gtk = wifi_gtk::unwrap_gtk(ptk.kek(), key.key_data)?;
+        let outcome = self.group.install_verified(key.replay_counter, gtk)?;
+        if outcome == InstallOutcome::Retransmission {
+            return build_group_key_message2(ptk, key.replay_counter, output);
+        }
+        build_group_key_message2(ptk, key.replay_counter, output)
     }
     pub(crate) fn temporal_key(&self) -> Option<&[u8]> {
         self.ptk.as_ref().map(Ptk::tk)
@@ -231,7 +284,9 @@ impl Wpa2Supplicant {
     }
 
     pub fn gtk_index(&self) -> Option<u8> {
-        self.group.gtk().map(crate::wifi_gtk::GroupTemporalKey::index)
+        self.group
+            .gtk()
+            .map(crate::wifi_gtk::GroupTemporalKey::index)
     }
 
     /// Destroy all association-specific WPA2 material and make this supplicant
@@ -265,30 +320,52 @@ impl Drop for Wpa2Supplicant {
     }
 }
 
-#[cfg(feature="stage13-9-test")]
+#[cfg(feature = "stage13-9-test")]
 pub fn lifecycle_self_test() -> bool {
-    let rsn=[1,0,0,0x0f,0xac,4,1,0,0,0x0f,0xac,4,1,0,0,0x0f,0xac,2,0,0];
-    let Ok(profile)=wifi_rsn::parse_rsn(&rsn)else{return false};
-    let station=[0x00,0x13,0x46,0xfe,0x32,0x0c];
-    let ap=[0x00,0x14,0x6c,0x7e,0x40,0x80];
-    let mut s=Wpa2Supplicant::new(station);
+    let rsn = [
+        1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 2, 0, 0,
+    ];
+    let Ok(profile) = wifi_rsn::parse_rsn(&rsn) else {
+        return false;
+    };
+    let station = [0x00, 0x13, 0x46, 0xfe, 0x32, 0x0c];
+    let ap = [0x00, 0x14, 0x6c, 0x7e, 0x40, 0x80];
+    let mut s = Wpa2Supplicant::new(station);
 
     // An in-progress association cannot be silently restarted.
-    if s.begin(profile,ap,[0x11;32]).is_err(){return false}
-    if s.begin(profile,ap,[0x22;32])!=Err(SupplicantError::WrongState){return false}
+    if s.begin(profile, ap, [0x11; 32]).is_err() {
+        return false;
+    }
+    if s.begin(profile, ap, [0x22; 32]) != Err(SupplicantError::WrongState) {
+        return false;
+    }
 
     // Failure destroys partial secrets and remains terminal until reset.
     s.fail();
-    if s.state()!=SupplicantState::Failed||s.temporal_key().is_some()||s.gtk_installed(){return false}
-    if s.begin(profile,ap,[0x22;32])!=Err(SupplicantError::WrongState){return false}
+    if s.state() != SupplicantState::Failed || s.temporal_key().is_some() || s.gtk_installed() {
+        return false;
+    }
+    if s.begin(profile, ap, [0x22; 32]) != Err(SupplicantError::WrongState) {
+        return false;
+    }
     s.reset();
-    if s.state()!=SupplicantState::Idle||s.temporal_key().is_some()||s.gtk_installed()||s.gtk_index().is_some(){return false}
+    if s.state() != SupplicantState::Idle
+        || s.temporal_key().is_some()
+        || s.gtk_installed()
+        || s.gtk_index().is_some()
+    {
+        return false;
+    }
 
     // A clean reset permits a fresh association with a new nonce/peer lifecycle.
-    if s.begin(profile,ap,[0x33;32]).is_err(){return false}
+    if s.begin(profile, ap, [0x33; 32]).is_err() {
+        return false;
+    }
     s.reset();
-    if s.state()!=SupplicantState::Idle{return false}
-    s.begin(profile,ap,[0x44;32]).is_ok()
+    if s.state() != SupplicantState::Idle {
+        return false;
+    }
+    s.begin(profile, ap, [0x44; 32]).is_ok()
 }
 fn build_eapol_key(
     output: &mut [u8],
@@ -311,23 +388,59 @@ fn build_eapol_key(
     Ok(EAPOL_KEY_FRAME_LEN)
 }
 
-fn build_group_key_message2(ptk:&Ptk,replay:u64,out:&mut[u8])->Result<usize,SupplicantError>{
-    let len=build_eapol_key(out,KEY_INFO_MIC|KEY_INFO_SECURE|KEY_DESCRIPTOR_VERSION_HMAC_SHA1_AES,replay,[0;32])?;
-    let mic=wifi_crypto::compute_eapol_mic(ptk.kck(),&out[..len])?;
+fn build_group_key_message2(
+    ptk: &Ptk,
+    replay: u64,
+    out: &mut [u8],
+) -> Result<usize, SupplicantError> {
+    let len = build_eapol_key(
+        out,
+        KEY_INFO_MIC | KEY_INFO_SECURE | KEY_DESCRIPTOR_VERSION_HMAC_SHA1_AES,
+        replay,
+        [0; 32],
+    )?;
+    let mic = wifi_crypto::compute_eapol_mic(ptk.kck(), &out[..len])?;
     out[81..97].copy_from_slice(&mic);
     Ok(len)
-}fn build_message4(ptk:&Ptk,replay:u64,out:&mut[u8])->Result<usize,SupplicantError>{
-    let len=build_eapol_key(out,KEY_INFO_PAIRWISE|KEY_INFO_MIC|KEY_INFO_SECURE|KEY_DESCRIPTOR_VERSION_HMAC_SHA1_AES,replay,[0;32])?;
-    let mic=wifi_crypto::compute_eapol_mic(ptk.kck(),&out[..len])?;
-    out[81..97].copy_from_slice(&mic);Ok(len)
 }
-fn build_eapol_key_with_data(out:&mut[u8],info:u16,replay:u64,nonce:[u8;32],data:&[u8])->Result<usize,SupplicantError>{
-    let body=KEY_BODY_LEN.checked_add(data.len()).ok_or(SupplicantError::BufferTooSmall)?;
-    let total=EAPOL_HEADER_LEN.checked_add(body).ok_or(SupplicantError::BufferTooSmall)?;
-    if out.len()<total||body>u16::MAX as usize||data.len()>u16::MAX as usize{return Err(SupplicantError::BufferTooSmall)}
-    out[..total].fill(0);out[0]=2;out[1]=wifi_rsn::EAPOL_TYPE_KEY;out[2..4].copy_from_slice(&(body as u16).to_be_bytes());
-    out[4]=wifi_rsn::EAPOL_KEY_DESCRIPTOR_RSN;out[5..7].copy_from_slice(&info.to_be_bytes());out[9..17].copy_from_slice(&replay.to_be_bytes());
-    out[17..49].copy_from_slice(&nonce);out[97..99].copy_from_slice(&(data.len() as u16).to_be_bytes());out[99..total].copy_from_slice(data);Ok(total)
+fn build_message4(ptk: &Ptk, replay: u64, out: &mut [u8]) -> Result<usize, SupplicantError> {
+    let len = build_eapol_key(
+        out,
+        KEY_INFO_PAIRWISE | KEY_INFO_MIC | KEY_INFO_SECURE | KEY_DESCRIPTOR_VERSION_HMAC_SHA1_AES,
+        replay,
+        [0; 32],
+    )?;
+    let mic = wifi_crypto::compute_eapol_mic(ptk.kck(), &out[..len])?;
+    out[81..97].copy_from_slice(&mic);
+    Ok(len)
+}
+fn build_eapol_key_with_data(
+    out: &mut [u8],
+    info: u16,
+    replay: u64,
+    nonce: [u8; 32],
+    data: &[u8],
+) -> Result<usize, SupplicantError> {
+    let body = KEY_BODY_LEN
+        .checked_add(data.len())
+        .ok_or(SupplicantError::BufferTooSmall)?;
+    let total = EAPOL_HEADER_LEN
+        .checked_add(body)
+        .ok_or(SupplicantError::BufferTooSmall)?;
+    if out.len() < total || body > u16::MAX as usize || data.len() > u16::MAX as usize {
+        return Err(SupplicantError::BufferTooSmall);
+    }
+    out[..total].fill(0);
+    out[0] = 2;
+    out[1] = wifi_rsn::EAPOL_TYPE_KEY;
+    out[2..4].copy_from_slice(&(body as u16).to_be_bytes());
+    out[4] = wifi_rsn::EAPOL_KEY_DESCRIPTOR_RSN;
+    out[5..7].copy_from_slice(&info.to_be_bytes());
+    out[9..17].copy_from_slice(&replay.to_be_bytes());
+    out[17..49].copy_from_slice(&nonce);
+    out[97..99].copy_from_slice(&(data.len() as u16).to_be_bytes());
+    out[99..total].copy_from_slice(data);
+    Ok(total)
 }
 fn sign_frame(ptk: &Ptk, frame: &mut [u8]) -> Result<(), SupplicantError> {
     let mic = wifi_crypto::compute_eapol_mic(ptk.kck(), frame)?;
@@ -335,61 +448,226 @@ fn sign_frame(ptk: &Ptk, frame: &mut [u8]) -> Result<(), SupplicantError> {
     Ok(())
 }
 
-#[cfg(feature="stage13-9-test")]
-pub fn group_rekey_self_test()->bool{
-    let rsn=[1,0,0,0x0f,0xac,4,1,0,0,0x0f,0xac,4,1,0,0,0x0f,0xac,2,0,0];
-    let Ok(profile)=wifi_rsn::parse_rsn(&rsn)else{return false};
-    let Ok(pmk)=wifi_crypto::derive_pmk(b"password",b"IEEE")else{return false};
-    let station=[0x00,0x13,0x46,0xfe,0x32,0x0c];let ap=[0x00,0x14,0x6c,0x7e,0x40,0x80];
-    let snonce=[0x22;32];let anonce=[0x11;32];let mut s=Wpa2Supplicant::new(station);
-    if s.begin(profile,ap,snonce).is_err(){return false}
-    let mut m1=[0u8;EAPOL_KEY_FRAME_LEN];let Ok(n1)=build_eapol_key(&mut m1,KEY_INFO_PAIRWISE|(1<<7)|KEY_DESCRIPTOR_VERSION_HMAC_SHA1_AES,1,anonce)else{return false};
-    let mut m2=[0u8;EAPOL_KEY_FRAME_LEN];if s.receive_message1_build_message2(&pmk,&m1[..n1],&mut m2).is_err(){return false}
-    let Ok(ptk)=wifi_crypto::derive_ptk(&pmk,ap,station,anonce,snonce)else{return false};
-    let mut wrapped=[0u8;40];let Ok(wn)=wifi_gtk::wrap_gtk_for_test(ptk.kek(),1,[0x5a;wifi_gtk::GTK_LEN],&mut wrapped)else{return false};
-    let mut m3=[0u8;160];let info=KEY_INFO_PAIRWISE|(1<<6)|(1<<7)|KEY_INFO_MIC|KEY_INFO_SECURE|(1<<12)|KEY_DESCRIPTOR_VERSION_HMAC_SHA1_AES;
-    let Ok(n3)=build_eapol_key_with_data(&mut m3,info,2,anonce,&wrapped[..wn])else{return false};if sign_frame(&ptk,&mut m3[..n3]).is_err(){return false}
-    let mut m4=[0u8;EAPOL_KEY_FRAME_LEN];if s.receive_message3_build_message4(&m3[..n3],&mut m4).is_err(){return false}
-    if s.gtk_index()!=Some(1)||s.gtk_install_count()!=1{return false}
+#[cfg(feature = "stage13-9-test")]
+pub fn group_rekey_self_test() -> bool {
+    let rsn = [
+        1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 2, 0, 0,
+    ];
+    let Ok(profile) = wifi_rsn::parse_rsn(&rsn) else {
+        return false;
+    };
+    let Ok(pmk) = wifi_crypto::derive_pmk(b"password", b"IEEE") else {
+        return false;
+    };
+    let station = [0x00, 0x13, 0x46, 0xfe, 0x32, 0x0c];
+    let ap = [0x00, 0x14, 0x6c, 0x7e, 0x40, 0x80];
+    let snonce = [0x22; 32];
+    let anonce = [0x11; 32];
+    let mut s = Wpa2Supplicant::new(station);
+    if s.begin(profile, ap, snonce).is_err() {
+        return false;
+    }
+    let mut m1 = [0u8; EAPOL_KEY_FRAME_LEN];
+    let Ok(n1) = build_eapol_key(
+        &mut m1,
+        KEY_INFO_PAIRWISE | (1 << 7) | KEY_DESCRIPTOR_VERSION_HMAC_SHA1_AES,
+        1,
+        anonce,
+    ) else {
+        return false;
+    };
+    let mut m2 = [0u8; EAPOL_KEY_FRAME_LEN];
+    if s.receive_message1_build_message2(&pmk, &m1[..n1], &mut m2)
+        .is_err()
+    {
+        return false;
+    }
+    let Ok(ptk) = wifi_crypto::derive_ptk(&pmk, ap, station, anonce, snonce) else {
+        return false;
+    };
+    let mut wrapped = [0u8; 40];
+    let Ok(wn) = wifi_gtk::wrap_gtk_for_test(ptk.kek(), 1, [0x5a; wifi_gtk::GTK_LEN], &mut wrapped)
+    else {
+        return false;
+    };
+    let mut m3 = [0u8; 160];
+    let info = KEY_INFO_PAIRWISE
+        | (1 << 6)
+        | (1 << 7)
+        | KEY_INFO_MIC
+        | KEY_INFO_SECURE
+        | (1 << 12)
+        | KEY_DESCRIPTOR_VERSION_HMAC_SHA1_AES;
+    let Ok(n3) = build_eapol_key_with_data(&mut m3, info, 2, anonce, &wrapped[..wn]) else {
+        return false;
+    };
+    if sign_frame(&ptk, &mut m3[..n3]).is_err() {
+        return false;
+    }
+    let mut m4 = [0u8; EAPOL_KEY_FRAME_LEN];
+    if s.receive_message3_build_message4(&m3[..n3], &mut m4)
+        .is_err()
+    {
+        return false;
+    }
+    if s.gtk_index() != Some(1) || s.gtk_install_count() != 1 {
+        return false;
+    }
 
-    let mut wrapped2=[0u8;40];let Ok(w2)=wifi_gtk::wrap_gtk_for_test(ptk.kek(),2,[0xa5;wifi_gtk::GTK_LEN],&mut wrapped2)else{return false};
-    let mut g1=[0u8;160];let ginfo=(1<<7)|KEY_INFO_MIC|KEY_INFO_SECURE|(1<<12)|KEY_DESCRIPTOR_VERSION_HMAC_SHA1_AES;
-    let Ok(g1n)=build_eapol_key_with_data(&mut g1,ginfo,3,[0;32],&wrapped2[..w2])else{return false};if sign_frame(&ptk,&mut g1[..g1n]).is_err(){return false}
-    let mut g2=[0u8;EAPOL_KEY_FRAME_LEN];let Ok(g2n)=s.receive_group_key_message1_build_message2(&g1[..g1n],&mut g2)else{return false};
-    if s.gtk_index()!=Some(2)||s.gtk_install_count()!=2||s.state()!=SupplicantState::Completed{return false}
-    if wifi_crypto::verify_eapol_mic(ptk.kck(),&g2[..g2n]).is_err(){return false}
+    let mut wrapped2 = [0u8; 40];
+    let Ok(w2) =
+        wifi_gtk::wrap_gtk_for_test(ptk.kek(), 2, [0xa5; wifi_gtk::GTK_LEN], &mut wrapped2)
+    else {
+        return false;
+    };
+    let mut g1 = [0u8; 160];
+    let ginfo = (1 << 7)
+        | KEY_INFO_MIC
+        | KEY_INFO_SECURE
+        | (1 << 12)
+        | KEY_DESCRIPTOR_VERSION_HMAC_SHA1_AES;
+    let Ok(g1n) = build_eapol_key_with_data(&mut g1, ginfo, 3, [0; 32], &wrapped2[..w2]) else {
+        return false;
+    };
+    if sign_frame(&ptk, &mut g1[..g1n]).is_err() {
+        return false;
+    }
+    let mut g2 = [0u8; EAPOL_KEY_FRAME_LEN];
+    let Ok(g2n) = s.receive_group_key_message1_build_message2(&g1[..g1n], &mut g2) else {
+        return false;
+    };
+    if s.gtk_index() != Some(2)
+        || s.gtk_install_count() != 2
+        || s.state() != SupplicantState::Completed
+    {
+        return false;
+    }
+    if wifi_crypto::verify_eapol_mic(ptk.kck(), &g2[..g2n]).is_err() {
+        return false;
+    }
 
     // Exact retransmission is acknowledged but never reinstalls the GTK.
-    if s.receive_group_key_message1_build_message2(&g1[..g1n],&mut g2).is_err()||s.gtk_install_count()!=2{return false}
+    if s.receive_group_key_message1_build_message2(&g1[..g1n], &mut g2)
+        .is_err()
+        || s.gtk_install_count() != 2
+    {
+        return false;
+    }
     // Older replay and same-replay/different-key attempts are rejected.
-    let mut old=g1;old[9..17].copy_from_slice(&2u64.to_be_bytes());old[81..97].fill(0);if sign_frame(&ptk,&mut old[..g1n]).is_err(){return false}
-    if s.receive_group_key_message1_build_message2(&old[..g1n],&mut g2).is_ok(){return false}
-    let mut conflict=[0u8;160];let mut wrapped3=[0u8;40];let Ok(w3)=wifi_gtk::wrap_gtk_for_test(ptk.kek(),3,[0x3c;wifi_gtk::GTK_LEN],&mut wrapped3)else{return false};
-    let Ok(cn)=build_eapol_key_with_data(&mut conflict,ginfo,3,[0;32],&wrapped3[..w3])else{return false};if sign_frame(&ptk,&mut conflict[..cn]).is_err(){return false}
-    s.receive_group_key_message1_build_message2(&conflict[..cn],&mut g2).is_err()&&s.gtk_index()==Some(2)&&s.gtk_install_count()==2
+    let mut old = g1;
+    old[9..17].copy_from_slice(&2u64.to_be_bytes());
+    old[81..97].fill(0);
+    if sign_frame(&ptk, &mut old[..g1n]).is_err() {
+        return false;
+    }
+    if s.receive_group_key_message1_build_message2(&old[..g1n], &mut g2)
+        .is_ok()
+    {
+        return false;
+    }
+    let mut conflict = [0u8; 160];
+    let mut wrapped3 = [0u8; 40];
+    let Ok(w3) =
+        wifi_gtk::wrap_gtk_for_test(ptk.kek(), 3, [0x3c; wifi_gtk::GTK_LEN], &mut wrapped3)
+    else {
+        return false;
+    };
+    let Ok(cn) = build_eapol_key_with_data(&mut conflict, ginfo, 3, [0; 32], &wrapped3[..w3])
+    else {
+        return false;
+    };
+    if sign_frame(&ptk, &mut conflict[..cn]).is_err() {
+        return false;
+    }
+    s.receive_group_key_message1_build_message2(&conflict[..cn], &mut g2)
+        .is_err()
+        && s.gtk_index() == Some(2)
+        && s.gtk_install_count() == 2
 }
 pub fn self_test() -> bool {
-    let rsn=[1,0,0,0x0f,0xac,4,1,0,0,0x0f,0xac,4,1,0,0,0x0f,0xac,2,0,0];
-    let Ok(profile)=wifi_rsn::parse_rsn(&rsn)else{return false};
-    let Ok(pmk)=wifi_crypto::derive_pmk(b"password",b"IEEE")else{return false};
-    let station=[0x00,0x13,0x46,0xfe,0x32,0x0c];let ap=[0x00,0x14,0x6c,0x7e,0x40,0x80];
-    let snonce=[0x22;32];let anonce=[0x11;32];let mut supplicant=Wpa2Supplicant::new(station);
-    if supplicant.begin(profile,ap,snonce).is_err(){return false}
-    let mut msg1=[0u8;EAPOL_KEY_FRAME_LEN];
-    let Ok(n1)=build_eapol_key(&mut msg1,KEY_INFO_PAIRWISE|(1<<7)|KEY_DESCRIPTOR_VERSION_HMAC_SHA1_AES,1,anonce)else{return false};
-    let mut msg2=[0u8;EAPOL_KEY_FRAME_LEN];
-    if supplicant.receive_message1_build_message2(&pmk,&msg1[..n1],&mut msg2).is_err(){return false}
-    let Ok(ap_ptk)=wifi_crypto::derive_ptk(&pmk,ap,station,anonce,snonce)else{return false};
-    let mut wrapped=[0u8;40];let Ok(wn)=wifi_gtk::wrap_gtk_for_test(ap_ptk.kek(),1,[0x5a;wifi_gtk::GTK_LEN],&mut wrapped)else{return false};
-    let mut msg3=[0u8;160];let info=KEY_INFO_PAIRWISE|(1<<6)|(1<<7)|KEY_INFO_MIC|KEY_INFO_SECURE|(1<<12)|KEY_DESCRIPTOR_VERSION_HMAC_SHA1_AES;
-    let Ok(n3)=build_eapol_key_with_data(&mut msg3,info,2,anonce,&wrapped[..wn])else{return false};
-    if sign_frame(&ap_ptk,&mut msg3[..n3]).is_err(){return false}
-    let mut msg4=[0u8;EAPOL_KEY_FRAME_LEN];
-    let Ok(n4)=supplicant.receive_message3_build_message4(&msg3[..n3],&mut msg4)else{return false};
-    if supplicant.state()!=SupplicantState::Completed||supplicant.handshake.state()!=FourWayState::Completed||!supplicant.gtk_installed()||supplicant.gtk_install_count()!=1||wifi_crypto::verify_eapol_mic(ap_ptk.kck(),&msg4[..n4]).is_err(){return false}
-    let mut retry=[0u8;EAPOL_KEY_FRAME_LEN];
-    if supplicant.receive_message3_build_message4(&msg3[..n3],&mut retry).is_err()||supplicant.gtk_install_count()!=1{return false}
-    msg3[99]^=1;
-    if supplicant.receive_message3_build_message4(&msg3[..n3],&mut retry).is_ok()||supplicant.gtk_install_count()!=1{return false}
+    let rsn = [
+        1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 2, 0, 0,
+    ];
+    let Ok(profile) = wifi_rsn::parse_rsn(&rsn) else {
+        return false;
+    };
+    let Ok(pmk) = wifi_crypto::derive_pmk(b"password", b"IEEE") else {
+        return false;
+    };
+    let station = [0x00, 0x13, 0x46, 0xfe, 0x32, 0x0c];
+    let ap = [0x00, 0x14, 0x6c, 0x7e, 0x40, 0x80];
+    let snonce = [0x22; 32];
+    let anonce = [0x11; 32];
+    let mut supplicant = Wpa2Supplicant::new(station);
+    if supplicant.begin(profile, ap, snonce).is_err() {
+        return false;
+    }
+    let mut msg1 = [0u8; EAPOL_KEY_FRAME_LEN];
+    let Ok(n1) = build_eapol_key(
+        &mut msg1,
+        KEY_INFO_PAIRWISE | (1 << 7) | KEY_DESCRIPTOR_VERSION_HMAC_SHA1_AES,
+        1,
+        anonce,
+    ) else {
+        return false;
+    };
+    let mut msg2 = [0u8; EAPOL_KEY_FRAME_LEN];
+    if supplicant
+        .receive_message1_build_message2(&pmk, &msg1[..n1], &mut msg2)
+        .is_err()
+    {
+        return false;
+    }
+    let Ok(ap_ptk) = wifi_crypto::derive_ptk(&pmk, ap, station, anonce, snonce) else {
+        return false;
+    };
+    let mut wrapped = [0u8; 40];
+    let Ok(wn) =
+        wifi_gtk::wrap_gtk_for_test(ap_ptk.kek(), 1, [0x5a; wifi_gtk::GTK_LEN], &mut wrapped)
+    else {
+        return false;
+    };
+    let mut msg3 = [0u8; 160];
+    let info = KEY_INFO_PAIRWISE
+        | (1 << 6)
+        | (1 << 7)
+        | KEY_INFO_MIC
+        | KEY_INFO_SECURE
+        | (1 << 12)
+        | KEY_DESCRIPTOR_VERSION_HMAC_SHA1_AES;
+    let Ok(n3) = build_eapol_key_with_data(&mut msg3, info, 2, anonce, &wrapped[..wn]) else {
+        return false;
+    };
+    if sign_frame(&ap_ptk, &mut msg3[..n3]).is_err() {
+        return false;
+    }
+    let mut msg4 = [0u8; EAPOL_KEY_FRAME_LEN];
+    let Ok(n4) = supplicant.receive_message3_build_message4(&msg3[..n3], &mut msg4) else {
+        return false;
+    };
+    if supplicant.state() != SupplicantState::Completed
+        || supplicant.handshake.state() != FourWayState::Completed
+        || !supplicant.gtk_installed()
+        || supplicant.gtk_install_count() != 1
+        || wifi_crypto::verify_eapol_mic(ap_ptk.kck(), &msg4[..n4]).is_err()
+    {
+        return false;
+    }
+    let mut retry = [0u8; EAPOL_KEY_FRAME_LEN];
+    if supplicant
+        .receive_message3_build_message4(&msg3[..n3], &mut retry)
+        .is_err()
+        || supplicant.gtk_install_count() != 1
+    {
+        return false;
+    }
+    msg3[99] ^= 1;
+    if supplicant
+        .receive_message3_build_message4(&msg3[..n3], &mut retry)
+        .is_ok()
+        || supplicant.gtk_install_count() != 1
+    {
+        return false;
+    }
     true
 }

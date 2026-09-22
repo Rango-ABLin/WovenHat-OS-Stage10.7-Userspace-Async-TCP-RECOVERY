@@ -1,6 +1,13 @@
-use core::{cmp, ptr, sync::atomic::{fence, Ordering}};
+use core::{
+    cmp, ptr,
+    sync::atomic::{fence, Ordering},
+};
 
-use crate::{hal::pci::{self, Address, BarKind}, irq_lock::IrqMutex as Mutex, memory, paging};
+use crate::{
+    hal::pci::{self, Address, BarKind},
+    irq_lock::IrqMutex as Mutex,
+    memory, paging,
+};
 
 const USB_CLASS: u8 = 0x0c;
 const USB_SUBCLASS: u8 = 0x03;
@@ -78,7 +85,10 @@ impl DmaPage {
         let virtual_address = offset.checked_add(physical)?;
         // SAFETY: the allocated frame is exclusively owned by this DMA object.
         unsafe { ptr::write_bytes(virtual_address as *mut u8, 0, PAGE_SIZE) };
-        Some(Self { physical, virtual_address })
+        Some(Self {
+            physical,
+            virtual_address,
+        })
     }
 
     fn bytes(&self) -> &[u8; PAGE_SIZE] {
@@ -108,7 +118,11 @@ struct Ring {
 impl Ring {
     fn new(mut page: DmaPage) -> Self {
         page.bytes_mut().fill(0);
-        let mut ring = Self { page, index: 0, cycle: true };
+        let mut ring = Self {
+            page,
+            index: 0,
+            cycle: true,
+        };
         ring.install_link();
         ring
     }
@@ -120,7 +134,9 @@ impl Ring {
             status: 0,
             control: (6 << 10) | (1 << 1),
         };
-        if self.cycle { trb.control |= 1; }
+        if self.cycle {
+            trb.control |= 1;
+        }
         self.write(slot, trb);
     }
 
@@ -130,7 +146,11 @@ impl Ring {
             self.cycle = !self.cycle;
             self.install_link();
         }
-        if self.cycle { trb.control |= 1; } else { trb.control &= !1; }
+        if self.cycle {
+            trb.control |= 1;
+        } else {
+            trb.control &= !1;
+        }
         let index = self.index;
         self.write(index, trb);
         fence(Ordering::Release);
@@ -181,7 +201,9 @@ pub struct XhciController {
 
 impl XhciController {
     fn initialize(device: pci::Device) -> Result<Self, InitError> {
-        let bar = device.bars.iter()
+        let bar = device
+            .bars
+            .iter()
             .find(|bar| bar.valid && matches!(bar.kind, BarKind::Memory32 | BarKind::Memory64))
             .ok_or(InitError::MissingMemoryBar)?;
         let address = Address {
@@ -190,15 +212,21 @@ impl XhciController {
             device: device.device,
             function: device.function,
         };
-        if !pci::enable_memory_bus_master(address) { return Err(InitError::MissingController); }
+        if !pci::enable_memory_bus_master(address) {
+            return Err(InitError::MissingController);
+        }
         let mmio = bar.address;
         let cap_length = mmio_read8(mmio)?;
-        if cap_length < 0x20 { return Err(InitError::InvalidRegisters); }
+        if cap_length < 0x20 {
+            return Err(InitError::InvalidRegisters);
+        }
         let hcs1 = mmio_read32(mmio + 0x04)?;
         let hcc1 = mmio_read32(mmio + 0x10)?;
         let max_slots = (hcs1 & 0xff) as u8;
         let max_ports = ((hcs1 >> 24) & 0xff) as u8;
-        if max_slots == 0 || max_ports == 0 { return Err(InitError::InvalidRegisters); }
+        if max_slots == 0 || max_ports == 0 {
+            return Err(InitError::InvalidRegisters);
+        }
         let context_size = if hcc1 & (1 << 2) != 0 { 64 } else { 32 };
         let runtime_base = mmio + u64::from(mmio_read32(mmio + 0x18)? & !0x1f);
         let doorbell_base = mmio + u64::from(mmio_read32(mmio + 0x14)? & !0x3);
@@ -271,7 +299,9 @@ impl XhciController {
         mmio_write32(portsc, value | (1 << 4))?;
         for _ in 0..POLL_LIMIT {
             let current = mmio_read32(portsc)?;
-            if current & (1 << 4) == 0 && current & 1 != 0 { return Ok(()); }
+            if current & (1 << 4) == 0 && current & 1 != 0 {
+                return Ok(());
+            }
             core::hint::spin_loop();
         }
         Err(InitError::ControllerTimeout)
@@ -291,7 +321,9 @@ impl XhciController {
         mmio_write32(self.doorbell_base, 0)?;
         let event = self.wait_command_completion(command_ptr)?;
         let slot = ((event.control >> 24) & 0xff) as u8;
-        if slot == 0 { return Err(InitError::CommandFailed); }
+        if slot == 0 {
+            return Err(InitError::CommandFailed);
+        }
         Ok(slot)
     }
 
@@ -309,7 +341,11 @@ impl XhciController {
         output.bytes_mut().fill(0);
         input.bytes_mut().fill(0);
 
-        write_u64(self.dcbaa.bytes_mut(), usize::from(self.slot_id) * 8, output.physical);
+        write_u64(
+            self.dcbaa.bytes_mut(),
+            usize::from(self.slot_id) * 8,
+            output.physical,
+        );
         write_u32(input.bytes_mut(), 4, 0x3); // add Slot + EP0 contexts
         let slot_offset = self.context_size;
         write_u32(
@@ -328,7 +364,11 @@ impl XhciController {
             ep0_offset + 4,
             (3 << 1) | (4 << 3) | (ep0_max_packet << 16),
         );
-        write_u64(input.bytes_mut(), ep0_offset + 8, ep0_ring.page.physical | 1);
+        write_u64(
+            input.bytes_mut(),
+            ep0_offset + 8,
+            ep0_ring.page.physical | 1,
+        );
         write_u32(input.bytes_mut(), ep0_offset + 16, 8);
         fence(Ordering::Release);
 
@@ -389,7 +429,12 @@ impl XhciController {
         let hid = parse_hid_interface(&descriptor.bytes()[..total_length], configuration)
             .ok_or(InitError::HidNotFound)?;
 
-        self.control_no_data(0x00, USB_REQUEST_SET_CONFIGURATION, u16::from(hid.configuration), 0)?;
+        self.control_no_data(
+            0x00,
+            USB_REQUEST_SET_CONFIGURATION,
+            u16::from(hid.configuration),
+            0,
+        )?;
         if hid.protocol == USB_PROTOCOL_KEYBOARD || hid.protocol == USB_PROTOCOL_MOUSE {
             // HID Set Protocol: wValue=0 selects the fixed boot report format.
             self.control_no_data(0x21, USB_REQUEST_SET_PROTOCOL, 0, u16::from(hid.interface))?;
@@ -419,7 +464,9 @@ impl XhciController {
         buffer: &mut DmaPage,
         length: usize,
     ) -> Result<usize, InitError> {
-        if length == 0 || length > PAGE_SIZE { return Err(InitError::DescriptorInvalid); }
+        if length == 0 || length > PAGE_SIZE {
+            return Err(InitError::DescriptorInvalid);
+        }
         buffer.bytes_mut()[..length].fill(0);
         let setup = setup_packet(request_type, request, value, index, length as u16);
         let ring = self.ep0_ring.as_mut().ok_or(InitError::CommandFailed)?;
@@ -473,9 +520,13 @@ impl XhciController {
             return Err(InitError::DescriptorInvalid);
         }
         let endpoint_number = hid.endpoint_address & 0x0f;
-        if endpoint_number == 0 { return Err(InitError::DescriptorInvalid); }
+        if endpoint_number == 0 {
+            return Err(InitError::DescriptorInvalid);
+        }
         let dci = endpoint_number.saturating_mul(2).saturating_add(1);
-        if dci > 31 { return Err(InitError::DescriptorInvalid); }
+        if dci > 31 {
+            return Err(InitError::DescriptorInvalid);
+        }
 
         let hid_page = DmaPage::allocate_zeroed().ok_or(InitError::DmaUnavailable)?;
         let hid_ring = Ring::new(hid_page);
@@ -495,13 +546,21 @@ impl XhciController {
 
         let endpoint_offset = self.context_size * (usize::from(dci) + 1);
         let interval = xhci_interval(self.port_speed()?, hid.interval);
-        write_u32(input.bytes_mut(), endpoint_offset, u32::from(interval) << 16);
+        write_u32(
+            input.bytes_mut(),
+            endpoint_offset,
+            u32::from(interval) << 16,
+        );
         write_u32(
             input.bytes_mut(),
             endpoint_offset + 4,
             (3 << 1) | (7 << 3) | (u32::from(hid.max_packet) << 16),
         );
-        write_u64(input.bytes_mut(), endpoint_offset + 8, hid_ring.page.physical | 1);
+        write_u64(
+            input.bytes_mut(),
+            endpoint_offset + 8,
+            hid_ring.page.physical | 1,
+        );
         write_u32(
             input.bytes_mut(),
             endpoint_offset + 16,
@@ -526,7 +585,9 @@ impl XhciController {
         let endpoint_number = hid.endpoint_address & 0x0f;
         let dci = endpoint_number.saturating_mul(2).saturating_add(1);
         let transfer_length = cmp::min(usize::from(hid.max_packet), 8);
-        if transfer_length == 0 { return Err(InitError::DescriptorInvalid); }
+        if transfer_length == 0 {
+            return Err(InitError::DescriptorInvalid);
+        }
         let buffer_physical = {
             let buffer = self.hid_buffer.as_mut().ok_or(InitError::DmaUnavailable)?;
             buffer.bytes_mut()[..transfer_length].fill(0);
@@ -580,7 +641,9 @@ impl XhciController {
                 continue;
             }
             let code = completion_code(event.status);
-            if code == 1 || code == 13 { return Ok(event); }
+            if code == 1 || code == 13 {
+                return Ok(event);
+            }
             return Err(InitError::TransferFailed);
         }
         Err(InitError::TransferFailed)
@@ -613,13 +676,20 @@ impl XhciController {
     }
 
     pub fn summary(&self) -> (u8, u8, u8, u8) {
-        (self.max_slots, self.max_ports, self.connected_port, self.slot_id)
+        (
+            self.max_slots,
+            self.max_ports,
+            self.connected_port,
+            self.slot_id,
+        )
     }
 }
 
 pub fn init() -> Result<(u8, u8, u8, u8), InitError> {
     let mut slot = CONTROLLER.lock();
-    if let Some(controller) = slot.as_ref() { return Ok(controller.summary()); }
+    if let Some(controller) = slot.as_ref() {
+        return Ok(controller.summary());
+    }
     let device = find_controller().ok_or(InitError::MissingController)?;
     let controller = XhciController::initialize(device)?;
     let summary = controller.summary();
@@ -633,19 +703,30 @@ pub fn init_hid() -> Result<HidSummary, InitError> {
         let device = find_controller().ok_or(InitError::MissingController)?;
         *slot = Some(XhciController::initialize(device)?);
     }
-    slot.as_mut().ok_or(InitError::MissingController)?.enumerate_hid()
+    slot.as_mut()
+        .ok_or(InitError::MissingController)?
+        .enumerate_hid()
 }
 
 pub fn poll_hid_report() -> Result<[u8; 8], InitError> {
-    CONTROLLER.lock().as_mut().ok_or(InitError::MissingController)?.poll_hid_report()
+    CONTROLLER
+        .lock()
+        .as_mut()
+        .ok_or(InitError::MissingController)?
+        .poll_hid_report()
 }
 
-pub fn probe() -> bool { find_controller().is_some() }
+pub fn probe() -> bool {
+    find_controller().is_some()
+}
 
 fn find_controller() -> Option<pci::Device> {
     for index in 0..64 {
         if let Some(device) = pci::device(index) {
-            if device.class == USB_CLASS && device.subclass == USB_SUBCLASS && device.prog_if == XHCI_PROG_IF {
+            if device.class == USB_CLASS
+                && device.subclass == USB_SUBCLASS
+                && device.prog_if == XHCI_PROG_IF
+            {
                 return Some(device);
             }
         }
@@ -656,7 +737,9 @@ fn find_controller() -> Option<pci::Device> {
 fn find_connected_port(op_base: u64, max_ports: u8) -> Result<u8, InitError> {
     for port in 1..=max_ports {
         let portsc = mmio_read32(op_base + 0x400 + (u64::from(port - 1) * 0x10))?;
-        if portsc & 1 != 0 { return Ok(port); }
+        if portsc & 1 != 0 {
+            return Ok(port);
+        }
     }
     Err(InitError::NoConnectedPort)
 }
@@ -666,7 +749,9 @@ fn parse_hid_interface(bytes: &[u8], configuration: u8) -> Option<HidInterface> 
     let mut current: Option<(u8, u8)> = None;
     while offset + 2 <= bytes.len() {
         let length = usize::from(bytes[offset]);
-        if length < 2 || offset + length > bytes.len() { return None; }
+        if length < 2 || offset + length > bytes.len() {
+            return None;
+        }
         match bytes[offset + 1] {
             4 if length >= 9 => {
                 if bytes[offset + 5] == USB_CLASS_HID {
@@ -680,7 +765,8 @@ fn parse_hid_interface(bytes: &[u8], configuration: u8) -> Option<HidInterface> 
                     let address = bytes[offset + 2];
                     let attributes = bytes[offset + 3] & 0x03;
                     if address & 0x80 != 0 && attributes == 0x03 {
-                        let max_packet = u16::from_le_bytes([bytes[offset + 4], bytes[offset + 5]]) & 0x07ff;
+                        let max_packet =
+                            u16::from_le_bytes([bytes[offset + 4], bytes[offset + 5]]) & 0x07ff;
                         if max_packet != 0 {
                             return Some(HidInterface {
                                 interface,
@@ -738,15 +824,15 @@ pub fn decode_boot_keyboard(report: [u8; 8]) -> Option<u8> {
 
 pub fn self_test() -> bool {
     let descriptor = [
-        9, 2, 25, 0, 1, 1, 0, 0x80, 50,
-        9, 4, 0, 0, 1, 3, 1, 1, 0,
-        7, 5, 0x81, 3, 8, 0, 10,
+        9, 2, 25, 0, 1, 1, 0, 0x80, 50, 9, 4, 0, 0, 1, 3, 1, 1, 0, 7, 5, 0x81, 3, 8, 0, 10,
     ];
     let hid = parse_hid_interface(&descriptor, 1);
     trb_type(TRB_TYPE_ENABLE_SLOT << 10) == TRB_TYPE_ENABLE_SLOT
         && completion_code(1 << 24) == 1
         && trb_type(TRB_TYPE_PORT_STATUS_CHANGE << 10) == TRB_TYPE_PORT_STATUS_CHANGE
-        && hid.map(|entry| entry.protocol == USB_PROTOCOL_KEYBOARD && entry.endpoint_address == 0x81) == Some(true)
+        && hid
+            .map(|entry| entry.protocol == USB_PROTOCOL_KEYBOARD && entry.endpoint_address == 0x81)
+            == Some(true)
         && decode_boot_keyboard([0, 0, 4, 0, 0, 0, 0, 0]) == Some(4)
 }
 
@@ -762,12 +848,18 @@ fn write_u64(bytes: &mut [u8], offset: usize, value: u64) {
     bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
 }
 
-fn trb_type(control: u32) -> u32 { (control >> 10) & 0x3f }
-fn completion_code(status: u32) -> u8 { (status >> 24) as u8 }
+fn trb_type(control: u32) -> u32 {
+    (control >> 10) & 0x3f
+}
+fn completion_code(status: u32) -> u8 {
+    (status >> 24) as u8
+}
 
 fn wait_until(address: u64, mask: u32, expected: u32) -> Result<(), InitError> {
     for _ in 0..POLL_LIMIT {
-        if mmio_read32(address)? & mask == expected { return Ok(()); }
+        if mmio_read32(address)? & mask == expected {
+            return Ok(());
+        }
         core::hint::spin_loop();
     }
     Err(InitError::ControllerTimeout)

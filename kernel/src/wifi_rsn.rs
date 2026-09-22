@@ -58,7 +58,9 @@ fn parse_suite(bytes: &[u8], offset: usize) -> Result<([u8; 3], u8), RsnError> {
 
 fn parse_cipher(bytes: &[u8], offset: usize) -> Result<Cipher, RsnError> {
     let (oui, suite) = parse_suite(bytes, offset)?;
-    if oui != RSN_OUI { return Err(RsnError::InvalidSuite); }
+    if oui != RSN_OUI {
+        return Err(RsnError::InvalidSuite);
+    }
     match suite {
         CIPHER_CCMP_128 => Ok(Cipher::Ccmp128),
         _ => Err(RsnError::UnsupportedCipher),
@@ -67,7 +69,9 @@ fn parse_cipher(bytes: &[u8], offset: usize) -> Result<Cipher, RsnError> {
 
 fn parse_akm(bytes: &[u8], offset: usize) -> Result<Akm, RsnError> {
     let (oui, suite) = parse_suite(bytes, offset)?;
-    if oui != RSN_OUI { return Err(RsnError::InvalidSuite); }
+    if oui != RSN_OUI {
+        return Err(RsnError::InvalidSuite);
+    }
     match suite {
         AKM_PSK => Ok(Akm::Psk),
         AKM_SAE => Ok(Akm::Sae),
@@ -81,13 +85,26 @@ pub fn parse_rsn(body: &[u8]) -> Result<RsnProfile, RsnError> {
     }
     let group_cipher = parse_cipher(body, 2)?;
     let pairwise_count = read_u16_le(body, 6)?;
-    if pairwise_count != 1 { return Err(RsnError::UnsupportedPairwiseCount); }
+    if pairwise_count != 1 {
+        return Err(RsnError::UnsupportedPairwiseCount);
+    }
     let pairwise_cipher = parse_cipher(body, 8)?;
     let akm_count = read_u16_le(body, 12)?;
-    if akm_count != 1 { return Err(RsnError::UnsupportedAkmCount); }
+    if akm_count != 1 {
+        return Err(RsnError::UnsupportedAkmCount);
+    }
     let akm = parse_akm(body, 14)?;
-    let capabilities = if body.len() >= 20 { read_u16_le(body, 18)? } else { 0 };
-    Ok(RsnProfile { group_cipher, pairwise_cipher, akm, capabilities })
+    let capabilities = if body.len() >= 20 {
+        read_u16_le(body, 18)?
+    } else {
+        0
+    };
+    Ok(RsnProfile {
+        group_cipher,
+        pairwise_cipher,
+        akm,
+        capabilities,
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,13 +119,27 @@ pub enum EapolError {
 pub struct KeyInfo(pub u16);
 
 impl KeyInfo {
-    pub const fn descriptor_version(self) -> u8 { (self.0 & 0x0007) as u8 }
-    pub const fn key_type_pairwise(self) -> bool { self.0 & (1 << 3) != 0 }
-    pub const fn install(self) -> bool { self.0 & (1 << 6) != 0 }
-    pub const fn ack(self) -> bool { self.0 & (1 << 7) != 0 }
-    pub const fn mic(self) -> bool { self.0 & (1 << 8) != 0 }
-    pub const fn secure(self) -> bool { self.0 & (1 << 9) != 0 }
-    pub const fn encrypted_key_data(self) -> bool { self.0 & (1 << 12) != 0 }
+    pub const fn descriptor_version(self) -> u8 {
+        (self.0 & 0x0007) as u8
+    }
+    pub const fn key_type_pairwise(self) -> bool {
+        self.0 & (1 << 3) != 0
+    }
+    pub const fn install(self) -> bool {
+        self.0 & (1 << 6) != 0
+    }
+    pub const fn ack(self) -> bool {
+        self.0 & (1 << 7) != 0
+    }
+    pub const fn mic(self) -> bool {
+        self.0 & (1 << 8) != 0
+    }
+    pub const fn secure(self) -> bool {
+        self.0 & (1 << 9) != 0
+    }
+    pub const fn encrypted_key_data(self) -> bool {
+        self.0 & (1 << 12) != 0
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -129,18 +160,26 @@ fn read_u16_be(bytes: &[u8], offset: usize) -> Result<u16, EapolError> {
 }
 fn read_u64_be(bytes: &[u8], offset: usize) -> Result<u64, EapolError> {
     let b = bytes.get(offset..offset + 8).ok_or(EapolError::Truncated)?;
-    Ok(u64::from_be_bytes([b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]]))
+    Ok(u64::from_be_bytes([
+        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+    ]))
 }
 
 pub fn parse_eapol_key(frame: &[u8]) -> Result<EapolKey<'_>, EapolError> {
-    if frame.len() < 4 + EAPOL_KEY_FIXED_LEN { return Err(EapolError::Truncated); }
-    if frame[1] != EAPOL_TYPE_KEY { return Err(EapolError::WrongPacketType); }
+    if frame.len() < 4 + EAPOL_KEY_FIXED_LEN {
+        return Err(EapolError::Truncated);
+    }
+    if frame[1] != EAPOL_TYPE_KEY {
+        return Err(EapolError::WrongPacketType);
+    }
     let body_len = read_u16_be(frame, 2)? as usize;
     if body_len < EAPOL_KEY_FIXED_LEN || frame.len() < 4 + body_len {
         return Err(EapolError::InvalidBodyLength);
     }
     let b = &frame[4..4 + body_len];
-    if b[0] != EAPOL_KEY_DESCRIPTOR_RSN { return Err(EapolError::WrongDescriptorType); }
+    if b[0] != EAPOL_KEY_DESCRIPTOR_RSN {
+        return Err(EapolError::WrongDescriptorType);
+    }
     let key_info = KeyInfo(read_u16_be(b, 1)?);
     let key_length = read_u16_be(b, 3)?;
     let replay_counter = read_u64_be(b, 5)?;
@@ -149,9 +188,15 @@ pub fn parse_eapol_key(frame: &[u8]) -> Result<EapolKey<'_>, EapolError> {
     let mut mic = [0u8; 16];
     mic.copy_from_slice(&b[77..93]);
     let key_data_len = read_u16_be(b, 93)? as usize;
-    let key_data_end = 95usize.checked_add(key_data_len).ok_or(EapolError::InvalidBodyLength)?;
-    if key_data_end != body_len || frame.len() != 4 + body_len { return Err(EapolError::InvalidBodyLength); }
-    let key_data = b.get(95..key_data_end).ok_or(EapolError::InvalidBodyLength)?;
+    let key_data_end = 95usize
+        .checked_add(key_data_len)
+        .ok_or(EapolError::InvalidBodyLength)?;
+    if key_data_end != body_len || frame.len() != 4 + body_len {
+        return Err(EapolError::InvalidBodyLength);
+    }
+    let key_data = b
+        .get(95..key_data_end)
+        .ok_or(EapolError::InvalidBodyLength)?;
     Ok(EapolKey {
         protocol_version: frame[0],
         descriptor_type: b[0],
@@ -191,13 +236,23 @@ pub struct FourWayHandshake {
 
 impl FourWayHandshake {
     pub const fn new() -> Self {
-        Self { state: FourWayState::Idle, last_replay: 0, anonce: [0; 32] }
+        Self {
+            state: FourWayState::Idle,
+            last_replay: 0,
+            anonce: [0; 32],
+        }
     }
-    pub const fn state(&self) -> FourWayState { self.state }
-    pub const fn anonce(&self) -> [u8; 32] { self.anonce }
+    pub const fn state(&self) -> FourWayState {
+        self.state
+    }
+    pub const fn anonce(&self) -> [u8; 32] {
+        self.anonce
+    }
 
     pub fn begin(&mut self, profile: RsnProfile) -> Result<(), FourWayError> {
-        if self.state != FourWayState::Idle { return Err(FourWayError::WrongState); }
+        if self.state != FourWayState::Idle {
+            return Err(FourWayError::WrongState);
+        }
         if profile.akm != Akm::Psk
             || profile.group_cipher != Cipher::Ccmp128
             || profile.pairwise_cipher != Cipher::Ccmp128
@@ -211,9 +266,13 @@ impl FourWayHandshake {
     }
 
     pub fn receive_message1(&mut self, key: EapolKey<'_>) -> Result<(), FourWayError> {
-        if self.state != FourWayState::AwaitingMessage1 { return Err(FourWayError::WrongState); }
-        if !key.key_info.key_type_pairwise() || !key.key_info.ack()
-            || key.key_info.mic() || key.key_info.install()
+        if self.state != FourWayState::AwaitingMessage1 {
+            return Err(FourWayError::WrongState);
+        }
+        if !key.key_info.key_type_pairwise()
+            || !key.key_info.ack()
+            || key.key_info.mic()
+            || key.key_info.install()
         {
             self.state = FourWayState::Failed;
             return Err(FourWayError::InvalidMessage);
@@ -229,9 +288,14 @@ impl FourWayHandshake {
     }
 
     pub fn receive_message3_metadata(&mut self, key: EapolKey<'_>) -> Result<(), FourWayError> {
-        if self.state != FourWayState::AwaitingMessage3 { return Err(FourWayError::WrongState); }
-        if !key.key_info.key_type_pairwise() || !key.key_info.ack()
-            || !key.key_info.mic() || !key.key_info.install() || !key.key_info.secure()
+        if self.state != FourWayState::AwaitingMessage3 {
+            return Err(FourWayError::WrongState);
+        }
+        if !key.key_info.key_type_pairwise()
+            || !key.key_info.ack()
+            || !key.key_info.mic()
+            || !key.key_info.install()
+            || !key.key_info.secure()
         {
             self.state = FourWayState::Failed;
             return Err(FourWayError::InvalidMessage);
@@ -247,7 +311,9 @@ impl FourWayHandshake {
     }
 
     pub fn mark_message3_verified(&mut self, replay_counter: u64) -> Result<(), FourWayError> {
-        if self.state != FourWayState::AwaitingMessage3 { return Err(FourWayError::WrongState); }
+        if self.state != FourWayState::AwaitingMessage3 {
+            return Err(FourWayError::WrongState);
+        }
         if replay_counter < self.last_replay {
             self.state = FourWayState::Failed;
             return Err(FourWayError::ReplayCounter);
@@ -279,7 +345,9 @@ fn synthetic_eapol_key(
     nonce_seed: u8,
 ) -> Option<usize> {
     let total = 4 + EAPOL_KEY_FIXED_LEN;
-    if out.len() < total { return None; }
+    if out.len() < total {
+        return None;
+    }
     out[..total].fill(0);
     out[0] = 2;
     out[1] = EAPOL_TYPE_KEY;
@@ -296,37 +364,52 @@ fn synthetic_eapol_key(
 
 pub fn self_test() -> bool {
     let rsn = [
-        1,0, 0,0x0f,0xac,4, 1,0, 0,0x0f,0xac,4,
-        1,0, 0,0x0f,0xac,2, 0,0,
+        1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 2, 0, 0,
     ];
-    let Ok(profile) = parse_rsn(&rsn) else { return false; };
-    if profile.akm != Akm::Psk || profile.pairwise_cipher != Cipher::Ccmp128 { return false; }
+    let Ok(profile) = parse_rsn(&rsn) else {
+        return false;
+    };
+    if profile.akm != Akm::Psk || profile.pairwise_cipher != Cipher::Ccmp128 {
+        return false;
+    }
 
     let mut handshake = FourWayHandshake::new();
-    if handshake.begin(profile).is_err() { return false; }
+    if handshake.begin(profile).is_err() {
+        return false;
+    }
 
     let mut frame = [0u8; 128];
     let msg1_info = (1 << 3) | (1 << 7) | 2;
-    let Some(n1) = synthetic_eapol_key(&mut frame, msg1_info, 1, 0x20) else { return false; };
-    let Ok(msg1) = parse_eapol_key(&frame[..n1]) else { return false; };
+    let Some(n1) = synthetic_eapol_key(&mut frame, msg1_info, 1, 0x20) else {
+        return false;
+    };
+    let Ok(msg1) = parse_eapol_key(&frame[..n1]) else {
+        return false;
+    };
     if handshake.receive_message1(msg1).is_err()
         || handshake.state() != FourWayState::AwaitingMessage3
         || handshake.anonce()[0] != 0x20
-    { return false; }
+    {
+        return false;
+    }
 
     let msg3_info = (1 << 3) | (1 << 6) | (1 << 7) | (1 << 8) | (1 << 9) | 2;
-    let Some(n3) = synthetic_eapol_key(&mut frame, msg3_info, 2, 0x20) else { return false; };
-    let Ok(msg3) = parse_eapol_key(&frame[..n3]) else { return false; };
+    let Some(n3) = synthetic_eapol_key(&mut frame, msg3_info, 2, 0x20) else {
+        return false;
+    };
+    let Ok(msg3) = parse_eapol_key(&frame[..n3]) else {
+        return false;
+    };
     if handshake.receive_message3_metadata(msg3) != Err(FourWayError::CryptoNotVerified) {
         return false;
     }
-    if handshake.mark_message3_verified(2).is_err()
-        || handshake.state() != FourWayState::Completed
-    { return false; }
+    if handshake.mark_message3_verified(2).is_err() || handshake.state() != FourWayState::Completed
+    {
+        return false;
+    }
 
     let sae = [
-        1,0, 0,0x0f,0xac,4, 1,0, 0,0x0f,0xac,4,
-        1,0, 0,0x0f,0xac,8, 0,0,
+        1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 8, 0, 0,
     ];
     parse_rsn(&sae).map(|p| p.akm == Akm::Sae) == Ok(true)
 }

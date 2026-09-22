@@ -147,7 +147,11 @@ impl Registry {
         nodes[3] = Node::directory(b"/mnt");
         nodes[4] = Node::directory(b"/bin");
         nodes[5] = Node::with_data(b"/etc/motd", b"Welcome to WovenHat OS.\n", false);
-        nodes[6] = Node::with_data(b"/etc/version", b"WovenHat kernel 0.8.0 Multicore Foundation\n", false);
+        nodes[6] = Node::with_data(
+            b"/etc/version",
+            b"WovenHat kernel 0.8.0 Multicore Foundation\n",
+            false,
+        );
         nodes[7] = Node::with_data(b"/tmp/vfs-self-test", b"", true);
         Self {
             nodes,
@@ -197,8 +201,8 @@ impl Registry {
         node.data[..data.len()].copy_from_slice(data);
         node.length = data.len();
         node.writable = writable;
-        let credentials = crate::task::current_credentials_if_running()
-            .unwrap_or(crate::task::Credentials::ROOT);
+        let credentials =
+            crate::task::current_credentials_if_running().unwrap_or(crate::task::Credentials::ROOT);
         node.uid = credentials.uid;
         node.gid = credentials.gid;
         node.mode = if writable { 0o666 } else { 0o444 };
@@ -236,8 +240,8 @@ impl Registry {
         // directory() copies from a slice; path may be longer than what const fn saw.
         node.path[..path.len()].copy_from_slice(path.as_bytes());
         node.path_length = path.len();
-        let credentials = crate::task::current_credentials_if_running()
-            .unwrap_or(crate::task::Credentials::ROOT);
+        let credentials =
+            crate::task::current_credentials_if_running().unwrap_or(crate::task::Credentials::ROOT);
         node.uid = credentials.uid;
         node.gid = credentials.gid;
         Ok(index)
@@ -501,8 +505,8 @@ impl Registry {
 }
 
 fn access_allowed(node: &Node, write: bool) -> bool {
-    let credentials = crate::task::current_credentials_if_running()
-        .unwrap_or(crate::task::Credentials::ROOT);
+    let credentials =
+        crate::task::current_credentials_if_running().unwrap_or(crate::task::Credentials::ROOT);
     if credentials.is_root() {
         return true;
     }
@@ -778,7 +782,9 @@ pub fn set_metadata(path: &str, uid: u32, gid: u32, mode: u16) -> Result<(), Err
 /// Create or overwrite a writable file.
 pub fn write_file(path: &str, data: &[u8]) -> Result<(), Error> {
     let result = REGISTRY.lock().write_file(path, data);
-    if result.is_ok() && path.starts_with("/mnt/") { crate::storage::mark_mnt_dirty(); }
+    if result.is_ok() && path.starts_with("/mnt/") {
+        crate::storage::mark_mnt_dirty();
+    }
     result
 }
 
@@ -798,7 +804,10 @@ pub fn prepare_remove(path: &str) -> Result<(), Error> {
             let registry = REGISTRY.lock();
             let index = registry.removable_index(path)?;
             let open_file = registry.nodes[index].kind == NodeKind::File
-                && files.entries.iter().any(|entry| entry.occupied && entry.node == index);
+                && files
+                    .entries
+                    .iter()
+                    .any(|entry| entry.occupied && entry.node == index);
             if !open_file || registry.nodes[index].backing.is_none() {
                 return Ok(());
             }
@@ -822,7 +831,10 @@ pub fn remove(path: &str) -> Result<(), Error> {
                 .position(|node| node.matches(path))
                 .ok_or(Error::NotFound)?;
             let open_file = registry.nodes[index].kind == NodeKind::File
-                && files.entries.iter().any(|entry| entry.occupied && entry.node == index);
+                && files
+                    .entries
+                    .iter()
+                    .any(|entry| entry.occupied && entry.node == index);
             if open_file && registry.nodes[index].backing.is_some() {
                 Some((index, registry.generations[index]))
             } else if open_file {
@@ -853,14 +865,18 @@ pub fn can_rename(old: &str, new: &str) -> Result<(), Error> {
 
 pub fn rename(old: &str, new: &str) -> Result<(), Error> {
     let result = REGISTRY.lock().rename(old, new);
-    if result.is_ok() && (old.starts_with("/mnt/") || new.starts_with("/mnt/")) { crate::storage::mark_mnt_dirty(); }
+    if result.is_ok() && (old.starts_with("/mnt/") || new.starts_with("/mnt/")) {
+        crate::storage::mark_mnt_dirty();
+    }
     result
 }
 
 /// Create a directory. Parent must already exist.
 pub fn mkdir(path: &str) -> Result<(), Error> {
     let result = REGISTRY.lock().mkdir(path).map(|_| ());
-    if result.is_ok() && path.starts_with("/mnt/") { crate::storage::mark_mnt_dirty(); }
+    if result.is_ok() && path.starts_with("/mnt/") {
+        crate::storage::mark_mnt_dirty();
+    }
     result
 }
 
@@ -1135,7 +1151,10 @@ fn read_from(
             if node.backing.is_none() || count == 0 {
                 buffer[..count].copy_from_slice(&node.data[offset..offset + count]);
                 crate::file_frames::overlay(
-                    node_index, node_generation, offset, &mut buffer[..count],
+                    node_index,
+                    node_generation,
+                    offset,
+                    &mut buffer[..count],
                 );
                 if position.is_none() {
                     entry.offset = offset + count;
@@ -1246,7 +1265,9 @@ pub fn write_at(id: OpenFileId, offset: usize, buffer: &[u8]) -> Result<usize, E
         if registry.generations[node_index] != generation {
             return Err(Error::InvalidDescriptor);
         }
-        let node = registry.nodes.get_mut(node_index)
+        let node = registry
+            .nodes
+            .get_mut(node_index)
             .filter(|node| node.occupied)
             .ok_or(Error::InvalidDescriptor)?;
         if !node.writable || !access_allowed(node, true) {
@@ -1299,7 +1320,9 @@ pub fn write(id: OpenFileId, buffer: &[u8]) -> Result<usize, Error> {
         if registry.generations[node_index] != generation {
             return Err(Error::InvalidDescriptor);
         }
-        let node = registry.nodes.get_mut(node_index)
+        let node = registry
+            .nodes
+            .get_mut(node_index)
             .filter(|node| node.occupied)
             .ok_or(Error::InvalidDescriptor)?;
         if !node.writable || !access_allowed(node, true) {

@@ -74,9 +74,15 @@ impl Manager {
         }
     }
 
-    pub fn state(&self) -> RadioState { self.state }
-    pub fn scan_count(&self) -> usize { self.scan_count }
-    pub fn associated(&self) -> Option<AccessPoint> { self.associated }
+    pub fn state(&self) -> RadioState {
+        self.state
+    }
+    pub fn scan_count(&self) -> usize {
+        self.scan_count
+    }
+    pub fn associated(&self) -> Option<AccessPoint> {
+        self.associated
+    }
 
     pub fn power_on(&mut self) {
         if self.state == RadioState::Down {
@@ -183,7 +189,9 @@ pub const fn is_wireless_class(class: u8, subclass: u8) -> bool {
 pub fn discover_pci() -> PciDiscovery {
     let mut summary = PciDiscovery::default();
     for index in 0..64 {
-        let Some(device) = pci::device(index) else { continue };
+        let Some(device) = pci::device(index) else {
+            continue;
+        };
         if device.class == 0x02 {
             summary.network_controllers = summary.network_controllers.saturating_add(1);
             if is_wireless_class(device.class, device.subclass) {

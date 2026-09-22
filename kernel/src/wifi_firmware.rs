@@ -520,3 +520,1082 @@ pub fn stage13_10l_self_test() -> bool {
 
     true
 }
+pub const INTEL_FIRMWARE_STAGE_CHUNK_SIZE: usize = crate::wifi_hw::DMA_PAGE_SIZE;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FirmwareStageError {
+    InvalidState,
+    EmptySection,
+    SectionTooLarge,
+    AddressOverflow,
+    Dma,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FirmwareStageState {
+    Ready,
+    Staging,
+    Staged,
+    Published,
+    Completed,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FirmwareTransferDescriptor {
+    pub device_offset: u32,
+    pub physical_address: u64,
+    pub length: u16,
+}
+
+pub struct IntelFirmwareStager<'a> {
+    section: IntelFirmwareSection<'a>,
+    state: FirmwareStageState,
+    source_offset: usize,
+    active: Option<crate::wifi_hw::OwnedDmaBuffer>,
+    descriptor: Option<FirmwareTransferDescriptor>,
+}
+
+impl<'a> IntelFirmwareStager<'a> {
+    pub fn new(section: IntelFirmwareSection<'a>) -> Result<Self, FirmwareStageError> {
+        if section.bytes.is_empty() {
+            return Err(FirmwareStageError::EmptySection);
+        }
+        if section.bytes.len() > MAX_FIRMWARE_SECTION_SIZE {
+            return Err(FirmwareStageError::SectionTooLarge);
+        }
+        let length =
+            u32::try_from(section.bytes.len()).map_err(|_| FirmwareStageError::AddressOverflow)?;
+        section
+            .device_offset
+            .checked_add(length)
+            .ok_or(FirmwareStageError::AddressOverflow)?;
+
+        Ok(Self {
+            section,
+            state: FirmwareStageState::Ready,
+            source_offset: 0,
+            active: None,
+            descriptor: None,
+        })
+    }
+
+    pub const fn state(&self) -> FirmwareStageState {
+        self.state
+    }
+
+    pub const fn source_offset(&self) -> usize {
+        self.source_offset
+    }
+
+    pub const fn is_complete(&self) -> bool {
+        self.source_offset == self.section.bytes.len()
+            && matches!(self.state, FirmwareStageState::Completed)
+    }
+
+    pub fn stage_next(&mut self) -> Result<FirmwareTransferDescriptor, FirmwareStageError> {
+        if self.state != FirmwareStageState::Ready && self.state != FirmwareStageState::Completed {
+            return Err(FirmwareStageError::InvalidState);
+        }
+        if self.source_offset >= self.section.bytes.len() {
+            return Err(FirmwareStageError::InvalidState);
+        }
+
+        self.state = FirmwareStageState::Staging;
+        let remaining = self.section.bytes.len() - self.source_offset;
+        let chunk_len = remaining.min(INTEL_FIRMWARE_STAGE_CHUNK_SIZE);
+        let length = u16::try_from(chunk_len).map_err(|_| FirmwareStageError::SectionTooLarge)?;
+        let source_end = self
+            .source_offset
+            .checked_add(chunk_len)
+            .ok_or(FirmwareStageError::AddressOverflow)?;
+        let device_offset = self
+            .section
+            .device_offset
+            .checked_add(
+                u32::try_from(self.source_offset)
+                    .map_err(|_| FirmwareStageError::AddressOverflow)?,
+            )
+            .ok_or(FirmwareStageError::AddressOverflow)?;
+
+        let mut buffer = crate::wifi_hw::OwnedDmaBuffer::allocate(length, 0)
+            .map_err(|_| FirmwareStageError::Dma)?;
+        buffer
+            .write_bytes(0, &self.section.bytes[self.source_offset..source_end])
+            .map_err(|_| FirmwareStageError::Dma)?;
+
+        let descriptor = FirmwareTransferDescriptor {
+            device_offset,
+            physical_address: buffer.physical_address(),
+            length,
+        };
+        self.active = Some(buffer);
+        self.descriptor = Some(descriptor);
+        self.state = FirmwareStageState::Staged;
+        Ok(descriptor)
+    }
+
+    /// Publish the staged chunk to the future chipset-specific transfer layer.
+    ///
+    /// Stage M models the ownership boundary but intentionally performs no
+    /// Intel FH/PRPH register writes and rings no hardware doorbell.
+    pub fn publish(&mut self) -> Result<FirmwareTransferDescriptor, FirmwareStageError> {
+        if self.state != FirmwareStageState::Staged {
+            return Err(FirmwareStageError::InvalidState);
+        }
+        let descriptor = self.descriptor.ok_or(FirmwareStageError::InvalidState)?;
+        crate::wifi_hw::dma_publish();
+        self.state = FirmwareStageState::Published;
+        Ok(descriptor)
+    }
+
+    /// Complete a chunk only after the future hardware backend reports success.
+    pub fn complete(&mut self) -> Result<(), FirmwareStageError> {
+        if self.state != FirmwareStageState::Published {
+            return Err(FirmwareStageError::InvalidState);
+        }
+        let descriptor = self.descriptor.ok_or(FirmwareStageError::InvalidState)?;
+        crate::wifi_hw::dma_consume();
+        self.source_offset = self
+            .source_offset
+            .checked_add(usize::from(descriptor.length))
+            .ok_or(FirmwareStageError::AddressOverflow)?;
+        self.active = None;
+        self.descriptor = None;
+        self.state = FirmwareStageState::Completed;
+        Ok(())
+    }
+
+    pub fn staged_byte(&self, offset: usize) -> Result<u8, FirmwareStageError> {
+        if self.state != FirmwareStageState::Staged && self.state != FirmwareStageState::Published {
+            return Err(FirmwareStageError::InvalidState);
+        }
+        self.active
+            .as_ref()
+            .ok_or(FirmwareStageError::InvalidState)?
+            .read_byte(offset)
+            .map_err(|_| FirmwareStageError::Dma)
+    }
+
+    pub fn fail(&mut self) {
+        self.active = None;
+        self.descriptor = None;
+        self.state = FirmwareStageState::Failed;
+    }
+}
+
+pub fn stage13_10m_self_test() -> bool {
+    let mut bytes = [0u8; 5000];
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        *byte = (index & 0xff) as u8;
+    }
+    let section = IntelFirmwareSection {
+        image: IntelFirmwareImageKind::Runtime,
+        device_offset: 0x8000,
+        bytes: &bytes,
+    };
+    let Ok(mut stager) = IntelFirmwareStager::new(section) else {
+        return false;
+    };
+
+    if stager.state() != FirmwareStageState::Ready
+        || stager.publish() != Err(FirmwareStageError::InvalidState)
+    {
+        return false;
+    }
+
+    let Ok(first) = stager.stage_next() else {
+        return false;
+    };
+    if first.device_offset != 0x8000
+        || usize::from(first.length) != INTEL_FIRMWARE_STAGE_CHUNK_SIZE
+        || first.physical_address == 0
+        || stager.state() != FirmwareStageState::Staged
+        || stager.staged_byte(0) != Ok(bytes[0])
+        || stager.staged_byte(4095) != Ok(bytes[4095])
+        || stager.complete() != Err(FirmwareStageError::InvalidState)
+    {
+        return false;
+    }
+    if stager.publish() != Ok(first)
+        || stager.state() != FirmwareStageState::Published
+        || stager.complete().is_err()
+        || stager.source_offset() != 4096
+    {
+        return false;
+    }
+
+    let Ok(second) = stager.stage_next() else {
+        return false;
+    };
+    if second.device_offset != 0x9000
+        || usize::from(second.length) != 904
+        || stager.staged_byte(0) != Ok(bytes[4096])
+        || stager.staged_byte(903) != Ok(bytes[4999])
+        || stager.publish() != Ok(second)
+        || stager.complete().is_err()
+        || !stager.is_complete()
+        || stager.stage_next() != Err(FirmwareStageError::InvalidState)
+    {
+        return false;
+    }
+
+    let overflow_section = IntelFirmwareSection {
+        image: IntelFirmwareImageKind::Runtime,
+        device_offset: 0xffff_fff0,
+        bytes: &bytes[..32],
+    };
+    if !matches!(
+        IntelFirmwareStager::new(overflow_section),
+        Err(FirmwareStageError::AddressOverflow)
+    ) {
+        return false;
+    }
+
+    let small = [0x5au8; 32];
+    let fail_section = IntelFirmwareSection {
+        image: IntelFirmwareImageKind::Runtime,
+        device_offset: 0x1000,
+        bytes: &small,
+    };
+    let Ok(mut failed) = IntelFirmwareStager::new(fail_section) else {
+        return false;
+    };
+    if failed.stage_next().is_err() {
+        return false;
+    }
+    failed.fail();
+    failed.state() == FirmwareStageState::Failed
+        && failed.publish() == Err(FirmwareStageError::InvalidState)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FirmwareTransferExecutionState {
+    Idle,
+    Prepared,
+    Started,
+    Waiting,
+    Completed,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FirmwareTransferExecutionError {
+    InvalidState,
+    InvalidDescriptor,
+    BackendRejected,
+    Timeout,
+    HardwareError,
+}
+
+pub trait FirmwareTransferBackend {
+    fn prepare(
+        &mut self,
+        descriptor: FirmwareTransferDescriptor,
+    ) -> Result<(), FirmwareTransferExecutionError>;
+
+    fn start(&mut self) -> Result<(), FirmwareTransferExecutionError>;
+
+    fn completed(&mut self) -> Result<bool, FirmwareTransferExecutionError>;
+}
+
+pub struct IntelFirmwareTransferExecutor<B> {
+    backend: B,
+    state: FirmwareTransferExecutionState,
+    descriptor: Option<FirmwareTransferDescriptor>,
+}
+
+impl<B: FirmwareTransferBackend> IntelFirmwareTransferExecutor<B> {
+    pub fn new(backend: B) -> Self {
+        Self {
+            backend,
+            state: FirmwareTransferExecutionState::Idle,
+            descriptor: None,
+        }
+    }
+
+    pub const fn state(&self) -> FirmwareTransferExecutionState {
+        self.state
+    }
+
+    pub fn prepare(
+        &mut self,
+        descriptor: FirmwareTransferDescriptor,
+    ) -> Result<(), FirmwareTransferExecutionError> {
+        if self.state != FirmwareTransferExecutionState::Idle {
+            return Err(FirmwareTransferExecutionError::InvalidState);
+        }
+
+        if descriptor.physical_address == 0 || descriptor.length == 0 {
+            self.state = FirmwareTransferExecutionState::Failed;
+            return Err(FirmwareTransferExecutionError::InvalidDescriptor);
+        }
+
+        if let Err(error) = self.backend.prepare(descriptor) {
+            self.state = FirmwareTransferExecutionState::Failed;
+            return Err(error);
+        }
+
+        self.descriptor = Some(descriptor);
+        self.state = FirmwareTransferExecutionState::Prepared;
+        Ok(())
+    }
+
+    pub fn start(&mut self) -> Result<(), FirmwareTransferExecutionError> {
+        if self.state != FirmwareTransferExecutionState::Prepared {
+            return Err(FirmwareTransferExecutionError::InvalidState);
+        }
+
+        if let Err(error) = self.backend.start() {
+            self.state = FirmwareTransferExecutionState::Failed;
+            return Err(error);
+        }
+
+        self.state = FirmwareTransferExecutionState::Started;
+        Ok(())
+    }
+
+    pub fn wait_bounded(&mut self, limit: usize) -> Result<(), FirmwareTransferExecutionError> {
+        if self.state != FirmwareTransferExecutionState::Started {
+            return Err(FirmwareTransferExecutionError::InvalidState);
+        }
+
+        if limit == 0 {
+            self.state = FirmwareTransferExecutionState::Failed;
+            return Err(FirmwareTransferExecutionError::Timeout);
+        }
+
+        self.state = FirmwareTransferExecutionState::Waiting;
+
+        for _ in 0..limit {
+            match self.backend.completed() {
+                Ok(true) => {
+                    self.state = FirmwareTransferExecutionState::Completed;
+                    return Ok(());
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    self.state = FirmwareTransferExecutionState::Failed;
+                    return Err(error);
+                }
+            }
+        }
+
+        self.state = FirmwareTransferExecutionState::Failed;
+        Err(FirmwareTransferExecutionError::Timeout)
+    }
+
+    pub fn into_backend(self) -> B {
+        self.backend
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Stage13_10nSyntheticBackend {
+    descriptor: Option<FirmwareTransferDescriptor>,
+    started: bool,
+    polls_before_completion: usize,
+    polls: usize,
+    fail_start: bool,
+}
+
+impl Stage13_10nSyntheticBackend {
+    const fn new(polls_before_completion: usize) -> Self {
+        Self {
+            descriptor: None,
+            started: false,
+            polls_before_completion,
+            polls: 0,
+            fail_start: false,
+        }
+    }
+}
+
+impl FirmwareTransferBackend for Stage13_10nSyntheticBackend {
+    fn prepare(
+        &mut self,
+        descriptor: FirmwareTransferDescriptor,
+    ) -> Result<(), FirmwareTransferExecutionError> {
+        self.descriptor = Some(descriptor);
+        Ok(())
+    }
+
+    fn start(&mut self) -> Result<(), FirmwareTransferExecutionError> {
+        if self.descriptor.is_none() || self.fail_start {
+            return Err(FirmwareTransferExecutionError::BackendRejected);
+        }
+
+        self.started = true;
+        Ok(())
+    }
+
+    fn completed(&mut self) -> Result<bool, FirmwareTransferExecutionError> {
+        if !self.started {
+            return Err(FirmwareTransferExecutionError::InvalidState);
+        }
+
+        self.polls = self.polls.saturating_add(1);
+        Ok(self.polls >= self.polls_before_completion)
+    }
+}
+
+pub fn stage13_10n_self_test() -> bool {
+    let bytes = [0x5au8; 128];
+    let section = IntelFirmwareSection {
+        image: IntelFirmwareImageKind::Runtime,
+        device_offset: 0x8000,
+        bytes: &bytes,
+    };
+
+    let Ok(mut stager) = IntelFirmwareStager::new(section) else {
+        return false;
+    };
+    let Ok(descriptor) = stager.stage_next() else {
+        return false;
+    };
+    if stager.publish() != Ok(descriptor) {
+        return false;
+    }
+
+    let backend = Stage13_10nSyntheticBackend::new(3);
+    let mut executor = IntelFirmwareTransferExecutor::new(backend);
+
+    if executor.start() != Err(FirmwareTransferExecutionError::InvalidState)
+        || executor.prepare(descriptor).is_err()
+        || executor.state() != FirmwareTransferExecutionState::Prepared
+        || executor.start().is_err()
+        || executor.state() != FirmwareTransferExecutionState::Started
+        || executor.wait_bounded(8).is_err()
+        || executor.state() != FirmwareTransferExecutionState::Completed
+    {
+        return false;
+    }
+
+    if stager.complete().is_err() || !stager.is_complete() {
+        return false;
+    }
+
+    let timeout_descriptor = FirmwareTransferDescriptor {
+        device_offset: 0x9000,
+        physical_address: 0x1000,
+        length: 64,
+    };
+    let timeout_backend = Stage13_10nSyntheticBackend::new(usize::MAX);
+    let mut timeout_executor = IntelFirmwareTransferExecutor::new(timeout_backend);
+
+    if timeout_executor.prepare(timeout_descriptor).is_err()
+        || timeout_executor.start().is_err()
+        || timeout_executor.wait_bounded(4) != Err(FirmwareTransferExecutionError::Timeout)
+        || timeout_executor.state() != FirmwareTransferExecutionState::Failed
+    {
+        return false;
+    }
+
+    let invalid_descriptor = FirmwareTransferDescriptor {
+        device_offset: 0x1000,
+        physical_address: 0,
+        length: 32,
+    };
+    let invalid_backend = Stage13_10nSyntheticBackend::new(1);
+    let mut invalid_executor = IntelFirmwareTransferExecutor::new(invalid_backend);
+
+    invalid_executor.prepare(invalid_descriptor)
+        == Err(FirmwareTransferExecutionError::InvalidDescriptor)
+        && invalid_executor.state() == FirmwareTransferExecutionState::Failed
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Intel22000TransferStatus {
+    Idle,
+    Busy,
+    Complete,
+    Error,
+}
+
+/// Narrow hardware contract for Intel 22000-family firmware DMA transport.
+///
+/// This is intentionally below `IntelFirmwareTransferExecutor`: the executor
+/// owns generic prepare/start/wait policy, while this trait owns the eventual
+/// generation-specific register programming.
+pub trait Intel22000TransferIo {
+    fn program_source(
+        &mut self,
+        physical_address: u64,
+    ) -> Result<(), FirmwareTransferExecutionError>;
+    fn program_destination(
+        &mut self,
+        device_offset: u32,
+    ) -> Result<(), FirmwareTransferExecutionError>;
+    fn program_length(&mut self, length: u16) -> Result<(), FirmwareTransferExecutionError>;
+    fn trigger(&mut self) -> Result<(), FirmwareTransferExecutionError>;
+    fn status(&mut self) -> Result<Intel22000TransferStatus, FirmwareTransferExecutionError>;
+}
+
+pub struct Intel22000FirmwareTransferBackend<I> {
+    io: I,
+    prepared: bool,
+    started: bool,
+}
+
+impl<I: Intel22000TransferIo> Intel22000FirmwareTransferBackend<I> {
+    pub const fn new(io: I) -> Self {
+        Self {
+            io,
+            prepared: false,
+            started: false,
+        }
+    }
+
+    pub fn into_io(self) -> I {
+        self.io
+    }
+}
+
+impl<I: Intel22000TransferIo> FirmwareTransferBackend for Intel22000FirmwareTransferBackend<I> {
+    fn prepare(
+        &mut self,
+        descriptor: FirmwareTransferDescriptor,
+    ) -> Result<(), FirmwareTransferExecutionError> {
+        if self.prepared || self.started {
+            return Err(FirmwareTransferExecutionError::InvalidState);
+        }
+        if descriptor.physical_address == 0 || descriptor.length == 0 {
+            return Err(FirmwareTransferExecutionError::InvalidDescriptor);
+        }
+
+        self.io.program_source(descriptor.physical_address)?;
+        self.io.program_destination(descriptor.device_offset)?;
+        self.io.program_length(descriptor.length)?;
+        self.prepared = true;
+        Ok(())
+    }
+
+    fn start(&mut self) -> Result<(), FirmwareTransferExecutionError> {
+        if !self.prepared || self.started {
+            return Err(FirmwareTransferExecutionError::InvalidState);
+        }
+        self.io.trigger()?;
+        self.started = true;
+        Ok(())
+    }
+
+    fn completed(&mut self) -> Result<bool, FirmwareTransferExecutionError> {
+        if !self.started {
+            return Err(FirmwareTransferExecutionError::InvalidState);
+        }
+
+        match self.io.status()? {
+            Intel22000TransferStatus::Complete => Ok(true),
+            Intel22000TransferStatus::Busy => Ok(false),
+            Intel22000TransferStatus::Idle => Err(FirmwareTransferExecutionError::HardwareError),
+            Intel22000TransferStatus::Error => Err(FirmwareTransferExecutionError::HardwareError),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Stage13_10oSyntheticIntel22000Io {
+    source: u64,
+    destination: u32,
+    length: u16,
+    triggered: bool,
+    polls: usize,
+    complete_after: usize,
+    force_error: bool,
+}
+
+impl Stage13_10oSyntheticIntel22000Io {
+    const fn new(complete_after: usize) -> Self {
+        Self {
+            source: 0,
+            destination: 0,
+            length: 0,
+            triggered: false,
+            polls: 0,
+            complete_after,
+            force_error: false,
+        }
+    }
+
+    const fn programmed(&self) -> bool {
+        self.source != 0 && self.length != 0
+    }
+}
+
+impl Intel22000TransferIo for Stage13_10oSyntheticIntel22000Io {
+    fn program_source(
+        &mut self,
+        physical_address: u64,
+    ) -> Result<(), FirmwareTransferExecutionError> {
+        if physical_address == 0 {
+            return Err(FirmwareTransferExecutionError::InvalidDescriptor);
+        }
+        self.source = physical_address;
+        Ok(())
+    }
+
+    fn program_destination(
+        &mut self,
+        device_offset: u32,
+    ) -> Result<(), FirmwareTransferExecutionError> {
+        self.destination = device_offset;
+        Ok(())
+    }
+
+    fn program_length(&mut self, length: u16) -> Result<(), FirmwareTransferExecutionError> {
+        if length == 0 {
+            return Err(FirmwareTransferExecutionError::InvalidDescriptor);
+        }
+        self.length = length;
+        Ok(())
+    }
+
+    fn trigger(&mut self) -> Result<(), FirmwareTransferExecutionError> {
+        if !self.programmed() {
+            return Err(FirmwareTransferExecutionError::BackendRejected);
+        }
+        self.triggered = true;
+        Ok(())
+    }
+
+    fn status(&mut self) -> Result<Intel22000TransferStatus, FirmwareTransferExecutionError> {
+        if self.force_error {
+            return Ok(Intel22000TransferStatus::Error);
+        }
+        if !self.triggered {
+            return Ok(Intel22000TransferStatus::Idle);
+        }
+        self.polls = self.polls.saturating_add(1);
+        if self.polls >= self.complete_after {
+            Ok(Intel22000TransferStatus::Complete)
+        } else {
+            Ok(Intel22000TransferStatus::Busy)
+        }
+    }
+}
+
+pub fn stage13_10o_self_test() -> bool {
+    let descriptor = FirmwareTransferDescriptor {
+        device_offset: 0x8000,
+        physical_address: 0x0020_0000,
+        length: 4096,
+    };
+
+    let io = Stage13_10oSyntheticIntel22000Io::new(3);
+    let backend = Intel22000FirmwareTransferBackend::new(io);
+    let mut executor = IntelFirmwareTransferExecutor::new(backend);
+
+    if executor.prepare(descriptor).is_err()
+        || executor.start().is_err()
+        || executor.wait_bounded(8).is_err()
+        || executor.state() != FirmwareTransferExecutionState::Completed
+    {
+        return false;
+    }
+
+    let backend = executor.into_backend();
+    let io = backend.into_io();
+    if io.source != descriptor.physical_address
+        || io.destination != descriptor.device_offset
+        || io.length != descriptor.length
+        || !io.triggered
+        || io.polls != 3
+    {
+        return false;
+    }
+
+    // A 22000-family transport error must propagate through the generic
+    // executor and leave the transfer failed rather than reclaiming DMA.
+    let mut error_io = Stage13_10oSyntheticIntel22000Io::new(1);
+    error_io.force_error = true;
+    let error_backend = Intel22000FirmwareTransferBackend::new(error_io);
+    let mut error_executor = IntelFirmwareTransferExecutor::new(error_backend);
+
+    error_executor.prepare(descriptor).is_ok()
+        && error_executor.start().is_ok()
+        && error_executor.wait_bounded(2) == Err(FirmwareTransferExecutionError::HardwareError)
+        && error_executor.state() == FirmwareTransferExecutionState::Failed
+}
+
+pub const INTEL_CONTEXT_INFO_MAX_DRAM_ENTRIES: usize = 64;
+pub const INTEL_CONTEXT_INFO_MAX_DRAM_CHUNK_SIZE: usize = 32 * 1024;
+pub const INTEL_CSR_CONTEXT_INFO_BASE: u32 = 0x40;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntelContextInfoError {
+    ZeroPhysicalAddress,
+    EmptySection,
+    SectionTooLarge,
+    TooManySections,
+    MissingQueueAddress,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IntelContextInfoDramEntry {
+    pub physical_address: u64,
+    pub length: u32,
+}
+
+impl IntelContextInfoDramEntry {
+    pub const EMPTY: Self = Self {
+        physical_address: 0,
+        length: 0,
+    };
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntelContextInfoImageKind {
+    Lmac,
+    Umac,
+    Paging,
+}
+
+/// AX200/22000-generation context-info DRAM map.
+///
+/// Linux iwlwifi uses a context-info self-load path for device family 22000:
+/// firmware sections are copied to coherent host DRAM and the context-info
+/// structure publishes their physical addresses to the device.  This model
+/// deliberately keeps the host-side manifest separate from the MMIO kick.
+pub struct Intel22000ContextInfoManifest {
+    lmac: [IntelContextInfoDramEntry; INTEL_CONTEXT_INFO_MAX_DRAM_ENTRIES],
+    umac: [IntelContextInfoDramEntry; INTEL_CONTEXT_INFO_MAX_DRAM_ENTRIES],
+    paging: [IntelContextInfoDramEntry; INTEL_CONTEXT_INFO_MAX_DRAM_ENTRIES],
+    lmac_count: usize,
+    umac_count: usize,
+    paging_count: usize,
+    free_rbd_address: u64,
+    used_rbd_address: u64,
+    status_write_pointer: u64,
+    command_queue_address: u64,
+    command_queue_size: u8,
+}
+
+impl Intel22000ContextInfoManifest {
+    pub const fn new() -> Self {
+        Self {
+            lmac: [IntelContextInfoDramEntry::EMPTY; INTEL_CONTEXT_INFO_MAX_DRAM_ENTRIES],
+            umac: [IntelContextInfoDramEntry::EMPTY; INTEL_CONTEXT_INFO_MAX_DRAM_ENTRIES],
+            paging: [IntelContextInfoDramEntry::EMPTY; INTEL_CONTEXT_INFO_MAX_DRAM_ENTRIES],
+            lmac_count: 0,
+            umac_count: 0,
+            paging_count: 0,
+            free_rbd_address: 0,
+            used_rbd_address: 0,
+            status_write_pointer: 0,
+            command_queue_address: 0,
+            command_queue_size: 0,
+        }
+    }
+
+    pub fn set_rx_queue(
+        &mut self,
+        free_rbd_address: u64,
+        used_rbd_address: u64,
+        status_write_pointer: u64,
+    ) -> Result<(), IntelContextInfoError> {
+        if free_rbd_address == 0 || used_rbd_address == 0 || status_write_pointer == 0 {
+            return Err(IntelContextInfoError::MissingQueueAddress);
+        }
+        self.free_rbd_address = free_rbd_address;
+        self.used_rbd_address = used_rbd_address;
+        self.status_write_pointer = status_write_pointer;
+        Ok(())
+    }
+
+    pub fn set_command_queue(
+        &mut self,
+        address: u64,
+        size: u8,
+    ) -> Result<(), IntelContextInfoError> {
+        if address == 0 || size == 0 {
+            return Err(IntelContextInfoError::MissingQueueAddress);
+        }
+        self.command_queue_address = address;
+        self.command_queue_size = size;
+        Ok(())
+    }
+
+    pub fn push(
+        &mut self,
+        kind: IntelContextInfoImageKind,
+        entry: IntelContextInfoDramEntry,
+    ) -> Result<(), IntelContextInfoError> {
+        if entry.physical_address == 0 {
+            return Err(IntelContextInfoError::ZeroPhysicalAddress);
+        }
+        if entry.length == 0 {
+            return Err(IntelContextInfoError::EmptySection);
+        }
+        if usize::try_from(entry.length).map_err(|_| IntelContextInfoError::SectionTooLarge)?
+            > INTEL_CONTEXT_INFO_MAX_DRAM_CHUNK_SIZE
+        {
+            return Err(IntelContextInfoError::SectionTooLarge);
+        }
+
+        let (entries, count) = match kind {
+            IntelContextInfoImageKind::Lmac => (&mut self.lmac, &mut self.lmac_count),
+            IntelContextInfoImageKind::Umac => (&mut self.umac, &mut self.umac_count),
+            IntelContextInfoImageKind::Paging => (&mut self.paging, &mut self.paging_count),
+        };
+
+        if *count >= entries.len() {
+            return Err(IntelContextInfoError::TooManySections);
+        }
+        entries[*count] = entry;
+        *count += 1;
+        Ok(())
+    }
+
+    pub const fn lmac_count(&self) -> usize {
+        self.lmac_count
+    }
+
+    pub const fn umac_count(&self) -> usize {
+        self.umac_count
+    }
+
+    pub const fn paging_count(&self) -> usize {
+        self.paging_count
+    }
+
+    pub const fn queues_ready(&self) -> bool {
+        self.free_rbd_address != 0
+            && self.used_rbd_address != 0
+            && self.status_write_pointer != 0
+            && self.command_queue_address != 0
+            && self.command_queue_size != 0
+    }
+
+    pub fn entry(
+        &self,
+        kind: IntelContextInfoImageKind,
+        index: usize,
+    ) -> Option<IntelContextInfoDramEntry> {
+        let (entries, count) = match kind {
+            IntelContextInfoImageKind::Lmac => (&self.lmac, self.lmac_count),
+            IntelContextInfoImageKind::Umac => (&self.umac, self.umac_count),
+            IntelContextInfoImageKind::Paging => (&self.paging, self.paging_count),
+        };
+        if index >= count {
+            None
+        } else {
+            Some(entries[index])
+        }
+    }
+}
+
+pub fn stage13_10p_self_test() -> bool {
+    let mut manifest = Intel22000ContextInfoManifest::new();
+
+    if manifest.queues_ready()
+        || manifest
+            .set_rx_queue(0x0010_0000, 0x0011_0000, 0x0012_0000)
+            .is_err()
+        || manifest.set_command_queue(0x0013_0000, 32).is_err()
+        || !manifest.queues_ready()
+    {
+        return false;
+    }
+
+    let lmac = IntelContextInfoDramEntry {
+        physical_address: 0x0020_0000,
+        length: 4096,
+    };
+    let umac = IntelContextInfoDramEntry {
+        physical_address: 0x0021_0000,
+        length: 8192,
+    };
+    let paging = IntelContextInfoDramEntry {
+        physical_address: 0x0022_0000,
+        length: 32 * 1024,
+    };
+
+    if manifest
+        .push(IntelContextInfoImageKind::Lmac, lmac)
+        .is_err()
+        || manifest
+            .push(IntelContextInfoImageKind::Umac, umac)
+            .is_err()
+        || manifest
+            .push(IntelContextInfoImageKind::Paging, paging)
+            .is_err()
+        || manifest.lmac_count() != 1
+        || manifest.umac_count() != 1
+        || manifest.paging_count() != 1
+        || manifest.entry(IntelContextInfoImageKind::Lmac, 0) != Some(lmac)
+        || manifest.entry(IntelContextInfoImageKind::Umac, 0) != Some(umac)
+        || manifest.entry(IntelContextInfoImageKind::Paging, 0) != Some(paging)
+    {
+        return false;
+    }
+
+    let too_large = IntelContextInfoDramEntry {
+        physical_address: 0x0030_0000,
+        length: (INTEL_CONTEXT_INFO_MAX_DRAM_CHUNK_SIZE as u32) + 1,
+    };
+    let zero_address = IntelContextInfoDramEntry {
+        physical_address: 0,
+        length: 4096,
+    };
+
+    manifest.push(IntelContextInfoImageKind::Lmac, too_large)
+        == Err(IntelContextInfoError::SectionTooLarge)
+        && manifest.push(IntelContextInfoImageKind::Lmac, zero_address)
+            == Err(IntelContextInfoError::ZeroPhysicalAddress)
+        && INTEL_CSR_CONTEXT_INFO_BASE == 0x40
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntelContextInfoBuildError {
+    Manifest(IntelContextInfoError),
+    Dma,
+    LengthOverflow,
+}
+
+pub struct Intel22000DmaContextInfo {
+    manifest: Intel22000ContextInfoManifest,
+    firmware_dma: [Option<crate::wifi_hw::OwnedDmaBuffer>; INTEL_CONTEXT_INFO_MAX_DRAM_ENTRIES],
+    firmware_dma_count: usize,
+}
+
+impl Intel22000DmaContextInfo {
+    pub fn new() -> Self {
+        Self {
+            manifest: Intel22000ContextInfoManifest::new(),
+            firmware_dma: [const { None }; INTEL_CONTEXT_INFO_MAX_DRAM_ENTRIES],
+            firmware_dma_count: 0,
+        }
+    }
+    pub fn manifest(&self) -> &Intel22000ContextInfoManifest {
+        &self.manifest
+    }
+    pub fn set_rx_queue(
+        &mut self,
+        free: u64,
+        used: u64,
+        status: u64,
+    ) -> Result<(), IntelContextInfoBuildError> {
+        self.manifest
+            .set_rx_queue(free, used, status)
+            .map_err(IntelContextInfoBuildError::Manifest)
+    }
+    pub fn set_command_queue(
+        &mut self,
+        address: u64,
+        size: u8,
+    ) -> Result<(), IntelContextInfoBuildError> {
+        self.manifest
+            .set_command_queue(address, size)
+            .map_err(IntelContextInfoBuildError::Manifest)
+    }
+    pub fn stage_firmware_chunk(
+        &mut self,
+        kind: IntelContextInfoImageKind,
+        bytes: &[u8],
+    ) -> Result<IntelContextInfoDramEntry, IntelContextInfoBuildError> {
+        if bytes.is_empty() {
+            return Err(IntelContextInfoBuildError::Manifest(
+                IntelContextInfoError::EmptySection,
+            ));
+        }
+        if bytes.len() > INTEL_CONTEXT_INFO_MAX_DRAM_CHUNK_SIZE {
+            return Err(IntelContextInfoBuildError::Manifest(
+                IntelContextInfoError::SectionTooLarge,
+            ));
+        }
+        let length =
+            u16::try_from(bytes.len()).map_err(|_| IntelContextInfoBuildError::LengthOverflow)?;
+        let manifest_length =
+            u32::try_from(bytes.len()).map_err(|_| IntelContextInfoBuildError::LengthOverflow)?;
+        let mut buffer = crate::wifi_hw::OwnedDmaBuffer::allocate(length, 0)
+            .map_err(|_| IntelContextInfoBuildError::Dma)?;
+        buffer
+            .write_bytes(0, bytes)
+            .map_err(|_| IntelContextInfoBuildError::Dma)?;
+        let entry = IntelContextInfoDramEntry {
+            physical_address: buffer.physical_address(),
+            length: manifest_length,
+        };
+        self.manifest
+            .push(kind, entry)
+            .map_err(IntelContextInfoBuildError::Manifest)?;
+        if self.firmware_dma_count >= self.firmware_dma.len() {
+            return Err(IntelContextInfoBuildError::Manifest(
+                IntelContextInfoError::TooManySections,
+            ));
+        }
+        self.firmware_dma[self.firmware_dma_count] = Some(buffer);
+        self.firmware_dma_count += 1;
+        Ok(entry)
+    }
+    pub fn firmware_buffer_count(&self) -> usize {
+        self.firmware_dma_count
+    }
+    pub fn staged_byte(
+        &self,
+        buffer_index: usize,
+        offset: usize,
+    ) -> Result<u8, IntelContextInfoBuildError> {
+        self.firmware_dma
+            .get(buffer_index)
+            .and_then(Option::as_ref)
+            .ok_or(IntelContextInfoBuildError::Dma)?
+            .read_byte(offset)
+            .map_err(|_| IntelContextInfoBuildError::Dma)
+    }
+    pub fn ready_for_publication(&self) -> bool {
+        self.manifest.queues_ready() && self.firmware_dma_count != 0
+    }
+}
+
+pub fn stage13_10q_self_test() -> bool {
+    let mut context = Intel22000DmaContextInfo::new();
+    if context
+        .set_rx_queue(0x0010_0000, 0x0011_0000, 0x0012_0000)
+        .is_err()
+        || context.set_command_queue(0x0013_0000, 32).is_err()
+        || context.ready_for_publication()
+    {
+        return false;
+    }
+
+    let mut lmac = [0u8; 4096];
+    for (index, byte) in lmac.iter_mut().enumerate() {
+        *byte = (index & 0xff) as u8;
+    }
+    let umac = [0xa5u8; 1024];
+    let Ok(lmac_entry) = context.stage_firmware_chunk(IntelContextInfoImageKind::Lmac, &lmac)
+    else {
+        return false;
+    };
+    let Ok(umac_entry) = context.stage_firmware_chunk(IntelContextInfoImageKind::Umac, &umac)
+    else {
+        return false;
+    };
+
+    if lmac_entry.physical_address == 0
+        || umac_entry.physical_address == 0
+        || lmac_entry.physical_address == umac_entry.physical_address
+        || lmac_entry.length != 4096
+        || umac_entry.length != 1024
+        || context.firmware_buffer_count() != 2
+        || context.manifest().lmac_count() != 1
+        || context.manifest().umac_count() != 1
+        || context.manifest().entry(IntelContextInfoImageKind::Lmac, 0) != Some(lmac_entry)
+        || context.manifest().entry(IntelContextInfoImageKind::Umac, 0) != Some(umac_entry)
+        || context.staged_byte(0, 0) != Ok(lmac[0])
+        || context.staged_byte(0, 4095) != Ok(lmac[4095])
+        || context.staged_byte(1, 0) != Ok(0xa5)
+        || !context.ready_for_publication()
+    {
+        return false;
+    }
+
+    let too_large = [0u8; INTEL_CONTEXT_INFO_MAX_DRAM_CHUNK_SIZE + 1];
+    context.stage_firmware_chunk(IntelContextInfoImageKind::Paging, &too_large)
+        == Err(IntelContextInfoBuildError::Manifest(
+            IntelContextInfoError::SectionTooLarge,
+        ))
+        && context.firmware_buffer_count() == 2
+        && context.manifest().paging_count() == 0
+}

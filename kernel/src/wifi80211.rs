@@ -152,7 +152,9 @@ fn read_u16_le(bytes: &[u8], offset: usize) -> Result<u16, ParseError> {
 }
 
 fn read_mac(bytes: &[u8], offset: usize) -> Result<[u8; MAC_LEN], ParseError> {
-    let chunk = bytes.get(offset..offset + MAC_LEN).ok_or(ParseError::Truncated)?;
+    let chunk = bytes
+        .get(offset..offset + MAC_LEN)
+        .ok_or(ParseError::Truncated)?;
     let mut mac = [0u8; MAC_LEN];
     mac.copy_from_slice(chunk);
     Ok(mac)
@@ -311,8 +313,7 @@ pub fn parse_elements(bytes: &[u8]) -> Result<ParsedElements, ParseError> {
                 parsed.rsn_present = true;
             }
             IE_SUPPORTED_RATES | IE_EXTENDED_SUPPORTED_RATES => {
-                parsed.supported_rate_elements =
-                    parsed.supported_rate_elements.saturating_add(1);
+                parsed.supported_rate_elements = parsed.supported_rate_elements.saturating_add(1);
             }
             _ => {}
         }
@@ -353,14 +354,8 @@ pub fn self_test() -> bool {
     let bssid = [0x02, 0x57, 0x48, 0x13, 0x09, 0x01];
 
     let mut header = [0u8; MGMT_HEADER_LEN];
-    if build_management_header(
-        &mut header,
-        8,
-        receiver,
-        transmitter,
-        bssid,
-        0x1230,
-    ) != Ok(MGMT_HEADER_LEN)
+    if build_management_header(&mut header, 8, receiver, transmitter, bssid, 0x1230)
+        != Ok(MGMT_HEADER_LEN)
     {
         return false;
     }
@@ -378,10 +373,27 @@ pub fn self_test() -> bool {
     }
 
     let ies = [
-        IE_SSID, 8, b'W', b'o', b'v', b'e', b'n', b'L', b'a', b'b',
-        IE_SUPPORTED_RATES, 2, 0x82, 0x84,
-        IE_DS_PARAMETER_SET, 1, 6,
-        IE_RSN, 2, 1, 0,
+        IE_SSID,
+        8,
+        b'W',
+        b'o',
+        b'v',
+        b'e',
+        b'n',
+        b'L',
+        b'a',
+        b'b',
+        IE_SUPPORTED_RATES,
+        2,
+        0x82,
+        0x84,
+        IE_DS_PARAMETER_SET,
+        1,
+        6,
+        IE_RSN,
+        2,
+        1,
+        0,
     ];
     let Ok(parsed_ies) = parse_elements(&ies) else {
         return false;

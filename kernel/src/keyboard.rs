@@ -1,5 +1,5 @@
-use crate::{irq_lock::IrqMutex as Mutex, woven_input};
 pub use crate::woven_input::Key;
+use crate::{irq_lock::IrqMutex as Mutex, woven_input};
 
 use core::{
     arch::asm,
@@ -139,11 +139,17 @@ pub fn inject_validation_input(count: usize) {
 
 pub fn self_test() -> bool {
     let mut keyboard = Keyboard::new();
-    keyboard.decode(0x1e).is_some_and(|key| matches!(key, Key::Char('a')))
+    keyboard
+        .decode(0x1e)
+        .is_some_and(|key| matches!(key, Key::Char('a')))
         && keyboard.decode(0x2a).is_none()
-        && keyboard.decode(0x1e).is_some_and(|key| matches!(key, Key::Char('A')))
+        && keyboard
+            .decode(0x1e)
+            .is_some_and(|key| matches!(key, Key::Char('A')))
         && keyboard.decode(0xaa).is_none()
-        && keyboard.decode(0x1c).is_some_and(|key| matches!(key, Key::Enter))
+        && keyboard
+            .decode(0x1c)
+            .is_some_and(|key| matches!(key, Key::Enter))
 }
 
 pub fn handle_interrupt() {
@@ -170,15 +176,48 @@ unsafe fn inb(port: u16) -> u8 {
 
 fn decode_scancode(code: u8, shift: bool) -> Option<char> {
     let normal = match code {
-        0x02 => '1', 0x03 => '2', 0x04 => '3', 0x05 => '4', 0x06 => '5',
-        0x07 => '6', 0x08 => '7', 0x09 => '8', 0x0A => '9', 0x0B => '0',
-        0x10 => 'q', 0x11 => 'w', 0x12 => 'e', 0x13 => 'r', 0x14 => 't',
-        0x15 => 'y', 0x16 => 'u', 0x17 => 'i', 0x18 => 'o', 0x19 => 'p',
-        0x1E => 'a', 0x1F => 's', 0x20 => 'd', 0x21 => 'f', 0x22 => 'g',
-        0x23 => 'h', 0x24 => 'j', 0x25 => 'k', 0x26 => 'l',
-        0x2C => 'z', 0x2D => 'x', 0x2E => 'c', 0x2F => 'v', 0x30 => 'b',
-        0x31 => 'n', 0x32 => 'm', 0x39 => ' ', 0x0C => '-', 0x0D => '=',
-        0x33 => ',', 0x34 => '.', 0x35 => '/',
+        0x02 => '1',
+        0x03 => '2',
+        0x04 => '3',
+        0x05 => '4',
+        0x06 => '5',
+        0x07 => '6',
+        0x08 => '7',
+        0x09 => '8',
+        0x0A => '9',
+        0x0B => '0',
+        0x10 => 'q',
+        0x11 => 'w',
+        0x12 => 'e',
+        0x13 => 'r',
+        0x14 => 't',
+        0x15 => 'y',
+        0x16 => 'u',
+        0x17 => 'i',
+        0x18 => 'o',
+        0x19 => 'p',
+        0x1E => 'a',
+        0x1F => 's',
+        0x20 => 'd',
+        0x21 => 'f',
+        0x22 => 'g',
+        0x23 => 'h',
+        0x24 => 'j',
+        0x25 => 'k',
+        0x26 => 'l',
+        0x2C => 'z',
+        0x2D => 'x',
+        0x2E => 'c',
+        0x2F => 'v',
+        0x30 => 'b',
+        0x31 => 'n',
+        0x32 => 'm',
+        0x39 => ' ',
+        0x0C => '-',
+        0x0D => '=',
+        0x33 => ',',
+        0x34 => '.',
+        0x35 => '/',
         _ => return None,
     };
     if !shift {
@@ -186,9 +225,21 @@ fn decode_scancode(code: u8, shift: bool) -> Option<char> {
     }
     Some(match normal {
         'a'..='z' => normal.to_ascii_uppercase(),
-        '1' => '!', '2' => '@', '3' => '#', '4' => '$', '5' => '%',
-        '6' => '^', '7' => '&', '8' => '*', '9' => '(', '0' => ')',
-        '-' => '_', '=' => '+', ',' => '<', '.' => '>', '/' => '?',
+        '1' => '!',
+        '2' => '@',
+        '3' => '#',
+        '4' => '$',
+        '5' => '%',
+        '6' => '^',
+        '7' => '&',
+        '8' => '*',
+        '9' => '(',
+        '0' => ')',
+        '-' => '_',
+        '=' => '+',
+        ',' => '<',
+        '.' => '>',
+        '/' => '?',
         other => other,
     })
 }

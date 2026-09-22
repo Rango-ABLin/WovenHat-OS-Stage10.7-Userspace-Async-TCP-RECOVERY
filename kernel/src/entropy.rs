@@ -57,8 +57,8 @@ impl Pool {
 
         #[cfg(feature = "stage13-9-test")]
         {
-            let mut x = self.counter
-                ^ u64::from_le_bytes(self.key[..8].try_into().unwrap_or([0; 8]));
+            let mut x =
+                self.counter ^ u64::from_le_bytes(self.key[..8].try_into().unwrap_or([0; 8]));
             for (i, byte) in out.iter_mut().enumerate() {
                 x ^= x << 13;
                 x ^= x >> 7;

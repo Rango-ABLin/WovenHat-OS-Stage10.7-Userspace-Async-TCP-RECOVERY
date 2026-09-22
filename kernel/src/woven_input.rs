@@ -24,12 +24,33 @@ pub enum Key {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
     Key(Key),
-    PointerMove { dx: i16, dy: i16 },
-    PointerButton { button: u8, pressed: bool },
-    Scroll { vertical: i16 },
-    Touch { contact: u8, x: u16, y: u16, active: bool },
-    Pen { x: u16, y: u16, pressure: u16, touching: bool },
-    GameController { control: u16, value: i16 },
+    PointerMove {
+        dx: i16,
+        dy: i16,
+    },
+    PointerButton {
+        button: u8,
+        pressed: bool,
+    },
+    Scroll {
+        vertical: i16,
+    },
+    Touch {
+        contact: u8,
+        x: u16,
+        y: u16,
+        active: bool,
+    },
+    Pen {
+        x: u16,
+        y: u16,
+        pressure: u16,
+        touching: bool,
+    },
+    GameController {
+        control: u16,
+        value: i16,
+    },
 }
 
 #[derive(Clone, Copy)]

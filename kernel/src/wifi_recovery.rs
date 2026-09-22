@@ -58,9 +58,15 @@ impl RecoveryController {
         }
     }
 
-    pub const fn state(&self) -> RecoveryState { self.state }
-    pub const fn epoch(&self) -> u32 { self.epoch }
-    pub const fn attempts(&self) -> u8 { self.attempts }
+    pub const fn state(&self) -> RecoveryState {
+        self.state
+    }
+    pub const fn epoch(&self) -> u32 {
+        self.epoch
+    }
+    pub const fn attempts(&self) -> u8 {
+        self.attempts
+    }
 
     pub const fn stats(&self) -> RecoveryStats {
         RecoveryStats {
@@ -72,7 +78,11 @@ impl RecoveryController {
         }
     }
 
-    pub fn begin_connect(&mut self, now_tick: u64, timeout_ticks: u64) -> Result<u32, RecoveryError> {
+    pub fn begin_connect(
+        &mut self,
+        now_tick: u64,
+        timeout_ticks: u64,
+    ) -> Result<u32, RecoveryError> {
         if !matches!(self.state, RecoveryState::Idle | RecoveryState::Backoff) {
             return Err(RecoveryError::WrongState);
         }
@@ -88,7 +98,9 @@ impl RecoveryController {
 
     pub fn connected(&mut self, epoch: u32) -> Result<(), RecoveryError> {
         self.require_epoch(epoch)?;
-        if self.state != RecoveryState::Connecting { return Err(RecoveryError::WrongState); }
+        if self.state != RecoveryState::Connecting {
+            return Err(RecoveryError::WrongState);
+        }
         self.state = RecoveryState::Connected;
         self.attempts = 0;
         self.backoff_ticks = 0;
@@ -109,7 +121,9 @@ impl RecoveryController {
 
     pub fn connection_failed(&mut self, epoch: u32) -> Result<(), RecoveryError> {
         self.require_epoch(epoch)?;
-        if self.state != RecoveryState::Connecting { return Err(RecoveryError::WrongState); }
+        if self.state != RecoveryState::Connecting {
+            return Err(RecoveryError::WrongState);
+        }
         self.failures = self.failures.saturating_add(1);
         self.enter_backoff();
         Ok(())
@@ -126,8 +140,12 @@ impl RecoveryController {
     }
 
     pub fn tick_backoff(&mut self) -> bool {
-        if self.state != RecoveryState::Backoff { return false; }
-        if self.backoff_ticks > 0 { self.backoff_ticks -= 1; }
+        if self.state != RecoveryState::Backoff {
+            return false;
+        }
+        if self.backoff_ticks > 0 {
+            self.backoff_ticks -= 1;
+        }
         if self.backoff_ticks == 0 {
             self.state = if self.attempts >= self.max_attempts {
                 RecoveryState::Exhausted
@@ -140,7 +158,9 @@ impl RecoveryController {
         }
     }
 
-    pub const fn backoff_ticks(&self) -> u32 { self.backoff_ticks }
+    pub const fn backoff_ticks(&self) -> u32 {
+        self.backoff_ticks
+    }
 
     fn enter_backoff(&mut self) {
         // Bounded exponential backoff: 1,2,4,...32 ticks.
@@ -153,11 +173,15 @@ impl RecoveryController {
 
     fn bump_epoch(&mut self) {
         self.epoch = self.epoch.wrapping_add(1);
-        if self.epoch == 0 { self.epoch = 1; }
+        if self.epoch == 0 {
+            self.epoch = 1;
+        }
     }
 
     fn require_epoch(&self, epoch: u32) -> Result<(), RecoveryError> {
-        if epoch != self.epoch { return Err(RecoveryError::StaleEpoch); }
+        if epoch != self.epoch {
+            return Err(RecoveryError::StaleEpoch);
+        }
         Ok(())
     }
 }
@@ -165,30 +189,47 @@ impl RecoveryController {
 pub fn self_test() -> bool {
     let mut recovery = RecoveryController::new(3);
 
-    let Ok(epoch1) = recovery.begin_connect(100, 10) else { return false; };
-    if recovery.state() != RecoveryState::Connecting || recovery.poll_timeout(109) { return false; }
-    if !recovery.poll_timeout(110) || recovery.state() != RecoveryState::Backoff
+    let Ok(epoch1) = recovery.begin_connect(100, 10) else {
+        return false;
+    };
+    if recovery.state() != RecoveryState::Connecting || recovery.poll_timeout(109) {
+        return false;
+    }
+    if !recovery.poll_timeout(110)
+        || recovery.state() != RecoveryState::Backoff
         || recovery.backoff_ticks() != 1
     {
         return false;
     }
     // Epoch changed on failure: late completion from the old attempt is stale.
-    if recovery.connected(epoch1) != Err(RecoveryError::StaleEpoch) { return false; }
+    if recovery.connected(epoch1) != Err(RecoveryError::StaleEpoch) {
+        return false;
+    }
 
-    if !recovery.tick_backoff() || recovery.state() != RecoveryState::Idle { return false; }
-    let Ok(epoch2) = recovery.begin_connect(200, 10) else { return false; };
+    if !recovery.tick_backoff() || recovery.state() != RecoveryState::Idle {
+        return false;
+    }
+    let Ok(epoch2) = recovery.begin_connect(200, 10) else {
+        return false;
+    };
     if recovery.connection_failed(epoch2).is_err()
         || recovery.state() != RecoveryState::Backoff
         || recovery.backoff_ticks() != 2
     {
         return false;
     }
-    if recovery.tick_backoff() || !recovery.tick_backoff() || recovery.state() != RecoveryState::Idle {
+    if recovery.tick_backoff()
+        || !recovery.tick_backoff()
+        || recovery.state() != RecoveryState::Idle
+    {
         return false;
     }
 
-    let Ok(epoch3) = recovery.begin_connect(300, 10) else { return false; };
-    if recovery.connected(epoch3).is_err() || recovery.state() != RecoveryState::Connected
+    let Ok(epoch3) = recovery.begin_connect(300, 10) else {
+        return false;
+    };
+    if recovery.connected(epoch3).is_err()
+        || recovery.state() != RecoveryState::Connected
         || recovery.attempts() != 0
     {
         return false;
@@ -199,13 +240,21 @@ pub fn self_test() -> bool {
     if new_epoch == epoch3 || recovery.state() != RecoveryState::Idle || recovery.attempts() != 0 {
         return false;
     }
-    if recovery.connected(epoch3) != Err(RecoveryError::StaleEpoch) { return false; }
+    if recovery.connected(epoch3) != Err(RecoveryError::StaleEpoch) {
+        return false;
+    }
 
     // Repeated failures are bounded; no infinite retry loop.
     for expected in 1..=3u8 {
-        let Ok(e) = recovery.begin_connect(400 + u64::from(expected), 1) else { return false; };
-        if recovery.attempts() != expected || recovery.connection_failed(e).is_err() { return false; }
-        while recovery.state() == RecoveryState::Backoff { let _ = recovery.tick_backoff(); }
+        let Ok(e) = recovery.begin_connect(400 + u64::from(expected), 1) else {
+            return false;
+        };
+        if recovery.attempts() != expected || recovery.connection_failed(e).is_err() {
+            return false;
+        }
+        while recovery.state() == RecoveryState::Backoff {
+            let _ = recovery.tick_backoff();
+        }
     }
     if recovery.state() != RecoveryState::Exhausted
         || recovery.begin_connect(500, 1) != Err(RecoveryError::WrongState)

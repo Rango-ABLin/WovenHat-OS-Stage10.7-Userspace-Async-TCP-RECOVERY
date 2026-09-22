@@ -80,13 +80,7 @@ struct Queue {
 }
 
 impl Queue {
-    fn new(
-        sq: DmaPage,
-        cq: DmaPage,
-        depth: u16,
-        sq_doorbell: u64,
-        cq_doorbell: u64,
-    ) -> Self {
+    fn new(sq: DmaPage, cq: DmaPage, depth: u16, sq_doorbell: u64, cq_doorbell: u64) -> Self {
         Self {
             sq,
             cq,
@@ -168,9 +162,7 @@ impl NvmeController {
         let bar = device
             .bars
             .iter()
-            .find(|bar| {
-                bar.valid && matches!(bar.kind, BarKind::Memory32 | BarKind::Memory64)
-            })
+            .find(|bar| bar.valid && matches!(bar.kind, BarKind::Memory32 | BarKind::Memory64))
             .ok_or(InitError::MissingMemoryBar)?;
         let address = Address {
             segment: device.segment,

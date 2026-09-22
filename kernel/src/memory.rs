@@ -1,6 +1,6 @@
-use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
 #[cfg(feature = "qemu-test")]
 use alloc::vec::Vec;
+use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
 use x86_64::{
     structures::paging::{FrameAllocator, PageSize, PhysFrame, Size4KiB},
     PhysAddr,
@@ -104,7 +104,8 @@ impl PhysicalFrameAllocator {
                 continue;
             }
 
-            let start = align_up(region.start.max(0x10_0000), FRAME_SIZE).ok_or(InitError::AddressOverflow)?;
+            let start = align_up(region.start.max(0x10_0000), FRAME_SIZE)
+                .ok_or(InitError::AddressOverflow)?;
             let end = align_down(region.end, FRAME_SIZE);
             if start >= end {
                 continue;
@@ -123,14 +124,17 @@ impl PhysicalFrameAllocator {
             let bitmap_size = bitmap_pages
                 .checked_mul(FRAME_SIZE)
                 .ok_or(InitError::AddressOverflow)?;
-            let alloc_start = start.checked_add(bitmap_size).ok_or(InitError::AddressOverflow)?;
+            let alloc_start = start
+                .checked_add(bitmap_size)
+                .ok_or(InitError::AddressOverflow)?;
             if alloc_start >= end {
                 continue;
             }
             let bitmap_address = physical_memory_offset
                 .checked_add(start)
                 .ok_or(InitError::AddressOverflow)?;
-            let bitmap_size = usize::try_from(bitmap_size).map_err(|_| InitError::AddressOverflow)?;
+            let bitmap_size =
+                usize::try_from(bitmap_size).map_err(|_| InitError::AddressOverflow)?;
             // SAFETY: Bootloader direct-maps each usable physical range;
             // bitmap pages have been removed from the allocatable portion.
             unsafe { core::ptr::write_bytes(bitmap_address as *mut u8, 0, bitmap_size) };
@@ -224,8 +228,7 @@ impl PhysicalFrameAllocator {
         for pass in 0..2 {
             for offset in 0..self.range_count {
                 let index = (self.current_range + offset) % self.range_count;
-                if pass == 0
-                    && preferred.is_some_and(|domain| self.ranges[index].domain != domain)
+                if pass == 0 && preferred.is_some_and(|domain| self.ranges[index].domain != domain)
                 {
                     continue;
                 }
@@ -244,19 +247,14 @@ impl PhysicalFrameAllocator {
                 } else {
                     index
                 };
-                self.allocated_frames = self
-                    .allocated_frames
-                    .checked_add(count as u64)?;
+                self.allocated_frames = self.allocated_frames.checked_add(count as u64)?;
                 return PhysFrame::from_start_address(PhysAddr::new(address)).ok();
             }
         }
         None
     }
 
-    fn allocate_frame_for_domain(
-        &mut self,
-        preferred: Option<u32>,
-    ) -> Option<PhysFrame<Size4KiB>> {
+    fn allocate_frame_for_domain(&mut self, preferred: Option<u32>) -> Option<PhysFrame<Size4KiB>> {
         if !self.initialized {
             return None;
         }
@@ -289,9 +287,7 @@ impl PhysicalFrameAllocator {
                 for offset in 0..self.range_count {
                     let index = (self.current_range + offset) % self.range_count;
                     let range = &mut self.ranges[index];
-                    if pass == 0
-                        && preferred.is_some_and(|domain| range.domain != domain)
-                    {
+                    if pass == 0 && preferred.is_some_and(|domain| range.domain != domain) {
                         continue;
                     }
                     let mut address = range.overflow_hint;
@@ -313,8 +309,7 @@ impl PhysicalFrameAllocator {
         for pass in 0..2 {
             for offset in 0..self.range_count {
                 let index = (self.current_range + offset) % self.range_count;
-                if pass == 0
-                    && preferred.is_some_and(|domain| self.ranges[index].domain != domain)
+                if pass == 0 && preferred.is_some_and(|domain| self.ranges[index].domain != domain)
                 {
                     continue;
                 }
@@ -353,7 +348,13 @@ fn bitmap_set(range: &FrameRange, address: u64, allocated: bool) {
     let pointer = unsafe { (range.bitmap as *mut u8).add(index / 8) };
     let previous = unsafe { pointer.read() };
     let mask = 1 << (index % 8);
-    unsafe { pointer.write(if allocated { previous | mask } else { previous & !mask }) };
+    unsafe {
+        pointer.write(if allocated {
+            previous | mask
+        } else {
+            previous & !mask
+        })
+    };
 }
 
 // SAFETY: The allocator returns each fully usable 4 KiB frame at most once.
@@ -366,7 +367,9 @@ unsafe impl FrameAllocator<Size4KiB> for PhysicalFrameAllocator {
 }
 
 pub fn init(regions: &[MemoryRegion], physical_memory_offset: u64) -> Result<(), InitError> {
-    ALLOCATOR.lock().initialize(regions, &[], physical_memory_offset)
+    ALLOCATOR
+        .lock()
+        .initialize(regions, &[], physical_memory_offset)
 }
 
 pub fn init_with_topology(
@@ -374,7 +377,9 @@ pub fn init_with_topology(
     affinities: &[crate::hal::acpi::MemoryAffinity],
     physical_memory_offset: u64,
 ) -> Result<(), InitError> {
-    ALLOCATOR.lock().initialize(regions, affinities, physical_memory_offset)
+    ALLOCATOR
+        .lock()
+        .initialize(regions, affinities, physical_memory_offset)
 }
 
 pub fn allocate_frame() -> Option<PhysFrame<Size4KiB>> {
@@ -487,11 +492,7 @@ fn align_up(address: u64, alignment: u64) -> Option<u64> {
         .map(|value| align_down(value, alignment))
 }
 
-fn memory_domain(
-    start: u64,
-    end: u64,
-    affinities: &[crate::hal::acpi::MemoryAffinity],
-) -> u32 {
+fn memory_domain(start: u64, end: u64, affinities: &[crate::hal::acpi::MemoryAffinity]) -> u32 {
     affinities
         .iter()
         .find(|affinity| {

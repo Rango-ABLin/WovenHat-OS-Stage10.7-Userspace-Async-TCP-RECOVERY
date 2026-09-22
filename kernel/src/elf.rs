@@ -76,7 +76,9 @@ impl Image {
             .flatten()
             .enumerate()
         {
-            let end = segment.mapping_start.checked_add(segment.mapping_size as u64)?;
+            let end = segment
+                .mapping_start
+                .checked_add(segment.mapping_size as u64)?;
             for other in self.segments[..index].iter().flatten() {
                 let other_end = other.mapping_start.checked_add(other.mapping_size as u64)?;
                 if segment.mapping_start < other_end && other.mapping_start < end {

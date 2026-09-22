@@ -86,7 +86,9 @@ pub fn descriptor_from_device(device: pci::Device) -> Result<WifiPciFunction, Hw
 /// cross that boundary.
 pub fn discover_first() -> Option<WifiPciFunction> {
     for index in 0..64 {
-        let Some(device) = pci::device(index) else { continue };
+        let Some(device) = pci::device(index) else {
+            continue;
+        };
         if is_wireless_candidate(&device) {
             if let Ok(candidate) = descriptor_from_device(device) {
                 return Some(candidate);
@@ -97,7 +99,9 @@ pub fn discover_first() -> Option<WifiPciFunction> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WifiDriverFamily { IntelIwlwifi }
+pub enum WifiDriverFamily {
+    IntelIwlwifi,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SupportedWifiDevice {
@@ -107,17 +111,20 @@ pub struct SupportedWifiDevice {
     pub name: &'static str,
 }
 
-const SUPPORTED_WIFI_DEVICES: &[SupportedWifiDevice] = &[
-    SupportedWifiDevice {
-        vendor_id: 0x8086,
-        device_id: 0x2723,
-        family: WifiDriverFamily::IntelIwlwifi,
-        name: "Intel Wi-Fi 6 AX200",
-    },
-];
+const SUPPORTED_WIFI_DEVICES: &[SupportedWifiDevice] = &[SupportedWifiDevice {
+    vendor_id: 0x8086,
+    device_id: 0x2723,
+    family: WifiDriverFamily::IntelIwlwifi,
+    name: "Intel Wi-Fi 6 AX200",
+}];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SupportedBindError { NotWireless, UnsupportedDevice, NoMmioBar, ConfigWriteFailed }
+pub enum SupportedBindError {
+    NotWireless,
+    UnsupportedDevice,
+    NoMmioBar,
+    ConfigWriteFailed,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct SupportedWifiFunction {
@@ -127,11 +134,17 @@ pub struct SupportedWifiFunction {
 }
 
 pub fn supported_device(vendor_id: u16, device_id: u16) -> Option<&'static SupportedWifiDevice> {
-    SUPPORTED_WIFI_DEVICES.iter().find(|entry| entry.vendor_id == vendor_id && entry.device_id == device_id)
+    SUPPORTED_WIFI_DEVICES
+        .iter()
+        .find(|entry| entry.vendor_id == vendor_id && entry.device_id == device_id)
 }
 
-pub fn classify_supported(device: pci::Device) -> Result<SupportedWifiFunction, SupportedBindError> {
-    if !is_wireless_candidate(&device) { return Err(SupportedBindError::NotWireless); }
+pub fn classify_supported(
+    device: pci::Device,
+) -> Result<SupportedWifiFunction, SupportedBindError> {
+    if !is_wireless_candidate(&device) {
+        return Err(SupportedBindError::NotWireless);
+    }
     let Some(supported) = supported_device(device.vendor_id, device.device_id) else {
         return Err(SupportedBindError::UnsupportedDevice);
     };
@@ -140,7 +153,11 @@ pub fn classify_supported(device: pci::Device) -> Result<SupportedWifiFunction, 
         HwBindError::NoMmioBar => SupportedBindError::NoMmioBar,
         HwBindError::ConfigWriteFailed => SupportedBindError::ConfigWriteFailed,
     })?;
-    Ok(SupportedWifiFunction { pci, family: supported.family, name: supported.name })
+    Ok(SupportedWifiFunction {
+        pci,
+        family: supported.family,
+        name: supported.name,
+    })
 }
 
 pub fn bind_supported(device: pci::Device) -> Result<SupportedWifiFunction, SupportedBindError> {
@@ -153,11 +170,15 @@ pub fn bind_supported(device: pci::Device) -> Result<SupportedWifiFunction, Supp
 
 pub fn discover_first_supported() -> Option<SupportedWifiFunction> {
     for index in 0..64 {
-        let Some(device) = pci::device(index) else { continue };
+        let Some(device) = pci::device(index) else {
+            continue;
+        };
         if supported_device(device.vendor_id, device.device_id).is_some()
             && is_wireless_candidate(&device)
         {
-            if let Ok(bound) = bind_supported(device) { return Some(bound); }
+            if let Ok(bound) = bind_supported(device) {
+                return Some(bound);
+            }
         }
     }
     None
@@ -389,10 +410,7 @@ impl IntelMacAccessController {
             .read(IntelCsr::GpControl)
             .map_err(IntelMacAccessError::Csr)?;
         self.csr
-            .write(
-                IntelCsr::GpControl,
-                value | INTEL_CSR_GP_CNTRL_INIT_DONE,
-            )
+            .write(IntelCsr::GpControl, value | INTEL_CSR_GP_CNTRL_INIT_DONE)
             .map_err(IntelMacAccessError::Csr)?;
         self.state = IntelMacAccessState::InitDone;
         Ok(())
@@ -495,7 +513,9 @@ pub fn stage13_10j_self_test() -> bool {
         || mac.state() != IntelMacAccessState::InitDone
         || mac.request_access().is_err()
         || mac.state() != IntelMacAccessState::AccessRequested
-        || mac.poll_access_bounded(INTEL_MAC_ACCESS_POLL_LIMIT).is_err()
+        || mac
+            .poll_access_bounded(INTEL_MAC_ACCESS_POLL_LIMIT)
+            .is_err()
         || mac.state() != IntelMacAccessState::Granted
     {
         return false;
@@ -579,9 +599,7 @@ pub fn stage13_10i_self_test() -> bool {
 
     // SAFETY: this synthetic register window aliases one live, exclusively
     // owned DmaPage for the duration of the controller.
-    let mmio = unsafe {
-        VolatileMmio32::from_mapped(region, page.virtual_address())
-    };
+    let mmio = unsafe { VolatileMmio32::from_mapped(region, page.virtual_address()) };
     let Ok(csr) = IntelCsrBank::from_supported(function, mmio) else {
         return false;
     };
@@ -615,15 +633,12 @@ pub fn stage13_10i_self_test() -> bool {
     let Ok(timeout_page) = DmaPage::allocate_zeroed() else {
         return false;
     };
-    let Ok(timeout_region) =
-        MmioRegion::new(timeout_page.physical_address(), DMA_PAGE_SIZE)
-    else {
+    let Ok(timeout_region) = MmioRegion::new(timeout_page.physical_address(), DMA_PAGE_SIZE) else {
         return false;
     };
     // SAFETY: same synthetic, exclusively-owned mapping contract as above.
-    let timeout_mmio = unsafe {
-        VolatileMmio32::from_mapped(timeout_region, timeout_page.virtual_address())
-    };
+    let timeout_mmio =
+        unsafe { VolatileMmio32::from_mapped(timeout_region, timeout_page.virtual_address()) };
     let Ok(timeout_csr) = IntelCsrBank::from_supported(function, timeout_mmio) else {
         return false;
     };
@@ -654,18 +669,20 @@ pub fn stage13_10h_self_test() -> bool {
         prefetchable: false,
     };
 
-    let Ok(function) = classify_supported(ax200) else { return false };
+    let Ok(function) = classify_supported(ax200) else {
+        return false;
+    };
 
-    let Ok(page) = DmaPage::allocate_zeroed() else { return false };
+    let Ok(page) = DmaPage::allocate_zeroed() else {
+        return false;
+    };
     let Ok(region) = MmioRegion::new(page.physical_address(), DMA_PAGE_SIZE) else {
         return false;
     };
 
     // SAFETY: the synthetic CSR window aliases one live, exclusively-owned
     // DmaPage for the duration of this self-test.
-    let mmio = unsafe {
-        VolatileMmio32::from_mapped(region, page.virtual_address())
-    };
+    let mmio = unsafe { VolatileMmio32::from_mapped(region, page.virtual_address()) };
     let Ok(mut csr) = IntelCsrBank::from_supported(function, mmio) else {
         return false;
     };
@@ -714,7 +731,9 @@ pub fn stage13_10g_self_test() -> bool {
     };
 
     // The supported path must classify the reviewed identity.
-    let Ok(classified) = classify_supported(supported) else { return false };
+    let Ok(classified) = classify_supported(supported) else {
+        return false;
+    };
     if classified.family != WifiDriverFamily::IntelIwlwifi
         || classified.pci.vendor_id != 0x8086
         || classified.pci.device_id != 0x2723
@@ -727,7 +746,9 @@ pub fn stage13_10g_self_test() -> bool {
     let mut unknown = supported;
     unknown.vendor_id = 0x1234;
     unknown.device_id = 0x5678;
-    let Ok(candidate) = descriptor_from_device(unknown) else { return false };
+    let Ok(candidate) = descriptor_from_device(unknown) else {
+        return false;
+    };
     if candidate.vendor_id != 0x1234
         || candidate.device_id != 0x5678
         || classify_supported(unknown) != Err(SupportedBindError::UnsupportedDevice)
@@ -742,32 +763,50 @@ pub fn stage13_10g_self_test() -> bool {
 }
 pub fn stage13_10e_self_test() -> bool {
     let mut ax200 = pci::Device {
-        segment: 0, bus: 2, device: 3, function: 0,
-        vendor_id: 0x8086, device_id: 0x2723, revision: 1,
-        class: 0x02, subclass: 0x80, ..pci::Device::default()
+        segment: 0,
+        bus: 2,
+        device: 3,
+        function: 0,
+        vendor_id: 0x8086,
+        device_id: 0x2723,
+        revision: 1,
+        class: 0x02,
+        subclass: 0x80,
+        ..pci::Device::default()
     };
     ax200.bars[0] = pci::Bar {
-        valid: true, kind: pci::BarKind::Memory64,
-        address: 0xfebc_0000, prefetchable: false,
+        valid: true,
+        kind: pci::BarKind::Memory64,
+        address: 0xfebc_0000,
+        prefetchable: false,
     };
     ax200.capabilities.msi = true;
     ax200.capabilities.pcie = true;
 
-    let Ok(bound) = classify_supported(ax200) else { return false };
+    let Ok(bound) = classify_supported(ax200) else {
+        return false;
+    };
     if bound.family != WifiDriverFamily::IntelIwlwifi
         || bound.name != "Intel Wi-Fi 6 AX200"
         || bound.pci.vendor_id != 0x8086
         || bound.pci.device_id != 0x2723
-        || bound.pci.mmio_base != 0xfebc_0000 { return false; }
+        || bound.pci.mmio_base != 0xfebc_0000
+    {
+        return false;
+    }
 
     let mut unknown = ax200;
     unknown.vendor_id = 0x1234;
     unknown.device_id = 0x5678;
-    if classify_supported(unknown) != Err(SupportedBindError::UnsupportedDevice) { return false; }
+    if classify_supported(unknown) != Err(SupportedBindError::UnsupportedDevice) {
+        return false;
+    }
 
     let mut wired = ax200;
     wired.subclass = 0x00;
-    if classify_supported(wired) != Err(SupportedBindError::NotWireless) { return false; }
+    if classify_supported(wired) != Err(SupportedBindError::NotWireless) {
+        return false;
+    }
 
     let mut no_bar = ax200;
     no_bar.bars = [pci::Bar::default(); 6];
@@ -796,8 +835,12 @@ impl MmioRegion {
         Ok(Self { base, span })
     }
 
-    pub const fn base(&self) -> u64 { self.base }
-    pub const fn span(&self) -> usize { self.span }
+    pub const fn base(&self) -> u64 {
+        self.base
+    }
+    pub const fn span(&self) -> usize {
+        self.span
+    }
 
     pub fn register_address(&self, offset: usize) -> Result<u64, MmioError> {
         if offset & 3 != 0 || offset.checked_add(4).is_none_or(|end| end > self.span) {
@@ -846,8 +889,12 @@ impl DmaRing {
         }
     }
 
-    pub const fn len(&self) -> usize { self.count }
-    pub const fn is_empty(&self) -> bool { self.count == 0 }
+    pub const fn len(&self) -> usize {
+        self.count
+    }
+    pub const fn is_empty(&self) -> bool {
+        self.count == 0
+    }
 
     pub fn push(&mut self, descriptor: DmaDescriptor) -> Result<(), DmaError> {
         if descriptor.length == 0 {
@@ -978,10 +1025,18 @@ impl DmaPage {
         })
     }
 
-    pub const fn physical_address(&self) -> u64 { self.physical_address }
-    pub const fn virtual_address(&self) -> u64 { self.virtual_address }
-    pub const fn len(&self) -> usize { DMA_PAGE_SIZE }
-    pub const fn is_empty(&self) -> bool { false }
+    pub const fn physical_address(&self) -> u64 {
+        self.physical_address
+    }
+    pub const fn virtual_address(&self) -> u64 {
+        self.virtual_address
+    }
+    pub const fn len(&self) -> usize {
+        DMA_PAGE_SIZE
+    }
+    pub const fn is_empty(&self) -> bool {
+        false
+    }
 
     pub fn write_u32(&mut self, offset: usize, value: u32) -> Result<(), DmaMemoryError> {
         if offset & 3 != 0 || offset.checked_add(4).is_none_or(|end| end > DMA_PAGE_SIZE) {
@@ -1001,9 +1056,7 @@ impl DmaPage {
         }
         // SAFETY: Bounds/alignment were checked and the direct mapping remains
         // live while self owns the physical frame.
-        Ok(unsafe {
-            ((self.virtual_address + offset as u64) as *const u32).read_volatile()
-        })
+        Ok(unsafe { ((self.virtual_address + offset as u64) as *const u32).read_volatile() })
     }
 }
 
@@ -1042,7 +1095,10 @@ impl VolatileMmio32 {
     /// kernel mapping of the device register window for the lifetime of this
     /// value. No ordinary RAM alias may be concurrently treated as Rust data.
     pub const unsafe fn from_mapped(region: MmioRegion, virtual_base: u64) -> Self {
-        Self { region, virtual_base }
+        Self {
+            region,
+            virtual_base,
+        }
     }
 
     pub fn read(&self, offset: usize) -> Result<u32, MmioError> {
@@ -1146,10 +1202,18 @@ impl DeviceQueue {
         }
     }
 
-    pub const fn len(&self) -> usize { self.count }
-    pub const fn is_empty(&self) -> bool { self.count == 0 }
-    pub const fn device_owned(&self) -> usize { self.device_owned }
-    pub const fn completed(&self) -> usize { self.completed }
+    pub const fn len(&self) -> usize {
+        self.count
+    }
+    pub const fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+    pub const fn device_owned(&self) -> usize {
+        self.device_owned
+    }
+    pub const fn completed(&self) -> usize {
+        self.completed
+    }
 
     pub fn submit(&mut self, descriptor: DmaDescriptor) -> Result<usize, QueueError> {
         if descriptor.length == 0 {
@@ -1271,6 +1335,31 @@ impl OwnedDmaBuffer {
     pub fn read_u32(&self, offset: usize) -> Result<u32, DmaMemoryError> {
         self.page.read_u32(offset)
     }
+    pub fn write_bytes(&mut self, offset: usize, bytes: &[u8]) -> Result<(), DmaMemoryError> {
+        let end = offset
+            .checked_add(bytes.len())
+            .ok_or(DmaMemoryError::AddressOverflow)?;
+        if end > usize::from(self.length) {
+            return Err(DmaMemoryError::AddressOverflow);
+        }
+        // SAFETY: the checked range is inside this exclusively owned DMA page.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                (self.page.virtual_address() as *mut u8).add(offset),
+                bytes.len(),
+            );
+        }
+        Ok(())
+    }
+
+    pub fn read_byte(&self, offset: usize) -> Result<u8, DmaMemoryError> {
+        if offset >= usize::from(self.length) {
+            return Err(DmaMemoryError::AddressOverflow);
+        }
+        // SAFETY: offset is inside the live DMA allocation owned by self.
+        Ok(unsafe { ((self.page.virtual_address() as *const u8).add(offset)).read_volatile() })
+    }
 }
 
 struct BufferSlot {
@@ -1311,10 +1400,18 @@ impl OwnedBufferQueue {
         }
     }
 
-    pub const fn len(&self) -> usize { self.count }
-    pub const fn is_empty(&self) -> bool { self.count == 0 }
-    pub const fn device_owned(&self) -> usize { self.device_owned }
-    pub const fn completed(&self) -> usize { self.completed }
+    pub const fn len(&self) -> usize {
+        self.count
+    }
+    pub const fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+    pub const fn device_owned(&self) -> usize {
+        self.device_owned
+    }
+    pub const fn completed(&self) -> usize {
+        self.completed
+    }
 
     pub fn submit(&mut self, buffer: OwnedDmaBuffer) -> Result<(usize, DmaDescriptor), QueueError> {
         if buffer.length() == 0 {
@@ -1396,7 +1493,9 @@ pub fn stage13_10f_self_test() -> bool {
 
     {
         let mut queue = OwnedBufferQueue::new();
-        let Ok(mut first) = OwnedDmaBuffer::allocate(1536, 0x31) else { return false };
+        let Ok(mut first) = OwnedDmaBuffer::allocate(1536, 0x31) else {
+            return false;
+        };
         let first_phys = first.physical_address();
 
         if first_phys & (DMA_PAGE_SIZE as u64 - 1) != 0
@@ -1407,7 +1506,9 @@ pub fn stage13_10f_self_test() -> bool {
             return false;
         }
 
-        let Ok((slot, descriptor)) = queue.submit(first) else { return false };
+        let Ok((slot, descriptor)) = queue.submit(first) else {
+            return false;
+        };
         if descriptor.physical_address != first_phys
             || descriptor.length != 1536
             || descriptor.flags != 0x31
@@ -1424,14 +1525,13 @@ pub fn stage13_10f_self_test() -> bool {
             return false;
         }
 
-        if queue.complete(slot).is_err()
-            || queue.device_owned() != 0
-            || queue.completed() != 1
-        {
+        if queue.complete(slot).is_err() || queue.device_owned() != 0 || queue.completed() != 1 {
             return false;
         }
 
-        let Ok(reclaimed) = queue.reclaim() else { return false };
+        let Ok(reclaimed) = queue.reclaim() else {
+            return false;
+        };
         if reclaimed.physical_address() != first_phys
             || reclaimed.read_u32(0) != Ok(0x5748_4642)
             || !queue.is_empty()
@@ -1449,8 +1549,12 @@ pub fn stage13_10f_self_test() -> bool {
         }
 
         // Also prove quiesce safely drops completed-but-not-reclaimed buffers.
-        let Ok(second) = OwnedDmaBuffer::allocate(512, 0x44) else { return false };
-        let Ok((second_slot, _)) = queue.submit(second) else { return false };
+        let Ok(second) = OwnedDmaBuffer::allocate(512, 0x44) else {
+            return false;
+        };
+        let Ok((second_slot, _)) = queue.submit(second) else {
+            return false;
+        };
         if queue.complete(second_slot).is_err()
             || memory::stats().allocated_frames != before + 1
             || queue.quiesce().is_err()
@@ -1475,8 +1579,12 @@ pub fn stage13_10d_self_test() -> bool {
         flags: 0x22,
     };
 
-    let Ok(first_slot) = queue.submit(first) else { return false };
-    let Ok(second_slot) = queue.submit(second) else { return false };
+    let Ok(first_slot) = queue.submit(first) else {
+        return false;
+    };
+    let Ok(second_slot) = queue.submit(second) else {
+        return false;
+    };
     if first_slot != 0
         || second_slot != 1
         || queue.len() != 2
@@ -1510,7 +1618,9 @@ pub fn stage13_10d_self_test() -> bool {
             length: 512,
             flags: index as u16,
         };
-        let Ok(slot) = queue.submit(descriptor) else { return false };
+        let Ok(slot) = queue.submit(descriptor) else {
+            return false;
+        };
         if queue.complete(slot).is_err() || queue.reclaim() != Ok(descriptor) {
             return false;
         }
@@ -1524,7 +1634,9 @@ pub fn stage13_10d_self_test() -> bool {
 pub fn stage13_10c_self_test() -> bool {
     let before = memory::stats().allocated_frames;
     {
-        let Ok(mut page) = DmaPage::allocate_zeroed() else { return false };
+        let Ok(mut page) = DmaPage::allocate_zeroed() else {
+            return false;
+        };
         if page.physical_address() & (DMA_PAGE_SIZE as u64 - 1) != 0
             || page.virtual_address() == 0
             || page.len() != DMA_PAGE_SIZE
@@ -1551,9 +1663,7 @@ pub fn stage13_10c_self_test() -> bool {
         };
         // SAFETY: For this self-test the DmaPage is live, writable and
         // exclusively owned for the complete synthetic register window.
-        let mut registers = unsafe {
-            VolatileMmio32::from_mapped(region, page.virtual_address())
-        };
+        let mut registers = unsafe { VolatileMmio32::from_mapped(region, page.virtual_address()) };
         if registers.write(4, 0xa5a5_5a5a).is_err()
             || registers.read(4) != Ok(0xa5a5_5a5a)
             || registers.read(2).is_ok()
@@ -1565,7 +1675,9 @@ pub fn stage13_10c_self_test() -> bool {
     memory::stats().allocated_frames == before
 }
 pub fn stage13_10b_self_test() -> bool {
-    let Ok(mmio) = MmioRegion::new(0xfebc_0000, 0x1000) else { return false };
+    let Ok(mmio) = MmioRegion::new(0xfebc_0000, 0x1000) else {
+        return false;
+    };
     if mmio.register_address(0) != Ok(0xfebc_0000)
         || mmio.register_address(0x0ffc) != Ok(0xfebc_0ffc)
         || mmio.register_address(2).is_ok()
@@ -1649,7 +1761,9 @@ pub fn self_test() -> bool {
     };
     good.capabilities.msi = true;
     good.capabilities.pcie = true;
-    let Ok(desc) = descriptor_from_device(good) else { return false };
+    let Ok(desc) = descriptor_from_device(good) else {
+        return false;
+    };
     if desc.vendor_id != 0x8086
         || desc.device_id != 0x2723
         || desc.mmio_bar != 0
