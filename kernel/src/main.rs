@@ -477,6 +477,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             qemu_test_exit_failure();
         }
         serial::write_line(format_args!("[S13.10I] Intel reset/readiness state machine: PASSED"));
+        if !wifi_hw::stage13_10j_self_test() {
+            serial::write_line(format_args!("[S13.10J] Intel MAC access/device initialization: FAILED"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!("[S13.10J] Intel MAC access/device initialization: PASSED"));
         if !wifi_backend::self_test() {
             serial::write_line(format_args!(
                 "[S13.9K] Wi-Fi transport/backend contract: FAILED"

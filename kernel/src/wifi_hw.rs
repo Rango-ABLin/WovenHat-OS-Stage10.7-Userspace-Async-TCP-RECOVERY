@@ -336,6 +336,223 @@ fn stage13_10i_supported_function() -> Option<SupportedWifiFunction> {
     classify_supported(ax200).ok()
 }
 
+pub const INTEL_CSR_GP_CNTRL_INIT_DONE: u32 = 0x0000_0004;
+pub const INTEL_CSR_GP_CNTRL_MAC_ACCESS_REQ: u32 = 0x0000_0008;
+pub const INTEL_CSR_GP_CNTRL_GOING_TO_SLEEP: u32 = 0x0000_0010;
+pub const INTEL_MAC_ACCESS_POLL_LIMIT: usize = 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntelMacAccessState {
+    ResetReady,
+    InitDone,
+    AccessRequested,
+    Granted,
+    Released,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntelMacAccessError {
+    InvalidState,
+    Timeout,
+    Csr(IntelCsrError),
+}
+
+/// Stage 13.10J device-initialization and MAC-access lifecycle.
+///
+/// This remains a control-plane boundary. Firmware loading, peripheral/PRPH
+/// register access, interrupt programming, and TX/RX queue activation are
+/// intentionally deferred.
+pub struct IntelMacAccessController {
+    csr: IntelCsrBank,
+    state: IntelMacAccessState,
+}
+
+impl IntelMacAccessController {
+    pub fn new(csr: IntelCsrBank) -> Self {
+        Self {
+            csr,
+            state: IntelMacAccessState::ResetReady,
+        }
+    }
+
+    pub const fn state(&self) -> IntelMacAccessState {
+        self.state
+    }
+
+    pub fn mark_init_done(&mut self) -> Result<(), IntelMacAccessError> {
+        if self.state != IntelMacAccessState::ResetReady {
+            return Err(IntelMacAccessError::InvalidState);
+        }
+        let value = self
+            .csr
+            .read(IntelCsr::GpControl)
+            .map_err(IntelMacAccessError::Csr)?;
+        self.csr
+            .write(
+                IntelCsr::GpControl,
+                value | INTEL_CSR_GP_CNTRL_INIT_DONE,
+            )
+            .map_err(IntelMacAccessError::Csr)?;
+        self.state = IntelMacAccessState::InitDone;
+        Ok(())
+    }
+
+    pub fn request_access(&mut self) -> Result<(), IntelMacAccessError> {
+        if self.state != IntelMacAccessState::InitDone {
+            return Err(IntelMacAccessError::InvalidState);
+        }
+        let value = self
+            .csr
+            .read(IntelCsr::GpControl)
+            .map_err(IntelMacAccessError::Csr)?;
+        self.csr
+            .write(
+                IntelCsr::GpControl,
+                value | INTEL_CSR_GP_CNTRL_MAC_ACCESS_REQ,
+            )
+            .map_err(IntelMacAccessError::Csr)?;
+        self.state = IntelMacAccessState::AccessRequested;
+        Ok(())
+    }
+
+    pub fn poll_access_bounded(&mut self, limit: usize) -> Result<(), IntelMacAccessError> {
+        if self.state != IntelMacAccessState::AccessRequested {
+            return Err(IntelMacAccessError::InvalidState);
+        }
+        if limit == 0 {
+            self.state = IntelMacAccessState::Failed;
+            return Err(IntelMacAccessError::Timeout);
+        }
+
+        for _ in 0..limit {
+            let value = self
+                .csr
+                .read(IntelCsr::GpControl)
+                .map_err(IntelMacAccessError::Csr)?;
+            let ready = value & INTEL_CSR_GP_CNTRL_MAC_CLOCK_READY != 0;
+            let sleeping = value & INTEL_CSR_GP_CNTRL_GOING_TO_SLEEP != 0;
+            if ready && !sleeping {
+                self.state = IntelMacAccessState::Granted;
+                return Ok(());
+            }
+        }
+
+        self.state = IntelMacAccessState::Failed;
+        Err(IntelMacAccessError::Timeout)
+    }
+
+    pub fn release_access(&mut self) -> Result<(), IntelMacAccessError> {
+        if self.state != IntelMacAccessState::Granted {
+            return Err(IntelMacAccessError::InvalidState);
+        }
+        let value = self
+            .csr
+            .read(IntelCsr::GpControl)
+            .map_err(IntelMacAccessError::Csr)?;
+        self.csr
+            .write(
+                IntelCsr::GpControl,
+                value & !INTEL_CSR_GP_CNTRL_MAC_ACCESS_REQ,
+            )
+            .map_err(IntelMacAccessError::Csr)?;
+        self.state = IntelMacAccessState::Released;
+        Ok(())
+    }
+}
+
+pub fn stage13_10j_self_test() -> bool {
+    let Some(function) = stage13_10i_supported_function() else {
+        return false;
+    };
+    let Ok(mut page) = DmaPage::allocate_zeroed() else {
+        return false;
+    };
+    let Ok(region) = MmioRegion::new(page.physical_address(), DMA_PAGE_SIZE) else {
+        return false;
+    };
+
+    // Synthetic hardware advertises MAC clock readiness and not-going-to-sleep.
+    if page
+        .write_u32(
+            IntelCsr::GpControl.offset(),
+            INTEL_CSR_GP_CNTRL_MAC_CLOCK_READY,
+        )
+        .is_err()
+    {
+        return false;
+    }
+
+    // SAFETY: synthetic CSR storage aliases one exclusively-owned DmaPage.
+    let mmio = unsafe { VolatileMmio32::from_mapped(region, page.virtual_address()) };
+    let Ok(csr) = IntelCsrBank::from_supported(function, mmio) else {
+        return false;
+    };
+    let mut mac = IntelMacAccessController::new(csr);
+
+    if mac.request_access() != Err(IntelMacAccessError::InvalidState)
+        || mac.mark_init_done().is_err()
+        || mac.state() != IntelMacAccessState::InitDone
+        || mac.request_access().is_err()
+        || mac.state() != IntelMacAccessState::AccessRequested
+        || mac.poll_access_bounded(INTEL_MAC_ACCESS_POLL_LIMIT).is_err()
+        || mac.state() != IntelMacAccessState::Granted
+    {
+        return false;
+    }
+
+    let Ok(granted_value) = page.read_u32(IntelCsr::GpControl.offset()) else {
+        return false;
+    };
+    if granted_value & INTEL_CSR_GP_CNTRL_INIT_DONE == 0
+        || granted_value & INTEL_CSR_GP_CNTRL_MAC_ACCESS_REQ == 0
+    {
+        return false;
+    }
+
+    if mac.release_access().is_err() || mac.state() != IntelMacAccessState::Released {
+        return false;
+    }
+    let Ok(released_value) = page.read_u32(IntelCsr::GpControl.offset()) else {
+        return false;
+    };
+    if released_value & INTEL_CSR_GP_CNTRL_MAC_ACCESS_REQ != 0 {
+        return false;
+    }
+
+    // Timeout/fail-closed case: access request exists, but hardware is marked
+    // going-to-sleep and never presents an acceptable grant condition.
+    let Some(function) = stage13_10i_supported_function() else {
+        return false;
+    };
+    let Ok(mut timeout_page) = DmaPage::allocate_zeroed() else {
+        return false;
+    };
+    let Ok(timeout_region) = MmioRegion::new(timeout_page.physical_address(), DMA_PAGE_SIZE) else {
+        return false;
+    };
+    if timeout_page
+        .write_u32(
+            IntelCsr::GpControl.offset(),
+            INTEL_CSR_GP_CNTRL_GOING_TO_SLEEP,
+        )
+        .is_err()
+    {
+        return false;
+    }
+    // SAFETY: synthetic CSR storage aliases one exclusively-owned DmaPage.
+    let timeout_mmio =
+        unsafe { VolatileMmio32::from_mapped(timeout_region, timeout_page.virtual_address()) };
+    let Ok(timeout_csr) = IntelCsrBank::from_supported(function, timeout_mmio) else {
+        return false;
+    };
+    let mut timeout_mac = IntelMacAccessController::new(timeout_csr);
+
+    timeout_mac.mark_init_done().is_ok()
+        && timeout_mac.request_access().is_ok()
+        && timeout_mac.poll_access_bounded(4) == Err(IntelMacAccessError::Timeout)
+        && timeout_mac.state() == IntelMacAccessState::Failed
+}
 pub fn stage13_10i_self_test() -> bool {
     let Some(function) = stage13_10i_supported_function() else {
         return false;
@@ -383,7 +600,10 @@ pub fn stage13_10i_self_test() -> bool {
         return false;
     }
 
-    if page.read_u32(IntelCsr::Reset.offset()).is_err_and(|_| true) {
+    let Ok(reset_value) = page.read_u32(IntelCsr::Reset.offset()) else {
+        return false;
+    };
+    if reset_value & INTEL_CSR_RESET_SW_RESET == 0 {
         return false;
     }
 
