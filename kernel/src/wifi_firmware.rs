@@ -1549,11 +1549,11 @@ impl Intel22000DmaContextInfo {
 }
 
 // === Stage 13.10R: Intel 22000/AX200 context-info hardware ABI ===
-pub const INTEL_CONTEXT_INFO_WIRE_SIZE: usize = 1776;
-pub const INTEL_CONTEXT_INFO_WIRE_DWORDS: u16 = 444;
-pub const INTEL_CONTEXT_INFO_DRAM_UMAC_OFFSET: usize = 176;
-pub const INTEL_CONTEXT_INFO_DRAM_LMAC_OFFSET: usize = 688;
-pub const INTEL_CONTEXT_INFO_DRAM_PAGING_OFFSET: usize = 1200;
+pub const INTEL_CONTEXT_INFO_WIRE_SIZE: usize = 1792;
+pub const INTEL_CONTEXT_INFO_WIRE_DWORDS: u16 = 448;
+pub const INTEL_CONTEXT_INFO_DRAM_UMAC_OFFSET: usize = 192;
+pub const INTEL_CONTEXT_INFO_DRAM_LMAC_OFFSET: usize = 704;
+pub const INTEL_CONTEXT_INFO_DRAM_PAGING_OFFSET: usize = 1216;
 pub const INTEL_CONTEXT_INFO_DEFAULT_CONTROL_FLAGS: u32 = 0x0100 | (8 << 4) | (4 << 9);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1576,13 +1576,13 @@ impl Intel22000HardwareContextInfo {
             .map_err(|_| IntelContextInfoAbiError::Dma)
     }
 }
-fn ci16(x: &mut [u8; 1776], o: usize, v: u16) {
+fn ci16(x: &mut [u8; INTEL_CONTEXT_INFO_WIRE_SIZE], o: usize, v: u16) {
     x[o..o + 2].copy_from_slice(&v.to_le_bytes());
 }
-fn ci32(x: &mut [u8; 1776], o: usize, v: u32) {
+fn ci32(x: &mut [u8; INTEL_CONTEXT_INFO_WIRE_SIZE], o: usize, v: u32) {
     x[o..o + 4].copy_from_slice(&v.to_le_bytes());
 }
-fn ci64(x: &mut [u8; 1776], o: usize, v: u64) {
+fn ci64(x: &mut [u8; INTEL_CONTEXT_INFO_WIRE_SIZE], o: usize, v: u64) {
     x[o..o + 8].copy_from_slice(&v.to_le_bytes());
 }
 impl Intel22000DmaContextInfo {
@@ -1593,9 +1593,9 @@ impl Intel22000DmaContextInfo {
         if !self.ready_for_publication() {
             return Err(IntelContextInfoAbiError::NotReady);
         }
-        let mut x = [0u8; 1776];
+        let mut x = [0u8; INTEL_CONTEXT_INFO_WIRE_SIZE];
         ci16(&mut x, 0, mac_id);
-        ci16(&mut x, 4, 444);
+        ci16(&mut x, 4, INTEL_CONTEXT_INFO_WIRE_DWORDS);
         ci32(&mut x, 8, INTEL_CONTEXT_INFO_DEFAULT_CONTROL_FLAGS);
         ci64(&mut x, 24, self.manifest.free_rbd_address);
         ci64(&mut x, 32, self.manifest.used_rbd_address);
@@ -1605,17 +1605,17 @@ impl Intel22000DmaContextInfo {
         for (kind, base, count) in [
             (
                 IntelContextInfoImageKind::Umac,
-                176,
+                INTEL_CONTEXT_INFO_DRAM_UMAC_OFFSET,
                 self.manifest.umac_count(),
             ),
             (
                 IntelContextInfoImageKind::Lmac,
-                688,
+                INTEL_CONTEXT_INFO_DRAM_LMAC_OFFSET,
                 self.manifest.lmac_count(),
             ),
             (
                 IntelContextInfoImageKind::Paging,
-                1200,
+                INTEL_CONTEXT_INFO_DRAM_PAGING_OFFSET,
                 self.manifest.paging_count(),
             ),
         ] {
@@ -1630,8 +1630,9 @@ impl Intel22000DmaContextInfo {
                 ci64(&mut x, base + i * 8, e.physical_address);
             }
         }
-        let mut dma = crate::wifi_hw::OwnedDmaBuffer::allocate(1776, 0)
-            .map_err(|_| IntelContextInfoAbiError::Dma)?;
+        let mut dma =
+            crate::wifi_hw::OwnedDmaBuffer::allocate(INTEL_CONTEXT_INFO_WIRE_SIZE as u16, 0)
+                .map_err(|_| IntelContextInfoAbiError::Dma)?;
         dma.write_bytes(0, &x)
             .map_err(|_| IntelContextInfoAbiError::Dma)?;
         Ok(Intel22000HardwareContextInfo { dma })
@@ -1661,6 +1662,164 @@ impl IntelContextInfoPublicationIo for Stage13_10rMockIo {
         Ok(())
     }
 }
+// Stage 13.10S
+pub const INTEL_UREG_CPU_INIT_RUN: u32 = 0x00a0_5c44;
+pub const INTEL_CPU_INIT_RUN_VALUE: u32 = 1;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntelFirmwareStartState {
+    Reset,
+    ContextPublished,
+    CpuRunIssued,
+    AwaitingAlive,
+    Failed,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntelFirmwareStartError {
+    InvalidState,
+    Publication(IntelContextInfoAbiError),
+    Prph,
+}
+pub trait IntelFirmwareStartupIo: IntelContextInfoPublicationIo {
+    fn write_prph(&mut self, r: u32, v: u32) -> Result<(), IntelFirmwareStartError>;
+}
+pub struct Intel22000FirmwareStartup<I> {
+    io: I,
+    state: IntelFirmwareStartState,
+}
+impl<I: IntelFirmwareStartupIo> Intel22000FirmwareStartup<I> {
+    pub fn new(io: I) -> Self {
+        Self {
+            io,
+            state: IntelFirmwareStartState::Reset,
+        }
+    }
+    pub const fn state(&self) -> IntelFirmwareStartState {
+        self.state
+    }
+    pub fn publish_context(
+        &mut self,
+        c: &Intel22000HardwareContextInfo,
+    ) -> Result<(), IntelFirmwareStartError> {
+        if self.state != IntelFirmwareStartState::Reset {
+            return Err(IntelFirmwareStartError::InvalidState);
+        }
+        publish_hardware_context(c, &mut self.io).map_err(IntelFirmwareStartError::Publication)?;
+        self.state = IntelFirmwareStartState::ContextPublished;
+        Ok(())
+    }
+    pub fn issue_cpu_init_run(&mut self) -> Result<(), IntelFirmwareStartError> {
+        if self.state != IntelFirmwareStartState::ContextPublished {
+            return Err(IntelFirmwareStartError::InvalidState);
+        }
+        if self
+            .io
+            .write_prph(INTEL_UREG_CPU_INIT_RUN, INTEL_CPU_INIT_RUN_VALUE)
+            .is_err()
+        {
+            self.state = IntelFirmwareStartState::Failed;
+            return Err(IntelFirmwareStartError::Prph);
+        }
+        self.state = IntelFirmwareStartState::CpuRunIssued;
+        Ok(())
+    }
+    pub fn begin_alive_wait(&mut self) -> Result<(), IntelFirmwareStartError> {
+        if self.state != IntelFirmwareStartState::CpuRunIssued {
+            return Err(IntelFirmwareStartError::InvalidState);
+        }
+        self.state = IntelFirmwareStartState::AwaitingAlive;
+        Ok(())
+    }
+    pub fn into_inner(self) -> I {
+        self.io
+    }
+}
+struct Stage13_10sMockIo {
+    context_offset: u32,
+    context_address: u64,
+    context_writes: usize,
+    prph_register: u32,
+    prph_value: u32,
+    prph_writes: usize,
+    fail_prph: bool,
+}
+impl IntelContextInfoPublicationIo for Stage13_10sMockIo {
+    fn write_context_info_base(&mut self, o: u32, a: u64) -> Result<(), IntelContextInfoAbiError> {
+        self.context_offset = o;
+        self.context_address = a;
+        self.context_writes += 1;
+        Ok(())
+    }
+}
+impl IntelFirmwareStartupIo for Stage13_10sMockIo {
+    fn write_prph(&mut self, r: u32, v: u32) -> Result<(), IntelFirmwareStartError> {
+        if self.fail_prph {
+            return Err(IntelFirmwareStartError::Prph);
+        }
+        self.prph_register = r;
+        self.prph_value = v;
+        self.prph_writes += 1;
+        Ok(())
+    }
+}
+pub fn stage13_10s_self_test() -> bool {
+    let mut owner = Intel22000DmaContextInfo::new();
+    if owner.set_rx_queue(0x100000, 0x110000, 0x120000).is_err()
+        || owner.set_command_queue(0x130000, 32).is_err()
+        || owner
+            .stage_firmware_chunk(IntelContextInfoImageKind::Lmac, &[0x31; 512])
+            .is_err()
+        || owner
+            .stage_firmware_chunk(IntelContextInfoImageKind::Umac, &[0x42; 256])
+            .is_err()
+    {
+        return false;
+    }
+    let Ok(context) = owner.build_hardware_context(0x2200) else {
+        return false;
+    };
+    let io = Stage13_10sMockIo {
+        context_offset: 0,
+        context_address: 0,
+        context_writes: 0,
+        prph_register: 0,
+        prph_value: 0,
+        prph_writes: 0,
+        fail_prph: false,
+    };
+    let mut s = Intel22000FirmwareStartup::new(io);
+    if s.issue_cpu_init_run() != Err(IntelFirmwareStartError::InvalidState)
+        || s.publish_context(&context).is_err()
+        || s.issue_cpu_init_run().is_err()
+        || s.begin_alive_wait().is_err()
+        || s.state() != IntelFirmwareStartState::AwaitingAlive
+    {
+        return false;
+    }
+    let io = s.into_inner();
+    if io.context_writes != 1
+        || io.context_offset != INTEL_CSR_CONTEXT_INFO_BASE
+        || io.context_address != context.physical_address()
+        || io.prph_writes != 1
+        || io.prph_register != INTEL_UREG_CPU_INIT_RUN
+        || io.prph_value != 1
+    {
+        return false;
+    }
+    let fio = Stage13_10sMockIo {
+        context_offset: 0,
+        context_address: 0,
+        context_writes: 0,
+        prph_register: 0,
+        prph_value: 0,
+        prph_writes: 0,
+        fail_prph: true,
+    };
+    let mut f = Intel22000FirmwareStartup::new(fio);
+    f.publish_context(&context).is_ok()
+        && f.issue_cpu_init_run() == Err(IntelFirmwareStartError::Prph)
+        && f.state() == IntelFirmwareStartState::Failed
+}
+
 pub fn stage13_10r_self_test() -> bool {
     let mut c = Intel22000DmaContextInfo::new();
     if c.set_rx_queue(0x100000, 0x110000, 0x120000).is_err()
@@ -1684,7 +1843,7 @@ pub fn stage13_10r_self_test() -> bool {
         Some(u64::from_le_bytes(b))
     };
     if r16(0) != Some(0x1234)
-        || r16(4) != Some(444)
+        || r16(4) != Some(INTEL_CONTEXT_INFO_WIRE_DWORDS)
         || r64(24) != Some(0x100000)
         || r64(48) != Some(0x130000)
     {

@@ -599,6 +599,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         serial::write_line(format_args!(
             "[S13.10R] AX200 context-info ABI + publication: PASSED"
         ));
+        if !wifi_firmware::stage13_10s_self_test() {
+            serial::write_line(format_args!(
+                "[S13.10S] AX200 CPU_INIT_RUN startup sequencing: FAILED"
+            ));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!(
+            "[S13.10S] AX200 CPU_INIT_RUN startup sequencing: PASSED"
+        ));
         if !wifi_backend::self_test() {
             serial::write_line(format_args!(
                 "[S13.9K] Wi-Fi transport/backend contract: FAILED"
