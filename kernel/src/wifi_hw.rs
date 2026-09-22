@@ -78,23 +78,18 @@ pub fn descriptor_from_device(device: pci::Device) -> Result<WifiPciFunction, Hw
     })
 }
 
-/// Prepare a discovered PCI Wi-Fi function for a later chipset driver.
-/// PCI memory decoding and DMA bus mastering are enabled only after the device
-/// has passed the class and MMIO validation boundary above.
-pub fn bind_pci_function(device: pci::Device) -> Result<WifiPciFunction, HwBindError> {
-    let descriptor = descriptor_from_device(device)?;
-    if !pci::enable_memory_bus_master(descriptor.address) {
-        return Err(HwBindError::ConfigWriteFailed);
-    }
-    Ok(descriptor)
-}
-
+/// Discovery-only PCI Wi-Fi candidate enumeration.
+///
+/// This deliberately does not enable PCI memory decoding or bus mastering.
+/// Generic class/subclass discovery is not sufficient authority to activate a
+/// DMA-capable device. Only the reviewed supported-chipset path below may
+/// cross that boundary.
 pub fn discover_first() -> Option<WifiPciFunction> {
     for index in 0..64 {
         let Some(device) = pci::device(index) else { continue };
         if is_wireless_candidate(&device) {
-            if let Ok(bound) = bind_pci_function(device) {
-                return Some(bound);
+            if let Ok(candidate) = descriptor_from_device(device) {
+                return Some(candidate);
             }
         }
     }
@@ -168,6 +163,53 @@ pub fn discover_first_supported() -> Option<SupportedWifiFunction> {
     None
 }
 
+pub fn stage13_10g_self_test() -> bool {
+    let mut supported = pci::Device {
+        segment: 0,
+        bus: 2,
+        device: 3,
+        function: 0,
+        vendor_id: 0x8086,
+        device_id: 0x2723,
+        revision: 1,
+        class: 0x02,
+        subclass: 0x80,
+        ..pci::Device::default()
+    };
+    supported.bars[0] = pci::Bar {
+        valid: true,
+        kind: pci::BarKind::Memory64,
+        address: 0xfebc_0000,
+        prefetchable: false,
+    };
+
+    // The supported path must classify the reviewed identity.
+    let Ok(classified) = classify_supported(supported) else { return false };
+    if classified.family != WifiDriverFamily::IntelIwlwifi
+        || classified.pci.vendor_id != 0x8086
+        || classified.pci.device_id != 0x2723
+    {
+        return false;
+    }
+
+    // A generic wireless-class function can be described for diagnostics, but
+    // it must never be accepted by the supported activation boundary.
+    let mut unknown = supported;
+    unknown.vendor_id = 0x1234;
+    unknown.device_id = 0x5678;
+    let Ok(candidate) = descriptor_from_device(unknown) else { return false };
+    if candidate.vendor_id != 0x1234
+        || candidate.device_id != 0x5678
+        || classify_supported(unknown) != Err(SupportedBindError::UnsupportedDevice)
+    {
+        return false;
+    }
+
+    // Wrong PCI class is rejected even if the vendor/device pair is known.
+    let mut wrong_class = supported;
+    wrong_class.subclass = 0x00;
+    classify_supported(wrong_class) == Err(SupportedBindError::NotWireless)
+}
 pub fn stage13_10e_self_test() -> bool {
     let mut ax200 = pci::Device {
         segment: 0, bus: 2, device: 3, function: 0,

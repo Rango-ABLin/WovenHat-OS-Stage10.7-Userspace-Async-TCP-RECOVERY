@@ -430,7 +430,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         }
         let hw_candidate = wifi_hw::discover_first();
         serial::write_line(format_args!(
-            "[S13.10A] physical PCI Wi-Fi backend boundary: PASSED bound_candidate={}",
+            "[S13.10A] physical PCI Wi-Fi backend boundary: PASSED discovered_candidate={}",
             hw_candidate.is_some() as u8
         ));
         if !wifi_hw::stage13_10b_self_test() {
@@ -462,6 +462,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             qemu_test_exit_failure();
         }
         serial::write_line(format_args!("[S13.10F] Wi-Fi DMA buffer ownership binding: PASSED"));
+        if !wifi_hw::stage13_10g_self_test() {
+            serial::write_line(format_args!("[S13.10G] Wi-Fi activation authority hardening: FAILED"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!("[S13.10G] Wi-Fi activation authority hardening: PASSED"));
         if !wifi_backend::self_test() {
             serial::write_line(format_args!(
                 "[S13.9K] Wi-Fi transport/backend contract: FAILED"
