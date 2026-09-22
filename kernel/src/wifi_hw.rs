@@ -102,6 +102,106 @@ pub fn discover_first() -> Option<WifiPciFunction> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WifiDriverFamily { IntelIwlwifi }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SupportedWifiDevice {
+    pub vendor_id: u16,
+    pub device_id: u16,
+    pub family: WifiDriverFamily,
+    pub name: &'static str,
+}
+
+const SUPPORTED_WIFI_DEVICES: &[SupportedWifiDevice] = &[
+    SupportedWifiDevice {
+        vendor_id: 0x8086,
+        device_id: 0x2723,
+        family: WifiDriverFamily::IntelIwlwifi,
+        name: "Intel Wi-Fi 6 AX200",
+    },
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SupportedBindError { NotWireless, UnsupportedDevice, NoMmioBar, ConfigWriteFailed }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct SupportedWifiFunction {
+    pub pci: WifiPciFunction,
+    pub family: WifiDriverFamily,
+    pub name: &'static str,
+}
+
+pub fn supported_device(vendor_id: u16, device_id: u16) -> Option<&'static SupportedWifiDevice> {
+    SUPPORTED_WIFI_DEVICES.iter().find(|entry| entry.vendor_id == vendor_id && entry.device_id == device_id)
+}
+
+pub fn classify_supported(device: pci::Device) -> Result<SupportedWifiFunction, SupportedBindError> {
+    if !is_wireless_candidate(&device) { return Err(SupportedBindError::NotWireless); }
+    let Some(supported) = supported_device(device.vendor_id, device.device_id) else {
+        return Err(SupportedBindError::UnsupportedDevice);
+    };
+    let pci = descriptor_from_device(device).map_err(|error| match error {
+        HwBindError::NotWireless => SupportedBindError::NotWireless,
+        HwBindError::NoMmioBar => SupportedBindError::NoMmioBar,
+        HwBindError::ConfigWriteFailed => SupportedBindError::ConfigWriteFailed,
+    })?;
+    Ok(SupportedWifiFunction { pci, family: supported.family, name: supported.name })
+}
+
+pub fn bind_supported(device: pci::Device) -> Result<SupportedWifiFunction, SupportedBindError> {
+    let function = classify_supported(device)?;
+    if !pci::enable_memory_bus_master(function.pci.address) {
+        return Err(SupportedBindError::ConfigWriteFailed);
+    }
+    Ok(function)
+}
+
+pub fn discover_first_supported() -> Option<SupportedWifiFunction> {
+    for index in 0..64 {
+        let Some(device) = pci::device(index) else { continue };
+        if supported_device(device.vendor_id, device.device_id).is_some()
+            && is_wireless_candidate(&device)
+        {
+            if let Ok(bound) = bind_supported(device) { return Some(bound); }
+        }
+    }
+    None
+}
+
+pub fn stage13_10e_self_test() -> bool {
+    let mut ax200 = pci::Device {
+        segment: 0, bus: 2, device: 3, function: 0,
+        vendor_id: 0x8086, device_id: 0x2723, revision: 1,
+        class: 0x02, subclass: 0x80, ..pci::Device::default()
+    };
+    ax200.bars[0] = pci::Bar {
+        valid: true, kind: pci::BarKind::Memory64,
+        address: 0xfebc_0000, prefetchable: false,
+    };
+    ax200.capabilities.msi = true;
+    ax200.capabilities.pcie = true;
+
+    let Ok(bound) = classify_supported(ax200) else { return false };
+    if bound.family != WifiDriverFamily::IntelIwlwifi
+        || bound.name != "Intel Wi-Fi 6 AX200"
+        || bound.pci.vendor_id != 0x8086
+        || bound.pci.device_id != 0x2723
+        || bound.pci.mmio_base != 0xfebc_0000 { return false; }
+
+    let mut unknown = ax200;
+    unknown.vendor_id = 0x1234;
+    unknown.device_id = 0x5678;
+    if classify_supported(unknown) != Err(SupportedBindError::UnsupportedDevice) { return false; }
+
+    let mut wired = ax200;
+    wired.subclass = 0x00;
+    if classify_supported(wired) != Err(SupportedBindError::NotWireless) { return false; }
+
+    let mut no_bar = ax200;
+    no_bar.bars = [pci::Bar::default(); 6];
+    classify_supported(no_bar) == Err(SupportedBindError::NoMmioBar)
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MmioError {
     Unaligned,
     OutOfRange,

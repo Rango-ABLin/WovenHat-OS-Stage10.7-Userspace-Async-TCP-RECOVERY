@@ -448,6 +448,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             qemu_test_exit_failure();
         }
         serial::write_line(format_args!("[S13.10D] Wi-Fi DMA descriptor ownership + queue lifecycle: PASSED"));
+        if !wifi_hw::stage13_10e_self_test() {
+            serial::write_line(format_args!("[S13.10E] Wi-Fi supported chipset binding boundary: FAILED"));
+            qemu_test_exit_failure();
+        }
+        let supported_hw = wifi_hw::discover_first_supported();
+        serial::write_line(format_args!(
+            "[S13.10E] Wi-Fi supported chipset binding boundary: PASSED supported_device={}",
+            supported_hw.is_some() as u8
+        ));
         if !wifi_backend::self_test() {
             serial::write_line(format_args!(
                 "[S13.9K] Wi-Fi transport/backend contract: FAILED"
