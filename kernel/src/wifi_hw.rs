@@ -163,6 +163,125 @@ pub fn discover_first_supported() -> Option<SupportedWifiFunction> {
     None
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum IntelCsr {
+    HwIfConfig = 0x0000,
+    IntCoalescing = 0x004c,
+    Int = 0x0008,
+    IntMask = 0x000c,
+    Reset = 0x0020,
+    GpControl = 0x0024,
+    GpDriver = 0x0050,
+}
+
+impl IntelCsr {
+    pub const fn offset(self) -> usize {
+        self as usize
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntelCsrError {
+    UnsupportedFamily,
+    Mmio(MmioError),
+}
+
+/// Minimal Intel AX200-family CSR accessor.
+///
+/// Stage 13.10H intentionally provides only typed 32-bit CSR access. It does
+/// not yet perform reset sequencing, firmware loading, interrupt setup, or
+/// queue programming. Those steps will build on this narrow audited boundary.
+pub struct IntelCsrBank {
+    registers: VolatileMmio32,
+}
+
+impl IntelCsrBank {
+    /// Construct over an already validated/mapped Intel register page.
+    ///
+    /// The caller must have passed the supported-chipset authority boundary.
+    pub fn from_supported(
+        function: SupportedWifiFunction,
+        registers: VolatileMmio32,
+    ) -> Result<Self, IntelCsrError> {
+        if function.family != WifiDriverFamily::IntelIwlwifi {
+            return Err(IntelCsrError::UnsupportedFamily);
+        }
+        Ok(Self { registers })
+    }
+
+    pub fn read(&self, csr: IntelCsr) -> Result<u32, IntelCsrError> {
+        self.registers
+            .read(csr.offset())
+            .map_err(IntelCsrError::Mmio)
+    }
+
+    pub fn write(&mut self, csr: IntelCsr, value: u32) -> Result<(), IntelCsrError> {
+        self.registers
+            .write(csr.offset(), value)
+            .map_err(IntelCsrError::Mmio)
+    }
+}
+
+pub fn stage13_10h_self_test() -> bool {
+    let mut ax200 = pci::Device {
+        segment: 0,
+        bus: 2,
+        device: 3,
+        function: 0,
+        vendor_id: 0x8086,
+        device_id: 0x2723,
+        revision: 1,
+        class: 0x02,
+        subclass: 0x80,
+        ..pci::Device::default()
+    };
+    ax200.bars[0] = pci::Bar {
+        valid: true,
+        kind: pci::BarKind::Memory64,
+        address: 0xfebc_0000,
+        prefetchable: false,
+    };
+
+    let Ok(function) = classify_supported(ax200) else { return false };
+
+    let Ok(page) = DmaPage::allocate_zeroed() else { return false };
+    let Ok(region) = MmioRegion::new(page.physical_address(), DMA_PAGE_SIZE) else {
+        return false;
+    };
+
+    // SAFETY: the synthetic CSR window aliases one live, exclusively-owned
+    // DmaPage for the duration of this self-test.
+    let mmio = unsafe {
+        VolatileMmio32::from_mapped(region, page.virtual_address())
+    };
+    let Ok(mut csr) = IntelCsrBank::from_supported(function, mmio) else {
+        return false;
+    };
+
+    if IntelCsr::HwIfConfig.offset() != 0x0000
+        || IntelCsr::Int.offset() != 0x0008
+        || IntelCsr::IntMask.offset() != 0x000c
+        || IntelCsr::Reset.offset() != 0x0020
+        || IntelCsr::GpControl.offset() != 0x0024
+        || IntelCsr::IntCoalescing.offset() != 0x004c
+        || IntelCsr::GpDriver.offset() != 0x0050
+    {
+        return false;
+    }
+
+    if csr.write(IntelCsr::Reset, 0xa5a5_5a5a).is_err()
+        || csr.read(IntelCsr::Reset) != Ok(0xa5a5_5a5a)
+        || csr.write(IntelCsr::IntMask, 0x1122_3344).is_err()
+        || csr.read(IntelCsr::IntMask) != Ok(0x1122_3344)
+    {
+        return false;
+    }
+
+    // Stage H must remain an accessor-layer test only. The synthetic page
+    // proves typed register isolation without touching real PCI hardware.
+    true
+}
 pub fn stage13_10g_self_test() -> bool {
     let mut supported = pci::Device {
         segment: 0,
