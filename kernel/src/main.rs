@@ -86,6 +86,8 @@ mod wifi_backend;
 #[cfg(feature = "stage13-9-test")]
 mod wifi_hw;
 #[cfg(feature = "stage13-9-test")]
+mod wifi_firmware;
+#[cfg(feature = "stage13-9-test")]
 mod wifi_recovery;
 #[cfg(feature = "stage13-9-test")]
 mod wifi_session;
@@ -482,6 +484,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             qemu_test_exit_failure();
         }
         serial::write_line(format_args!("[S13.10J] Intel MAC access/device initialization: PASSED"));
+        if !wifi_firmware::stage13_10k_self_test() {
+            serial::write_line(format_args!("[S13.10K] Wi-Fi firmware validation/lifecycle foundation: FAILED"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!("[S13.10K] Wi-Fi firmware validation/lifecycle foundation: PASSED"));
         if !wifi_backend::self_test() {
             serial::write_line(format_args!(
                 "[S13.9K] Wi-Fi transport/backend contract: FAILED"
