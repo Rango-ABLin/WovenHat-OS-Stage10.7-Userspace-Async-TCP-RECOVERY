@@ -1671,6 +1671,7 @@ pub enum IntelFirmwareStartState {
     ContextPublished,
     CpuRunIssued,
     AwaitingAlive,
+    FirmwareRunning,
     Failed,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1761,6 +1762,257 @@ impl IntelFirmwareStartupIo for Stage13_10sMockIo {
         Ok(())
     }
 }
+// === Stage 13.10T: Intel 22000/AX200 ALIVE notification validation ===
+pub const INTEL_UCODE_ALIVE_NTFY: u8 = 0x01;
+pub const INTEL_ALIVE_STATUS_OK: u16 = 0xCAFE;
+pub const INTEL_ALIVE_STATUS_ERR: u16 = 0xDEAD;
+pub const INTEL_ALIVE_V3_SIZE: usize = 68;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IntelAliveDiagnostics {
+    pub lmac_error_event_table: u32,
+    pub lmac_log_event_table: u32,
+    pub lmac_cpu_register: u32,
+    pub lmac_dbgm_config: u32,
+    pub lmac_alive_counter: u32,
+    pub lmac_scd_base: u32,
+    pub lmac_store_forward_address: u32,
+    pub lmac_store_forward_size: u32,
+    pub umac_error_info: u32,
+    pub umac_debug_print_buffer: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IntelAliveInfo {
+    pub status: u16,
+    pub flags: u16,
+    pub lmac_ucode_major: u32,
+    pub lmac_ucode_minor: u32,
+    pub lmac_ver_subtype: u8,
+    pub lmac_ver_type: u8,
+    pub lmac_mac: u8,
+    pub lmac_opt: u8,
+    pub lmac_timestamp: u32,
+    pub umac_major: u32,
+    pub umac_minor: u32,
+    pub diagnostics: IntelAliveDiagnostics,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntelAliveError {
+    InvalidState,
+    WrongCommand,
+    UnsupportedLength,
+    FirmwareRejected(u16),
+}
+
+fn alive_u16(payload: &[u8], offset: usize) -> Option<u16> {
+    Some(u16::from_le_bytes([
+        *payload.get(offset)?,
+        *payload.get(offset + 1)?,
+    ]))
+}
+fn alive_u32(payload: &[u8], offset: usize) -> Option<u32> {
+    Some(u32::from_le_bytes([
+        *payload.get(offset)?,
+        *payload.get(offset + 1)?,
+        *payload.get(offset + 2)?,
+        *payload.get(offset + 3)?,
+    ]))
+}
+
+pub fn parse_intel_alive_v3(payload: &[u8]) -> Result<IntelAliveInfo, IntelAliveError> {
+    if payload.len() != INTEL_ALIVE_V3_SIZE {
+        return Err(IntelAliveError::UnsupportedLength);
+    }
+    let status = alive_u16(payload, 0).ok_or(IntelAliveError::UnsupportedLength)?;
+    let flags = alive_u16(payload, 2).ok_or(IntelAliveError::UnsupportedLength)?;
+    let diagnostics = IntelAliveDiagnostics {
+        lmac_error_event_table: alive_u32(payload, 20).ok_or(IntelAliveError::UnsupportedLength)?,
+        lmac_log_event_table: alive_u32(payload, 24).ok_or(IntelAliveError::UnsupportedLength)?,
+        lmac_cpu_register: alive_u32(payload, 28).ok_or(IntelAliveError::UnsupportedLength)?,
+        lmac_dbgm_config: alive_u32(payload, 32).ok_or(IntelAliveError::UnsupportedLength)?,
+        lmac_alive_counter: alive_u32(payload, 36).ok_or(IntelAliveError::UnsupportedLength)?,
+        lmac_scd_base: alive_u32(payload, 40).ok_or(IntelAliveError::UnsupportedLength)?,
+        lmac_store_forward_address: alive_u32(payload, 44)
+            .ok_or(IntelAliveError::UnsupportedLength)?,
+        lmac_store_forward_size: alive_u32(payload, 48)
+            .ok_or(IntelAliveError::UnsupportedLength)?,
+        umac_error_info: alive_u32(payload, 60).ok_or(IntelAliveError::UnsupportedLength)?,
+        umac_debug_print_buffer: alive_u32(payload, 64)
+            .ok_or(IntelAliveError::UnsupportedLength)?,
+    };
+    Ok(IntelAliveInfo {
+        status,
+        flags,
+        lmac_ucode_major: alive_u32(payload, 4).ok_or(IntelAliveError::UnsupportedLength)?,
+        lmac_ucode_minor: alive_u32(payload, 8).ok_or(IntelAliveError::UnsupportedLength)?,
+        lmac_ver_subtype: payload[12],
+        lmac_ver_type: payload[13],
+        lmac_mac: payload[14],
+        lmac_opt: payload[15],
+        lmac_timestamp: alive_u32(payload, 16).ok_or(IntelAliveError::UnsupportedLength)?,
+        umac_major: alive_u32(payload, 52).ok_or(IntelAliveError::UnsupportedLength)?,
+        umac_minor: alive_u32(payload, 56).ok_or(IntelAliveError::UnsupportedLength)?,
+        diagnostics,
+    })
+}
+
+impl<I: IntelFirmwareStartupIo> Intel22000FirmwareStartup<I> {
+    pub fn handle_alive_notification(
+        &mut self,
+        command: u8,
+        payload: &[u8],
+    ) -> Result<IntelAliveInfo, IntelAliveError> {
+        if self.state != IntelFirmwareStartState::AwaitingAlive {
+            return Err(IntelAliveError::InvalidState);
+        }
+        if command != INTEL_UCODE_ALIVE_NTFY {
+            return Err(IntelAliveError::WrongCommand);
+        }
+        let info = match parse_intel_alive_v3(payload) {
+            Ok(info) => info,
+            Err(err) => {
+                self.state = IntelFirmwareStartState::Failed;
+                return Err(err);
+            }
+        };
+        if info.status != INTEL_ALIVE_STATUS_OK {
+            self.state = IntelFirmwareStartState::Failed;
+            return Err(IntelAliveError::FirmwareRejected(info.status));
+        }
+        self.state = IntelFirmwareStartState::FirmwareRunning;
+        Ok(info)
+    }
+}
+
+fn stage13_10t_put16(payload: &mut [u8; INTEL_ALIVE_V3_SIZE], offset: usize, value: u16) {
+    payload[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+}
+fn stage13_10t_put32(payload: &mut [u8; INTEL_ALIVE_V3_SIZE], offset: usize, value: u32) {
+    payload[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+}
+fn stage13_10t_valid_payload(status: u16) -> [u8; INTEL_ALIVE_V3_SIZE] {
+    let mut payload = [0u8; INTEL_ALIVE_V3_SIZE];
+    stage13_10t_put16(&mut payload, 0, status);
+    stage13_10t_put16(&mut payload, 2, 1);
+    stage13_10t_put32(&mut payload, 4, 0x1122_3344);
+    stage13_10t_put32(&mut payload, 8, 0x5566_7788);
+    payload[12] = 9;
+    payload[13] = 0;
+    payload[14] = 1;
+    payload[15] = 2;
+    stage13_10t_put32(&mut payload, 16, 0x0102_0304);
+    stage13_10t_put32(&mut payload, 20, 0x1000_1000);
+    stage13_10t_put32(&mut payload, 24, 0x1000_2000);
+    stage13_10t_put32(&mut payload, 28, 0x1000_3000);
+    stage13_10t_put32(&mut payload, 32, 0x1000_4000);
+    stage13_10t_put32(&mut payload, 36, 0x1000_5000);
+    stage13_10t_put32(&mut payload, 40, 0x1000_6000);
+    stage13_10t_put32(&mut payload, 44, 0x1000_7000);
+    stage13_10t_put32(&mut payload, 48, 0x800);
+    stage13_10t_put32(&mut payload, 52, 0xa1a2_a3a4);
+    stage13_10t_put32(&mut payload, 56, 0xb1b2_b3b4);
+    stage13_10t_put32(&mut payload, 60, 0x2000_1000);
+    stage13_10t_put32(&mut payload, 64, 0x2000_2000);
+    payload
+}
+
+pub fn stage13_10t_self_test() -> bool {
+    let ok = stage13_10t_valid_payload(INTEL_ALIVE_STATUS_OK);
+    let Ok(parsed) = parse_intel_alive_v3(&ok) else {
+        return false;
+    };
+    if parsed.status != INTEL_ALIVE_STATUS_OK
+        || parsed.flags != 1
+        || parsed.lmac_ucode_major != 0x1122_3344
+        || parsed.lmac_ucode_minor != 0x5566_7788
+        || parsed.lmac_ver_subtype != 9
+        || parsed.lmac_timestamp != 0x0102_0304
+        || parsed.umac_major != 0xa1a2_a3a4
+        || parsed.umac_minor != 0xb1b2_b3b4
+        || parsed.diagnostics.lmac_error_event_table != 0x1000_1000
+        || parsed.diagnostics.lmac_scd_base != 0x1000_6000
+        || parsed.diagnostics.umac_error_info != 0x2000_1000
+        || parse_intel_alive_v3(&ok[..67]) != Err(IntelAliveError::UnsupportedLength)
+    {
+        return false;
+    }
+
+    let mut owner = Intel22000DmaContextInfo::new();
+    if owner.set_rx_queue(0x100000, 0x110000, 0x120000).is_err()
+        || owner.set_command_queue(0x130000, 32).is_err()
+        || owner
+            .stage_firmware_chunk(IntelContextInfoImageKind::Lmac, &[0x31; 512])
+            .is_err()
+        || owner
+            .stage_firmware_chunk(IntelContextInfoImageKind::Umac, &[0x42; 256])
+            .is_err()
+    {
+        return false;
+    }
+    let Ok(context) = owner.build_hardware_context(0x2200) else {
+        return false;
+    };
+
+    let io = Stage13_10sMockIo {
+        context_offset: 0,
+        context_address: 0,
+        context_writes: 0,
+        prph_register: 0,
+        prph_value: 0,
+        prph_writes: 0,
+        fail_prph: false,
+    };
+    let mut s = Intel22000FirmwareStartup::new(io);
+    if s.publish_context(&context).is_err()
+        || s.issue_cpu_init_run().is_err()
+        || s.begin_alive_wait().is_err()
+        || s.handle_alive_notification(INTEL_UCODE_ALIVE_NTFY, &ok)
+            .is_err()
+        || s.state() != IntelFirmwareStartState::FirmwareRunning
+    {
+        return false;
+    }
+
+    let io2 = Stage13_10sMockIo {
+        context_offset: 0,
+        context_address: 0,
+        context_writes: 0,
+        prph_register: 0,
+        prph_value: 0,
+        prph_writes: 0,
+        fail_prph: false,
+    };
+    let mut wrong = Intel22000FirmwareStartup::new(io2);
+    if wrong.publish_context(&context).is_err()
+        || wrong.issue_cpu_init_run().is_err()
+        || wrong.begin_alive_wait().is_err()
+        || wrong.handle_alive_notification(0x7f, &ok) != Err(IntelAliveError::WrongCommand)
+        || wrong.state() != IntelFirmwareStartState::AwaitingAlive
+    {
+        return false;
+    }
+
+    let io3 = Stage13_10sMockIo {
+        context_offset: 0,
+        context_address: 0,
+        context_writes: 0,
+        prph_register: 0,
+        prph_value: 0,
+        prph_writes: 0,
+        fail_prph: false,
+    };
+    let mut rejected = Intel22000FirmwareStartup::new(io3);
+    let bad = stage13_10t_valid_payload(INTEL_ALIVE_STATUS_ERR);
+    rejected.publish_context(&context).is_ok()
+        && rejected.issue_cpu_init_run().is_ok()
+        && rejected.begin_alive_wait().is_ok()
+        && rejected.handle_alive_notification(INTEL_UCODE_ALIVE_NTFY, &bad)
+            == Err(IntelAliveError::FirmwareRejected(INTEL_ALIVE_STATUS_ERR))
+        && rejected.state() == IntelFirmwareStartState::Failed
+}
+
 pub fn stage13_10s_self_test() -> bool {
     let mut owner = Intel22000DmaContextInfo::new();
     if owner.set_rx_queue(0x100000, 0x110000, 0x120000).is_err()

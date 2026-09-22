@@ -7,4 +7,4 @@ foreach ($cpu in 1,2,4) {
     python .\scripts\test-stage10-runtime.py --stage 13.9 --cpus $cpu --timeout 120
     if ($LASTEXITCODE -ne 0) { throw "Stage 13.10S failed on $cpu CPU(s)" }
 }
-Write-Host '=== STAGE 13.10S AX200 CPU_INIT_RUN STARTUP SEQUENCING: PASS ==='
+Write-Host '=== STAGE 13.10T AX200 ALIVE NOTIFICATION VALIDATION: PASS ==='
