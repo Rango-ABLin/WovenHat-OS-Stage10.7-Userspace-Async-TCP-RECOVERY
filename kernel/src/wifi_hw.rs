@@ -645,6 +645,251 @@ impl DeviceQueue {
     }
 }
 
+/// Real DMA backing retained across the full queue ownership lifecycle.
+///
+/// The DmaPage itself stays inside this value, so its Drop implementation
+/// cannot return the physical frame to the allocator while a device-owned
+/// descriptor still refers to that frame.
+pub struct OwnedDmaBuffer {
+    page: DmaPage,
+    length: u16,
+    flags: u16,
+}
+
+impl OwnedDmaBuffer {
+    pub fn allocate(length: u16, flags: u16) -> Result<Self, DmaMemoryError> {
+        if length == 0 || usize::from(length) > DMA_PAGE_SIZE {
+            return Err(DmaMemoryError::AddressOverflow);
+        }
+        Ok(Self {
+            page: DmaPage::allocate_zeroed()?,
+            length,
+            flags,
+        })
+    }
+
+    pub const fn physical_address(&self) -> u64 {
+        self.page.physical_address()
+    }
+
+    pub const fn virtual_address(&self) -> u64 {
+        self.page.virtual_address()
+    }
+
+    pub const fn length(&self) -> u16 {
+        self.length
+    }
+
+    pub const fn flags(&self) -> u16 {
+        self.flags
+    }
+
+    pub fn descriptor(&self) -> DmaDescriptor {
+        DmaDescriptor {
+            physical_address: self.page.physical_address(),
+            length: self.length,
+            flags: self.flags,
+        }
+    }
+
+    pub fn write_u32(&mut self, offset: usize, value: u32) -> Result<(), DmaMemoryError> {
+        self.page.write_u32(offset, value)
+    }
+
+    pub fn read_u32(&self, offset: usize) -> Result<u32, DmaMemoryError> {
+        self.page.read_u32(offset)
+    }
+}
+
+struct BufferSlot {
+    owner: DescriptorOwner,
+    buffer: Option<OwnedDmaBuffer>,
+}
+
+impl BufferSlot {
+    const fn empty() -> Self {
+        Self {
+            owner: DescriptorOwner::Cpu,
+            buffer: None,
+        }
+    }
+}
+
+/// Fixed-capacity queue that owns the actual DMA pages, not just their
+/// descriptor values. A frame cannot be dropped/recycled until reclaim()
+/// returns the OwnedDmaBuffer to CPU ownership.
+pub struct OwnedBufferQueue {
+    entries: [BufferSlot; DMA_RING_CAPACITY],
+    head: usize,
+    tail: usize,
+    count: usize,
+    device_owned: usize,
+    completed: usize,
+}
+
+impl OwnedBufferQueue {
+    pub const fn new() -> Self {
+        Self {
+            entries: [const { BufferSlot::empty() }; DMA_RING_CAPACITY],
+            head: 0,
+            tail: 0,
+            count: 0,
+            device_owned: 0,
+            completed: 0,
+        }
+    }
+
+    pub const fn len(&self) -> usize { self.count }
+    pub const fn is_empty(&self) -> bool { self.count == 0 }
+    pub const fn device_owned(&self) -> usize { self.device_owned }
+    pub const fn completed(&self) -> usize { self.completed }
+
+    pub fn submit(&mut self, buffer: OwnedDmaBuffer) -> Result<(usize, DmaDescriptor), QueueError> {
+        if buffer.length() == 0 {
+            return Err(QueueError::InvalidLength);
+        }
+        if self.count == DMA_RING_CAPACITY {
+            return Err(QueueError::Full);
+        }
+        if self.entries[self.tail].owner != DescriptorOwner::Cpu
+            || self.entries[self.tail].buffer.is_some()
+        {
+            return Err(QueueError::NotCpuOwned);
+        }
+
+        let slot = self.tail;
+        let descriptor = buffer.descriptor();
+        self.entries[slot].buffer = Some(buffer);
+        dma_publish();
+        self.entries[slot].owner = DescriptorOwner::Device;
+        self.tail = (self.tail + 1) % DMA_RING_CAPACITY;
+        self.count += 1;
+        self.device_owned += 1;
+        Ok((slot, descriptor))
+    }
+
+    pub fn complete(&mut self, slot: usize) -> Result<(), QueueError> {
+        if slot >= DMA_RING_CAPACITY
+            || self.entries[slot].owner != DescriptorOwner::Device
+            || self.entries[slot].buffer.is_none()
+        {
+            return Err(QueueError::NotDeviceOwned);
+        }
+        dma_consume();
+        self.entries[slot].owner = DescriptorOwner::Completed;
+        self.device_owned -= 1;
+        self.completed += 1;
+        Ok(())
+    }
+
+    pub fn reclaim(&mut self) -> Result<OwnedDmaBuffer, QueueError> {
+        if self.count == 0 {
+            return Err(QueueError::Empty);
+        }
+        if self.entries[self.head].owner != DescriptorOwner::Completed {
+            return Err(QueueError::NotCompleted);
+        }
+
+        dma_consume();
+        let Some(buffer) = self.entries[self.head].buffer.take() else {
+            return Err(QueueError::NotCompleted);
+        };
+        self.entries[self.head].owner = DescriptorOwner::Cpu;
+        self.head = (self.head + 1) % DMA_RING_CAPACITY;
+        self.count -= 1;
+        self.completed -= 1;
+        Ok(buffer)
+    }
+
+    /// Teardown is legal only once hardware no longer owns any slot. Completed
+    /// or CPU-owned buffers may then drop normally and return frames safely.
+    pub fn quiesce(&mut self) -> Result<(), QueueError> {
+        if self.device_owned != 0 {
+            return Err(QueueError::NotCpuOwned);
+        }
+        for entry in &mut self.entries {
+            entry.buffer = None;
+            entry.owner = DescriptorOwner::Cpu;
+        }
+        self.head = 0;
+        self.tail = 0;
+        self.count = 0;
+        self.completed = 0;
+        Ok(())
+    }
+}
+
+pub fn stage13_10f_self_test() -> bool {
+    let before = memory::stats().allocated_frames;
+
+    {
+        let mut queue = OwnedBufferQueue::new();
+        let Ok(mut first) = OwnedDmaBuffer::allocate(1536, 0x31) else { return false };
+        let first_phys = first.physical_address();
+
+        if first_phys & (DMA_PAGE_SIZE as u64 - 1) != 0
+            || first.length() != 1536
+            || first.write_u32(0, 0x5748_4642).is_err()
+            || first.read_u32(0) != Ok(0x5748_4642)
+        {
+            return false;
+        }
+
+        let Ok((slot, descriptor)) = queue.submit(first) else { return false };
+        if descriptor.physical_address != first_phys
+            || descriptor.length != 1536
+            || descriptor.flags != 0x31
+            || queue.device_owned() != 1
+            || queue.completed() != 0
+            || queue.quiesce() != Err(QueueError::NotCpuOwned)
+        {
+            return false;
+        }
+
+        // The queue owns the real DmaPage here. The allocator must still show
+        // the frame as live while the device owns it.
+        if memory::stats().allocated_frames != before + 1 {
+            return false;
+        }
+
+        if queue.complete(slot).is_err()
+            || queue.device_owned() != 0
+            || queue.completed() != 1
+        {
+            return false;
+        }
+
+        let Ok(reclaimed) = queue.reclaim() else { return false };
+        if reclaimed.physical_address() != first_phys
+            || reclaimed.read_u32(0) != Ok(0x5748_4642)
+            || !queue.is_empty()
+        {
+            return false;
+        }
+
+        // Reclaimed buffer is CPU-owned but still alive until this Drop.
+        if memory::stats().allocated_frames != before + 1 {
+            return false;
+        }
+        drop(reclaimed);
+        if memory::stats().allocated_frames != before {
+            return false;
+        }
+
+        // Also prove quiesce safely drops completed-but-not-reclaimed buffers.
+        let Ok(second) = OwnedDmaBuffer::allocate(512, 0x44) else { return false };
+        let Ok((second_slot, _)) = queue.submit(second) else { return false };
+        if queue.complete(second_slot).is_err()
+            || memory::stats().allocated_frames != before + 1
+            || queue.quiesce().is_err()
+            || memory::stats().allocated_frames != before
+        {
+            return false;
+        }
+    }
+
+    memory::stats().allocated_frames == before
+}
 pub fn stage13_10d_self_test() -> bool {
     let mut queue = DeviceQueue::new();
     let first = DmaDescriptor {
