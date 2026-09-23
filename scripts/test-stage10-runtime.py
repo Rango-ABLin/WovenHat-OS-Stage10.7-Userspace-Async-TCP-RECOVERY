@@ -1,11 +1,107 @@
 """Run isolated completion-port/timer/runtime acceptance with durable logs."""
 import argparse
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import time
+
+# Explicit acceptance contract; do not derive expectations from the tested source at runtime.
+WIFI_REQUIRED_MARKERS = (
+    '[S13.9A] WovenWiFi framework + PCI classification: PASSED',
+    '[S13.9B] IEEE 802.11 frame/IE core: PASSED',
+    '[S13.9C] beacon/probe scan pipeline: PASSED',
+    '[S13.9D] Open System authentication + association: PASSED',
+    '[S13.9E] RSN + EAPOL-Key protocol foundation: PASSED',
+    '[S13.9F] WPA2 cryptographic foundation: PASSED',
+    '[S13.9G] WPA2 4-way handshake integration: PASSED',
+    '[S13.9H] GTK + encrypted key data: PASSED',
+    '[S13.9I] CCMP protected data path: PASSED',
+    '[S13.9J] WovenWiFi <-> WovenNet integration: PASSED',
+    '[S13.9X] GTK/group-addressed CCMP data path: PASSED',
+    '[S13.9Y] WPA2 reconnect/rekey lifecycle: PASSED',
+    '[S13.9Z] WPA2 live group-key rekey: PASSED',
+    '[S13.10A] physical PCI Wi-Fi backend boundary: PASSED',
+    '[S13.10B] Wi-Fi MMIO/DMA/interrupt scaffolding: PASSED',
+    '[S13.10C] Wi-Fi real MMIO + DMA memory ownership: PASSED',
+    '[S13.10D] Wi-Fi DMA descriptor ownership + queue lifecycle: PASSED',
+    '[S13.10E] Wi-Fi supported chipset binding boundary: PASSED',
+    '[S13.10F] Wi-Fi DMA buffer ownership binding: PASSED',
+    '[S13.10G] Wi-Fi activation authority hardening: PASSED',
+    '[S13.10H] Intel AX200 CSR boundary: PASSED',
+    '[S13.10I] Intel reset/readiness state machine: PASSED',
+    '[S13.10J] Intel MAC access/device initialization: PASSED',
+    '[S13.10K] Wi-Fi firmware validation/lifecycle foundation: PASSED',
+    '[S13.10L] Intel TLV firmware parser: PASSED',
+    '[S13.10M] Intel firmware DMA staging/transfer boundary: PASSED',
+    '[S13.10N] Intel firmware transfer executor boundary: PASSED',
+    '[S13.10O] Intel 22000 firmware transport contract: PASSED',
+    '[S13.10P] AX200 context-info self-load manifest: PASSED',
+    '[S13.10Q] AX200 DMA-backed context-info construction: PASSED',
+    '[S13.10R] AX200 context-info ABI + publication: PASSED',
+    '[S13.10S] AX200 CPU_INIT_RUN startup sequencing: PASSED',
+    '[S13.10T] AX200 ALIVE notification validation: PASSED',
+    '[S13.10U] contiguous firmware DMA ownership: PASSED',
+    '[S13.10V] version-aware AX200 ALIVE ABI: PASSED',
+    '[S13.10W] Intel RX notification delivery: PASSED',
+    '[S13.10X] Intel RX DMA completion boundary: PASSED',
+    '[S13.10Y] Intel RX interrupt service boundary: PASSED',
+    '[S13.10Z] PCI device interrupt foundation: PASSED',
+    '[S13.10AA] PCI MSI programming contract: PASSED',
+    '[S13.10AB] AX200 PCI MSI binding contract: PASSED',
+    '[S13.10AC] deferred AX200 IRQ -> CSR RX service: PASSED',
+    '[S13.10AC] IRQ worker/wakeup/teardown: PASSED',
+    '[S13.9K] Wi-Fi transport/backend contract: PASSED',
+    '[S13.9L] reconnect/timeout/lifecycle hardening: PASSED',
+    '[S13.9M] cross-module integration closure: PASSED',
+    '[S13.9N] WPA2 security lifecycle integration: PASSED',
+    '[S13.9O] kernel entropy/secure SNonce boundary: PASSED',
+    '[S13.9P] live WPA2 GTK/KRACK integration: PASSED',
+    '[S13.9Q] WPA2 association + RSN integration: PASSED',
+    '[S13.9R] entropy/network randomness split: PASSED',
+    '[S13.9S] WPA2 supplicant/session key handoff: PASSED',
+    '[S13.9T] backend RX/CCMP/Ethernet integration: PASSED',
+    '[S13.9U] WovenWiFi/smoltcp transport adapter: PASSED',
+    '[S13.9V] selectable WovenNet transport integration: PASSED',
+)
+
+def required_markers(stage, cpus):
+    required = [f'[SMP] online={cpus} expected={cpus}',
+                '[S10.3] userspace async completion ABI + cancellation/teardown: PASSED',
+                ({'10.8': '[S10.8] completion ports + batch/cancel/timeout/teardown/SMP: PASSED',
+                  '10.9': '[S10.9] timers/events/deadlines/cancellation/teardown: PASSED',
+                  '11.1': '[S11.1] production process model: PASSED',
+                  '11.2': '[S11.2] threads/TLS/join: PASSED',
+                  '11.3': '[S11.3] notifications: PASSED',
+                  '11.4': '[S11.4] libwoven runtime boundary: PASSED',
+                  '11.5': '[S11.5] loader hardening: PASSED',
+                  '12.1': '[S12.1] VFS boundary: PASSED', '12.2': '[S12.2] WovenFS: PASSED',
+                  '12.3': '[S12.3] encryption: PASSED', '12.4': '[S12.4] snapshots: PASSED',
+                  '12.5': '[S12.5] storage management: PASSED', '13.1': '[S13.1] driver framework: PASSED',
+                  '13.2': '[S13.2] PCI/PCIe configuration + inventory: PASSED',
+                  '13.3': '[S13.3] NVMe controller/queue foundation: PASSED',
+                  '13.4': '[S13.4] AHCI/SATA DMA block I/O: PASSED',
+                  '13.5': '[S13.5] xHCI USB core: PASSED',
+                  '13.6': '[S13.6] USB HID keyboard: PASSED',
+                  '13.7': '[S13.7] WovenInput unified event framework: PASSED',
+                  '13.8': '[S13.8] WovenAudio stream/API integration: PASSED',
+                  '13.9': '[S13.9H] GTK + encrypted key data: PASSED',
+                  '1-5': '[S1-5] storage journal: PASSED'}[stage])]
+    if stage == '13.9':
+        required.extend(WIFI_REQUIRED_MARKERS)
+    return list(dict.fromkeys(required))
+
+
+def validation_errors(returncode, log, required):
+    errors = [f'Missing marker: {marker}' for marker in required if marker not in log]
+    if returncode != 33:
+        errors.append(f'QEMU exit {returncode}; expected 33')
+    if re.search(r'KERNEL PANIC|\[S[^\]\n]+\][^\n]*(?:FAILED|TIMEOUT)', log):
+        errors.append('Serial log contains a failure, timeout, or panic')
+    return errors
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -62,28 +158,9 @@ def main():
             print('QEMU timeout; evidence:', out, file=sys.stderr)
             return 1
     log = serial.read_text(errors='replace') if serial.exists() else ''
-    required = [f'[SMP] online={args.cpus} expected={args.cpus}',
-                '[S10.3] userspace async completion ABI + cancellation/teardown: PASSED',
-                ({'10.8': '[S10.8] completion ports + batch/cancel/timeout/teardown/SMP: PASSED',
-                  '10.9': '[S10.9] timers/events/deadlines/cancellation/teardown: PASSED',
-                  '11.1': '[S11.1] production process model: PASSED',
-                  '11.2': '[S11.2] threads/TLS/join: PASSED',
-                  '11.3': '[S11.3] notifications: PASSED',
-                  '11.4': '[S11.4] libwoven runtime boundary: PASSED',
-                  '11.5': '[S11.5] loader hardening: PASSED',
-                  '12.1': '[S12.1] VFS boundary: PASSED', '12.2': '[S12.2] WovenFS: PASSED',
-                  '12.3': '[S12.3] encryption: PASSED', '12.4': '[S12.4] snapshots: PASSED',
-                  '12.5': '[S12.5] storage management: PASSED', '13.1': '[S13.1] driver framework: PASSED',
-                  '13.2': '[S13.2] PCI/PCIe configuration + inventory: PASSED',
-                  '13.3': '[S13.3] NVMe controller/queue foundation: PASSED',
-                  '13.4': '[S13.4] AHCI/SATA DMA block I/O: PASSED',
-                  '13.5': '[S13.5] xHCI USB core: PASSED',
-                  '13.6': '[S13.6] USB HID keyboard: PASSED',
-                  '13.7': '[S13.7] WovenInput unified event framework: PASSED',
-                  '13.8': '[S13.8] WovenAudio stream/API integration: PASSED',
-                  '13.9': '[S13.9H] GTK + encrypted key data: PASSED',
-                  '1-5': '[S1-5] storage journal: PASSED'}[args.stage])]
-    if result.returncode != 33 or any(marker not in log for marker in required):
+    errors = validation_errors(result.returncode, log, required_markers(args.stage, args.cpus))
+    if errors:
+        print('\n'.join(errors), file=sys.stderr)
         print(log[-12000:], file=sys.stderr)
         print('FAILED; evidence:', out, file=sys.stderr)
         return 1

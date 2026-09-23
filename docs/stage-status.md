@@ -6,6 +6,34 @@ fully complete while a roadmap requirement remains open.
 
 Authoritative development sequence: [supplied Stage 10.7–36 roadmap](master-development-roadmap.md).
 
+## Stage 13.10AC remediation — software gate accepted (2026-09-23)
+
+Baseline: `0563d0b` on `stage13.9-wifi`. Historical AX200 labels 13.10A–AC
+extend Wi-Fi roadmap Stage 13.9; they do not implement Bluetooth Stage 13.10.
+See the [remediation audit](audit-stage13-10ac-remediation-2026-09-23.md).
+
+The final aggregate run `audit-artifacts/ac-full-1790166196507145600`
+passed all 40 checks, including 157 QEMU boots across the required 1/2/4-CPU
+matrices. Default build, warning-denying host/kernel and feature Clippy,
+27 Rust host tests in each configuration, and 9 Python tests passed. The
+source manifest remained unchanged throughout the run. Full Stage 10.7
+preservation, release, hotplug, runtime, storage and driver gates through AC
+passed in one serial chain.
+
+The opt-in Wi-Fi build has an event-driven CSR worker with epoch-tagged work,
+fatal-error retirement and owner cleanup. The checker requires all 55 Wi-Fi
+markers. Build/feature boundaries, the host heap probe, disabled RX masks,
+nested bootloader Cargo locks, premature queued socket removal and a copied
+HDA block in the USB error path are repaired. Earlier failed evidence is
+retained; neither assertions nor acceptance timeouts were weakened.
+
+Acceptance is for the bounded software foundation. Real firmware compatibility
+(including paging metadata and secure section parsing), RX-ring integration,
+device-written ALIVE delivery and physical AX200 MSI/DMA qualification remain
+open. The available host is AX201, outside the reviewed AX200 identity.
+Production Wi-Fi and Bluetooth are not complete. The next work must address
+these Wi-Fi prerequisites before advancing to a later roadmap stage.
+
 ## Stage 6 — accepted on 2026-09-16
 
 The bounded SMP foundation passed the complete release matrix: warning-denying

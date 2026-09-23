@@ -307,9 +307,13 @@ pub struct Ax200DeferredServiceEvent {
 
 /// Deferred half of the AX200 interrupt path.
 ///
-/// The vector 0xd0 hard IRQ performs only atomic work publication and LAPIC EOI.
+/// The vector 0xd0 hard IRQ publishes work, sends LAPIC EOI, and wakes the worker.
 /// This routine consumes that publication outside hard-IRQ context and routes
 /// the device event through the Stage 13.10Y Intel CSR interrupt controller.
+/// The caller must be the sole consumer for the bound device and keep its CSR
+/// mapping alive. This boundary does not register a worker or provide detach
+/// synchronization. A service error consumes the claim and is returned to the
+/// caller for recovery; it is not silently retried or converted into RX work.
 pub fn service_deferred_ax200_interrupt(
     controller: &mut IntelRxInterruptController,
 ) -> Result<Ax200DeferredServiceEvent, Ax200DeferredServiceError> {
@@ -356,11 +360,25 @@ pub fn stage13_10ac_deferred_self_test() -> bool {
         return false;
     }
 
-    // With no vector-0xd0 work pending, no CSR service may be performed.
+    // With no work pending, even a fatal cause must remain untouched. Seeding
+    // the mask also detects an accidental service call on the idle path.
+    if page
+        .write_u32(IntelCsr::Int.offset(), INTEL_CSR_INT_BIT_HW_ERR)
+        .is_err()
+        || page.write_u32(IntelCsr::IntMask.offset(), 0).is_err()
+    {
+        return false;
+    }
     let Ok(idle) = service_deferred_ax200_interrupt(&mut controller) else {
         return false;
     };
-    if idle.work_was_pending || idle.rx_pending || idle.acknowledged != 0 || idle.raw_status != 0 {
+    if idle.work_was_pending
+        || idle.rx_pending
+        || idle.acknowledged != 0
+        || idle.raw_status != 0
+        || page.read_u32(IntelCsr::Int.offset()) != Ok(INTEL_CSR_INT_BIT_HW_ERR)
+        || page.read_u32(IntelCsr::IntMask.offset()) != Ok(0)
+    {
         return false;
     }
 
@@ -372,6 +390,8 @@ pub fn stage13_10ac_deferred_self_test() -> bool {
         return false;
     }
     crate::interrupts::publish_wifi_device_work_for_test();
+    // Multiple publications coalesce into one CSR snapshot, not an IRQ count.
+    crate::interrupts::publish_wifi_device_work_for_test();
 
     let Ok(serviced) = service_deferred_ax200_interrupt(&mut controller) else {
         return false;
@@ -380,6 +400,8 @@ pub fn stage13_10ac_deferred_self_test() -> bool {
         || !serviced.rx_pending
         || serviced.acknowledged != INTEL_CSR_INT_BIT_FH_RX
         || serviced.raw_status != INTEL_CSR_INT_BIT_FH_RX
+        || page.read_u32(IntelCsr::Int.offset()) != Ok(INTEL_CSR_INT_BIT_FH_RX)
+        || page.read_u32(IntelCsr::IntMask.offset()) != Ok(INTEL_CSR_RX_INTERRUPT_MASK)
         || crate::interrupts::take_wifi_device_work()
     {
         return false;
@@ -394,7 +416,57 @@ pub fn stage13_10ac_deferred_self_test() -> bool {
         return false;
     };
 
-    empty.work_was_pending && !empty.rx_pending && empty.acknowledged == 0
+    if !empty.work_was_pending || empty.rx_pending || empty.acknowledged != 0 || empty.raw_status != 0 {
+        return false;
+    }
+
+    // Disabling must also revoke the saved mask: a previously queued work
+    // publication must not restore RX delivery or report disabled RX work.
+    if page
+        .write_u32(IntelCsr::Int.offset(), INTEL_CSR_INT_BIT_FH_RX)
+        .is_err()
+    {
+        return false;
+    }
+    crate::interrupts::publish_wifi_device_work_for_test();
+    if controller.disable().is_err() || controller.configured_mask() != 0 {
+        return false;
+    }
+    let Ok(disabled) = service_deferred_ax200_interrupt(&mut controller) else {
+        return false;
+    };
+    if !disabled.work_was_pending
+        || disabled.rx_pending
+        || disabled.acknowledged != 0
+        || disabled.raw_status != INTEL_CSR_INT_BIT_FH_RX
+        || page.read_u32(IntelCsr::IntMask.offset()) != Ok(0)
+        || page.read_u32(IntelCsr::Int.offset()) != Ok(INTEL_CSR_INT_BIT_FH_RX)
+        || crate::interrupts::take_wifi_device_work()
+        || controller.enable_rx().is_err()
+    {
+        return false;
+    }
+
+    // Both fatal results must cross the deferred boundary unchanged, leave
+    // CSR delivery masked, and consume the claimed publication. A separately
+    // published event must still be observed by a subsequent claim.
+    for (cause, error) in [
+        (INTEL_CSR_INT_BIT_HW_ERR, IntelRxInterruptError::FatalHardware),
+        (INTEL_CSR_INT_BIT_SW_ERR, IntelRxInterruptError::FatalFirmware),
+    ] {
+        if page.write_u32(IntelCsr::Int.offset(), cause).is_err() {
+            return false;
+        }
+        crate::interrupts::publish_wifi_device_work_for_test();
+        if service_deferred_ax200_interrupt(&mut controller)
+            != Err(Ax200DeferredServiceError::Csr(error))
+            || page.read_u32(IntelCsr::IntMask.offset()) != Ok(0)
+            || crate::interrupts::take_wifi_device_work()
+        {
+            return false;
+        }
+    }
+    true
 }
 pub fn discover_first_supported() -> Option<SupportedWifiFunction> {
     for index in 0..64 {
@@ -404,7 +476,7 @@ pub fn discover_first_supported() -> Option<SupportedWifiFunction> {
         if supported_device(device.vendor_id, device.device_id).is_some()
             && is_wireless_candidate(&device)
         {
-            if let Ok(bound) = bind_supported(device) {
+            if let Ok(bound) = classify_supported(device) {
                 return Some(bound);
             }
         }
@@ -535,7 +607,9 @@ impl IntelRxInterruptController {
     pub fn disable(&mut self) -> Result<(), IntelRxInterruptError> {
         self.csr
             .write(IntelCsr::IntMask, 0)
-            .map_err(IntelRxInterruptError::Csr)
+            .map_err(IntelRxInterruptError::Csr)?;
+        self.configured_mask = 0;
+        Ok(())
     }
 
     pub fn service(&mut self) -> Result<IntelRxInterruptEvent, IntelRxInterruptError> {
@@ -760,7 +834,7 @@ impl IntelResetController {
     }
 }
 
-fn stage13_10i_supported_function() -> Option<SupportedWifiFunction> {
+pub(crate) fn stage13_10i_supported_function() -> Option<SupportedWifiFunction> {
     let mut ax200 = pci::Device {
         segment: 0,
         bus: 2,

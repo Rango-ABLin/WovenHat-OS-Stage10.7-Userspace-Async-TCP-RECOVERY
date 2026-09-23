@@ -184,28 +184,26 @@ impl HeapState {
         while current != 0 {
             let node = Self::read_free(current);
             let block_end = current.checked_add(node.size)?;
-            if let Some(placement) = Self::place(current, layout) {
-                if placement.end <= block_end {
-                    let remaining = block_end - placement.end;
-                    let end = if remaining < FREE_NODE_SIZE {
-                        block_end
-                    } else {
-                        placement.end
-                    };
-                    if end < block_end {
-                        Self::write_free(
-                            end,
-                            FreeNode {
-                                size: block_end - end,
-                                next: node.next,
-                            },
-                        );
-                        self.link_after(previous, end);
-                    } else {
-                        self.link_after(previous, node.next);
-                    }
-                    return Some(self.record_allocation(current, end, placement.payload, layout));
+            if let Some(placement) = Self::place(current, layout).filter(|p| p.end <= block_end) {
+                let remaining = block_end - placement.end;
+                let end = if remaining < FREE_NODE_SIZE {
+                    block_end
+                } else {
+                    placement.end
+                };
+                if end < block_end {
+                    Self::write_free(
+                        end,
+                        FreeNode {
+                            size: block_end - end,
+                            next: node.next,
+                        },
+                    );
+                    self.link_after(previous, end);
+                } else {
+                    self.link_after(previous, node.next);
                 }
+                return Some(self.record_allocation(current, end, placement.payload, layout));
             }
             previous = current;
             current = node.next;
@@ -582,7 +580,9 @@ pub fn live_metadata_self_test() -> bool {
         && after.free_bytes == before.free_bytes
 }
 
-#[cfg(feature = "qemu-test")]
+// This boot probe requires the kernel global allocator and real page mapping;
+// host tests exercise HeapState directly instead.
+#[cfg(all(feature = "qemu-test", not(test)))]
 pub fn runtime_growth_self_test() -> bool {
     let before = stats();
     let mut bytes = Vec::new();

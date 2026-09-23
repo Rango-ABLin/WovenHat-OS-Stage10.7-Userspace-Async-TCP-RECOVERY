@@ -2340,6 +2340,8 @@ pub fn exit_current_process(exit_code: i32) -> ! {
         // Stage 10.3: an exiting owner must not strand generic async slots.
         // Producers racing this teardown are serialized by async_op::TABLE;
         // a late completion sees a stale generation-tagged handle.
+        #[cfg(feature = "stage13-9-test")]
+        crate::wifi_runtime::release_owner(task_id);
         crate::async_network::release_owner(task_id);
         crate::async_events::release_owner(exiting_pid);
         crate::async_file::release_owner(task_id);
@@ -3705,6 +3707,8 @@ pub fn sleep_current(ticks: u64) {
 
 pub fn exit_current_task() -> ! {
     x86_64::instructions::interrupts::disable();
+    #[cfg(feature = "stage13-9-test")]
+    crate::wifi_runtime::release_owner(current_task_id());
     let switch = {
         let mut scheduler = SCHEDULER.lock();
         let slot = scheduler.current_slot[crate::smp::cpu_index()];
@@ -4657,6 +4661,8 @@ unsafe fn push_stack_value(cursor: &mut usize, value: u64) {
 fn complete_process_termination(task_id: TaskId, signal: u8) {
     // Remote/scheduler-driven termination bypasses exit_current_process(), so
     // it needs the same Stage 10.3 async-owner reclamation guarantee.
+    #[cfg(feature = "stage13-9-test")]
+    crate::wifi_runtime::release_owner(task_id);
     crate::async_network::release_owner(task_id);
     crate::async_file::release_owner(task_id);
     crate::block_io::release_owner(task_id);

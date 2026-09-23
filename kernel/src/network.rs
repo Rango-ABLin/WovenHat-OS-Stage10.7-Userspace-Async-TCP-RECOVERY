@@ -6,7 +6,7 @@
 //! static-lifetime bookkeeping in user processes.
 
 use crate::irq_lock::IrqMutex as Mutex;
-use alloc::{boxed::Box, vec, vec::Vec};
+use alloc::{vec, vec::Vec};
 use smoltcp::{
     iface::{Config, Interface, SocketHandle, SocketSet},
     phy::{ChecksumCapabilities, Device, DeviceCapabilities, Medium, RxToken, TxToken},
@@ -19,9 +19,10 @@ use spin::Once;
 use crate::{
     timer,
     virtio_net::{self, MAX_FRAME},
-    wifi_session::WifiSession,
-    wifi_smol,
 };
+
+#[cfg(feature = "stage13-9-test")]
+use crate::{wifi_session::WifiSession, wifi_smol};
 
 pub const DEFAULT_IPV4: Ipv4Address = Ipv4Address::new(10, 0, 2, 15);
 pub const DEFAULT_GATEWAY: Ipv4Address = Ipv4Address::new(10, 0, 2, 2);
@@ -115,11 +116,13 @@ impl Device for VirtioSmolDevice {
     }
 }
 
+#[cfg(feature = "stage13-9-test")]
 pub struct WifiNetDevice {
     session: WifiSession,
     epoch: u32,
     rx: [u8; wifi_smol::ETHERNET_MTU],
 }
+#[cfg(feature = "stage13-9-test")]
 impl WifiNetDevice {
     pub fn new(session: WifiSession, epoch: u32) -> Self {
         Self {
@@ -134,19 +137,23 @@ impl WifiNetDevice {
     }
 }
 
+#[cfg(feature = "stage13-9-test")]
 #[allow(clippy::large_enum_variant)]
 pub enum NetTransport {
     Virtio(VirtioSmolDevice),
     Wifi(WifiNetDevice),
 }
+#[cfg(feature = "stage13-9-test")]
 pub enum NetRxToken<'a> {
     Virtio(WovenRxToken<'a>),
     Wifi(wifi_smol::WifiRxToken<'a>),
 }
+#[cfg(feature = "stage13-9-test")]
 pub enum NetTxToken<'a> {
     Virtio(WovenTxToken),
     Wifi(wifi_smol::WifiTxToken<'a>),
 }
+#[cfg(feature = "stage13-9-test")]
 impl RxToken for NetRxToken<'_> {
     fn consume<R, F>(self, f: F) -> R
     where
@@ -158,6 +165,7 @@ impl RxToken for NetRxToken<'_> {
         }
     }
 }
+#[cfg(feature = "stage13-9-test")]
 impl TxToken for NetTxToken<'_> {
     fn consume<R, F>(self, len: usize, f: F) -> R
     where
@@ -169,6 +177,7 @@ impl TxToken for NetTxToken<'_> {
         }
     }
 }
+#[cfg(feature = "stage13-9-test")]
 impl Device for NetTransport {
     type RxToken<'a>
         = NetRxToken<'a>
@@ -221,6 +230,9 @@ impl Device for NetTransport {
         }
     }
 }
+#[cfg(not(feature = "stage13-9-test"))]
+type NetTransport = VirtioSmolDevice;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SocketKind {
     Udp = 1,
@@ -251,6 +263,7 @@ struct UserSocket {
     generation: u32,
     async_refs: u16,
     closing: bool,
+    drain_deadline: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -265,6 +278,8 @@ struct Runtime {
     device: NetTransport,
     sockets: SocketSet<'static>,
     user: [Option<UserSocket>; MAX_USER_SOCKETS],
+    #[cfg(feature = "stage10-7-test")]
+    queued_close_verified: bool,
     echo_handle: Option<SocketHandle>,
     echo_port: u16,
     echo_packets: u64,
@@ -330,7 +345,10 @@ pub fn init() -> Result<(), InitError> {
     virtio_net::init().map_err(InitError::Transport)?;
 
     let mac = EthernetAddress(virtio_net::mac_address());
+    #[cfg(feature = "stage13-9-test")]
     let mut device = NetTransport::Virtio(VirtioSmolDevice::new());
+    #[cfg(not(feature = "stage13-9-test"))]
+    let mut device = VirtioSmolDevice::new();
     let mut config = Config::new(mac.into());
     // Previously a fixed constant (0x5748_4f53_4e45_5435), which made TCP
     // initial sequence numbers and smoltcp's internal randomized choices
@@ -372,6 +390,8 @@ pub fn init() -> Result<(), InitError> {
                 device,
                 sockets,
                 user: [None; MAX_USER_SOCKETS],
+                #[cfg(feature = "stage10-7-test")]
+                queued_close_verified: false,
                 echo_handle: None,
                 echo_port: 0,
                 echo_packets: 0,
@@ -402,6 +422,22 @@ pub fn poll() {
         return;
     };
     let mut runtime = runtime.lock();
+
+    // Force the Stage 10.7 close-before-poll interleaving: the first TCP
+    // payload cannot leave until the final pin is released on a closed fd.
+    #[cfg(feature = "stage10-7-test")]
+    if !runtime.queued_close_verified
+        && runtime.user.iter().flatten().any(|entry| {
+            entry.kind == SocketKind::Tcp
+                && runtime
+                    .sockets
+                    .get::<tcp::Socket>(entry.handle)
+                    .send_queue()
+                    != 0
+        })
+    {
+        return;
+    }
 
     {
         let Runtime {
@@ -489,6 +525,9 @@ pub fn poll() {
             ..
         } = &mut *runtime;
         let _ = iface.poll(now(), device, sockets);
+    }
+    for index in 0..MAX_USER_SOCKETS {
+        finish_close(&mut runtime, index);
     }
     drop(runtime);
     crate::async_network::network_progress();
@@ -623,6 +662,7 @@ pub fn socket_open(owner: u64, kind: SocketKind) -> Result<u64, SocketError> {
         generation,
         async_refs: 0,
         closing: false,
+        drain_deadline: None,
     });
     Ok(slot as u64)
 }
@@ -757,14 +797,10 @@ pub fn socket_close(owner: u64, id: u64) -> Result<(), SocketError> {
         return Err(SocketError::Offline);
     };
     let mut runtime = runtime.lock();
-    let entry = find_slot(&runtime, owner, id)?;
+    find_slot(&runtime, owner, id)?;
     let index = id as usize;
-    if entry.async_refs == 0 {
-        let _ = runtime.sockets.remove(entry.handle);
-        runtime.user[index] = None;
-    } else if let Some(socket) = runtime.user[index].as_mut() {
-        socket.closing = true;
-    }
+    runtime.user[index].as_mut().unwrap().closing = true;
+    finish_close(&mut runtime, index);
     Ok(())
 }
 
@@ -776,12 +812,8 @@ pub fn close_process_sockets(owner: u64) {
     for index in 0..MAX_USER_SOCKETS {
         if let Some(entry) = runtime.user[index] {
             if entry.owner == owner {
-                if entry.async_refs == 0 {
-                    let _ = runtime.sockets.remove(entry.handle);
-                    runtime.user[index] = None;
-                } else if let Some(socket) = runtime.user[index].as_mut() {
-                    socket.closing = true;
-                }
+                runtime.user[index].as_mut().unwrap().closing = true;
+                finish_close(&mut runtime, index);
             }
         }
     }
@@ -832,18 +864,59 @@ pub fn unpin_socket(token: SocketToken) {
     if current.owner != token.owner || current.generation != token.generation {
         return;
     }
-    let mut remove = false;
     if let Some(socket) = runtime.user[index].as_mut() {
-        if socket.async_refs != 0 {
-            socket.async_refs -= 1;
+        socket.async_refs = socket.async_refs.saturating_sub(1);
+    }
+    finish_close(&mut runtime, index);
+}
+
+// Keep the original bounded slot and generation until queued output drains.
+// No blocking or scheduling occurs under the runtime lock. The normal network
+// poll services these sockets even after their process has exited. A peer that
+// never acknowledges cannot retain a slot forever (30-second drain bound).
+fn finish_close(runtime: &mut Runtime, index: usize) {
+    let Some(entry) = runtime.user[index] else {
+        return;
+    };
+    if !entry.closing || entry.async_refs != 0 {
+        return;
+    }
+    let pending = match entry.kind {
+        SocketKind::Tcp => {
+            let socket = runtime.sockets.get_mut::<tcp::Socket>(entry.handle);
+            let pending = socket.is_open() && socket.send_queue() != 0;
+            #[cfg(feature = "stage10-7-test")]
+            if pending {
+                runtime.queued_close_verified = true;
+            }
+            socket.close();
+            pending
         }
-        remove = socket.async_refs == 0 && socket.closing;
+        SocketKind::Udp => {
+            runtime
+                .sockets
+                .get::<udp::Socket>(entry.handle)
+                .send_queue()
+                != 0
+        }
+    };
+    let deadline = runtime.user[index]
+        .as_mut()
+        .unwrap()
+        .drain_deadline
+        .get_or_insert_with(|| timer::ticks().saturating_add(30 * u64::from(timer::FREQUENCY_HZ)));
+    if pending && timer::ticks() < *deadline {
+        return;
     }
-    if remove {
-        let handle = runtime.user[index].unwrap().handle;
-        let _ = runtime.sockets.remove(handle);
-        runtime.user[index] = None;
-    }
+    let _ = runtime.sockets.remove(entry.handle);
+    runtime.user[index] = None;
+}
+
+#[cfg(feature = "stage10-7-test")]
+pub fn queued_close_verified() -> bool {
+    RUNTIME
+        .get()
+        .is_some_and(|runtime| runtime.lock().queued_close_verified)
 }
 
 pub fn socket_connect_pinned(token: SocketToken, endpoint: IpEndpoint) -> Result<(), SocketError> {

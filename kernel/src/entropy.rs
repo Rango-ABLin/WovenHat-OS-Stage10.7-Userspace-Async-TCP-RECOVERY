@@ -1,5 +1,8 @@
 //! WovenHat Stage 13.9R — split secure entropy from best-effort kernel randomness.
 //!
+//! The secure-pool prototype is compiled with its Wi-Fi stage consumers only.
+//! It has no production entropy source yet.
+//!
 //! Security-sensitive callers use `fill_secure` / `snonce`. Those APIs fail
 //! closed unless a reviewed secure source has seeded the pool.
 //!
@@ -9,22 +12,27 @@
 //! WPA2 nonces, keys, ASLR secrets, stack canaries, or other cryptographic
 //! material.
 
+#[cfg(feature = "stage13-9-test")]
 use spin::Mutex;
 use x86_64::instructions::random::RdRand;
+#[cfg(feature = "stage13-9-test")]
 use zeroize::Zeroize;
 
+#[cfg(feature = "stage13-9-test")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EntropyError {
     Unavailable,
     InvalidRequest,
 }
 
+#[cfg(feature = "stage13-9-test")]
 struct Pool {
     seeded: bool,
     key: [u8; 32],
     counter: u64,
 }
 
+#[cfg(feature = "stage13-9-test")]
 impl Pool {
     const fn new() -> Self {
         Self {
@@ -77,15 +85,18 @@ impl Pool {
     }
 }
 
+#[cfg(feature = "stage13-9-test")]
 static POOL: Mutex<Pool> = Mutex::new(Pool::new());
 
 /// Cryptographic entropy boundary. Fails closed when no reviewed secure source
 /// has seeded the pool.
+#[cfg(feature = "stage13-9-test")]
 pub fn fill_secure(out: &mut [u8]) -> Result<(), EntropyError> {
     POOL.lock().fill(out)
 }
 
 /// Produce a WPA2 SNonce only from the secure entropy boundary.
+#[cfg(feature = "stage13-9-test")]
 pub fn snonce() -> Result<[u8; 32], EntropyError> {
     let mut nonce = [0u8; 32];
     fill_secure(&mut nonce)?;
@@ -93,6 +104,7 @@ pub fn snonce() -> Result<[u8; 32], EntropyError> {
 }
 
 /// Secure u64 helper for callers that explicitly require cryptographic entropy.
+#[cfg(feature = "stage13-9-test")]
 pub fn try_secure_u64() -> Result<u64, EntropyError> {
     let mut bytes = [0u8; 8];
     fill_secure(&mut bytes)?;
@@ -141,6 +153,7 @@ fn fallback_u64() -> u64 {
     z ^ (z >> 31)
 }
 
+#[cfg(feature = "stage13-9-test")]
 pub fn available() -> bool {
     POOL.lock().seeded
 }
@@ -155,6 +168,7 @@ pub fn clear_for_test() {
     POOL.lock().clear();
 }
 
+#[cfg(feature = "stage13-9-test")]
 pub fn self_test() -> bool {
     #[cfg(feature = "stage13-9-test")]
     {

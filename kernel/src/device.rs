@@ -9,6 +9,7 @@ pub enum DeviceKind {
     Timer,
     Keyboard,
     Block,
+    #[cfg(feature = "stage13-8-test")]
     Audio,
 }
 

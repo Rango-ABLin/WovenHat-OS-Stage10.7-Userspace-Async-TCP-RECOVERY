@@ -89,17 +89,6 @@ mod lock_order {
     }
 }
 
-#[cfg(test)]
-mod lock_order {
-    pub struct Token;
-    pub fn enter(_: usize, _: u8) -> Token {
-        Token
-    }
-    pub fn exit(_: Token) {}
-    pub fn highest_rank() -> u8 {
-        0
-    }
-}
 
 /// A pager operation acquires rank 10 and can wait for remote TLB flushes.
 /// It must begin outside other ranked guards with local IRQs enabled.
@@ -258,5 +247,17 @@ impl<T> Drop for PreemptMutexGuard<'_, T> {
         drop(self.guard.take());
         interrupts::without_interrupts(|| lock_order::exit(self.token.take().unwrap()));
         drop(self.preemption.take());
+    }
+}
+
+#[cfg(test)]
+mod lock_order {
+    pub struct Token;
+    pub fn enter(_: usize, _: u8) -> Token {
+        Token
+    }
+    pub fn exit(_: Token) {}
+    pub fn highest_rank() -> u8 {
+        0
     }
 }
