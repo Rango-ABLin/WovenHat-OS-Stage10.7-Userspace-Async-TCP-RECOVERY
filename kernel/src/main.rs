@@ -644,6 +644,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         serial::write_line(format_args!(
             "[S13.10W] Intel RX notification delivery: PASSED"
         ));
+        if !wifi_firmware::stage13_10x_self_test() {
+            serial::write_line(format_args!(
+                "[S13.10X] Intel RX DMA completion boundary: FAILED"
+            ));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!(
+            "[S13.10X] Intel RX DMA completion boundary: PASSED"
+        ));
         if !wifi_backend::self_test() {
             serial::write_line(format_args!(
                 "[S13.9K] Wi-Fi transport/backend contract: FAILED"

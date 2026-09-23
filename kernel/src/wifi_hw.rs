@@ -1,4 +1,4 @@
-//! WovenWiFi Stage 13.10A â€” physical PCI Wi-Fi backend boundary.
+//! WovenWiFi Stage 13.10A Ã¢â‚¬â€ physical PCI Wi-Fi backend boundary.
 //!
 //! Establishes the hardware-facing ownership boundary without claiming support
 //! for a specific chipset yet. A valid candidate must be a PCI network
@@ -1401,6 +1401,23 @@ impl OwnedDmaBuffer {
         }
         Ok(unsafe { ((self.virtual_address as *const u8).add(offset)).read_volatile() })
     }
+
+    pub fn read_bytes(&self, offset: usize, out: &mut [u8]) -> Result<(), DmaMemoryError> {
+        let end = offset
+            .checked_add(out.len())
+            .ok_or(DmaMemoryError::AddressOverflow)?;
+        if end > usize::from(self.length) {
+            return Err(DmaMemoryError::AddressOverflow);
+        }
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                (self.virtual_address as *const u8).add(offset),
+                out.as_mut_ptr(),
+                out.len(),
+            );
+        }
+        Ok(())
+    }
 }
 impl Drop for OwnedDmaBuffer {
     fn drop(&mut self) {
@@ -1517,6 +1534,17 @@ impl OwnedBufferQueue {
         Ok((slot, descriptor))
     }
 
+    pub fn device_write(&mut self, slot: usize, bytes: &[u8]) -> Result<(), QueueError> {
+        if slot >= DMA_RING_CAPACITY || self.entries[slot].owner != DescriptorOwner::Device {
+            return Err(QueueError::NotDeviceOwned);
+        }
+        let Some(buffer) = self.entries[slot].buffer.as_mut() else {
+            return Err(QueueError::NotDeviceOwned);
+        };
+        buffer
+            .write_bytes(0, bytes)
+            .map_err(|_| QueueError::InvalidLength)
+    }
     pub fn complete(&mut self, slot: usize) -> Result<(), QueueError> {
         if slot >= DMA_RING_CAPACITY
             || self.entries[slot].owner != DescriptorOwner::Device
@@ -1531,25 +1559,27 @@ impl OwnedBufferQueue {
         Ok(())
     }
 
-    pub fn reclaim(&mut self) -> Result<OwnedDmaBuffer, QueueError> {
+    pub fn reclaim_with_slot(&mut self) -> Result<(usize, OwnedDmaBuffer), QueueError> {
         if self.count == 0 {
             return Err(QueueError::Empty);
         }
         if self.entries[self.head].owner != DescriptorOwner::Completed {
             return Err(QueueError::NotCompleted);
         }
-
         dma_consume();
-        let Some(buffer) = self.entries[self.head].buffer.take() else {
+        let slot = self.head;
+        let Some(buffer) = self.entries[slot].buffer.take() else {
             return Err(QueueError::NotCompleted);
         };
-        self.entries[self.head].owner = DescriptorOwner::Cpu;
+        self.entries[slot].owner = DescriptorOwner::Cpu;
         self.head = (self.head + 1) % DMA_RING_CAPACITY;
         self.count -= 1;
         self.completed -= 1;
-        Ok(buffer)
+        Ok((slot, buffer))
     }
-
+    pub fn reclaim(&mut self) -> Result<OwnedDmaBuffer, QueueError> {
+        self.reclaim_with_slot().map(|(_, buffer)| buffer)
+    }
     /// Teardown is legal only once hardware no longer owns any slot. Completed
     /// or CPU-owned buffers may then drop normally and return frames safely.
     pub fn quiesce(&mut self) -> Result<(), QueueError> {

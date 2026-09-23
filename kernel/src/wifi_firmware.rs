@@ -1,4 +1,4 @@
-//! WovenWiFi Stage 13.10K ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â firmware image ownership/validation foundation.
+//! WovenWiFi Stage 13.10K - firmware image ownership/validation foundation.
 //!
 //! This module deliberately does not parse Intel's real TLV firmware format or
 //! write firmware to hardware yet. It establishes the fail-closed, bounded
@@ -2503,6 +2503,154 @@ pub fn stage13_10w_self_test() -> bool {
         && rejected.state() == IntelFirmwareStartState::Failed
 }
 
+// === Stage 13.10X: Intel RX DMA completion ownership boundary ===
+pub const INTEL_RX_DMA_BUFFER_SIZE: u16 = 4096;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntelRxDmaError {
+    Dma,
+    Queue(crate::wifi_hw::QueueError),
+    InvalidCompletionLength,
+    Notification(IntelRxNotificationError),
+}
+
+pub struct IntelRxDmaQueue {
+    queue: crate::wifi_hw::OwnedBufferQueue,
+    completed_lengths: [u16; crate::wifi_hw::DMA_RING_CAPACITY],
+}
+
+impl IntelRxDmaQueue {
+    pub const fn new() -> Self {
+        Self {
+            queue: crate::wifi_hw::OwnedBufferQueue::new(),
+            completed_lengths: [0; crate::wifi_hw::DMA_RING_CAPACITY],
+        }
+    }
+
+    pub fn post_buffer(
+        &mut self,
+    ) -> Result<(usize, crate::wifi_hw::DmaDescriptor), IntelRxDmaError> {
+        let buffer = crate::wifi_hw::OwnedDmaBuffer::allocate(INTEL_RX_DMA_BUFFER_SIZE, 0)
+            .map_err(|_| IntelRxDmaError::Dma)?;
+        self.queue.submit(buffer).map_err(IntelRxDmaError::Queue)
+    }
+
+    /// Stage X models the device DMA producer. A later physical interrupt/RX
+    /// stage will replace this producer while preserving the ownership rules.
+    pub fn complete_from_device(
+        &mut self,
+        slot: usize,
+        bytes: &[u8],
+    ) -> Result<(), IntelRxDmaError> {
+        if bytes.is_empty() || bytes.len() > usize::from(INTEL_RX_DMA_BUFFER_SIZE) {
+            return Err(IntelRxDmaError::InvalidCompletionLength);
+        }
+        self.queue
+            .device_write(slot, bytes)
+            .map_err(IntelRxDmaError::Queue)?;
+        self.completed_lengths[slot] =
+            u16::try_from(bytes.len()).map_err(|_| IntelRxDmaError::InvalidCompletionLength)?;
+        self.queue.complete(slot).map_err(IntelRxDmaError::Queue)
+    }
+
+    pub fn dispatch_completed<I: IntelFirmwareStartupIo>(
+        &mut self,
+        startup: &mut Intel22000FirmwareStartup<I>,
+        abi: IntelAliveAbiVersion,
+    ) -> Result<IntelRxDispatchResult, IntelRxDmaError> {
+        let (slot, buffer) = self
+            .queue
+            .reclaim_with_slot()
+            .map_err(IntelRxDmaError::Queue)?;
+        let length = usize::from(self.completed_lengths[slot]);
+        self.completed_lengths[slot] = 0;
+        if length == 0 || length > usize::from(buffer.length()) {
+            return Err(IntelRxDmaError::InvalidCompletionLength);
+        }
+
+        let mut packet = [0u8; INTEL_RX_DMA_BUFFER_SIZE as usize];
+        buffer
+            .read_bytes(0, &mut packet[..length])
+            .map_err(|_| IntelRxDmaError::Dma)?;
+        startup
+            .dispatch_rx_notification(abi, &packet[..length])
+            .map_err(IntelRxDmaError::Notification)
+    }
+
+    pub const fn device_owned(&self) -> usize {
+        self.queue.device_owned()
+    }
+
+    pub const fn completed(&self) -> usize {
+        self.queue.completed()
+    }
+}
+
+pub fn stage13_10x_self_test() -> bool {
+    let mut owner = Intel22000DmaContextInfo::new();
+    if owner.set_rx_queue(0x100000, 0x110000, 0x120000).is_err()
+        || owner.set_command_queue(0x130000, 32).is_err()
+        || owner
+            .stage_firmware_chunk(IntelContextInfoImageKind::Lmac, &[0x31; 512])
+            .is_err()
+    {
+        return false;
+    }
+    let Ok(context) = owner.build_hardware_context(0x2200) else {
+        return false;
+    };
+    let Some(mut startup) = stage13_10w_startup(&context) else {
+        return false;
+    };
+
+    let mut v8 = [0u8; INTEL_ALIVE_V8_SIZE];
+    stage13_10v_fill(&mut v8);
+    stage13_10v_put64(&mut v8, 144, 0x8877665544332211);
+    let mut packet_storage = [0u8; INTEL_RX_PACKET_HEADER_SIZE + INTEL_ALIVE_V8_SIZE];
+    let Some(packet) =
+        stage13_10w_packet_into(&mut packet_storage, INTEL_UCODE_ALIVE_NTFY, 0, 0x55aa, &v8)
+    else {
+        return false;
+    };
+
+    let mut rx = IntelRxDmaQueue::new();
+    let Ok((slot, descriptor)) = rx.post_buffer() else {
+        return false;
+    };
+    if descriptor.length != INTEL_RX_DMA_BUFFER_SIZE
+        || rx.device_owned() != 1
+        || rx.completed() != 0
+        || rx.complete_from_device(slot, &[]).is_ok()
+    {
+        return false;
+    }
+
+    if rx.complete_from_device(slot, packet).is_err()
+        || rx.device_owned() != 0
+        || rx.completed() != 1
+    {
+        return false;
+    }
+
+    let Ok(IntelRxDispatchResult::Alive(alive)) =
+        rx.dispatch_completed(&mut startup, IntelAliveAbiVersion::V8)
+    else {
+        return false;
+    };
+    if alive.primary.status != INTEL_ALIVE_STATUS_OK
+        || alive.platform_id != Some(0x8877665544332211)
+        || startup.state() != IntelFirmwareStartState::FirmwareRunning
+        || rx.completed() != 0
+    {
+        return false;
+    }
+
+    // A reclaimed slot cannot be completed again until it is reposted.
+    rx.complete_from_device(slot, packet)
+        == Err(IntelRxDmaError::Queue(
+            crate::wifi_hw::QueueError::NotDeviceOwned,
+        ))
+}
 pub fn stage13_10s_self_test() -> bool {
     let mut owner = Intel22000DmaContextInfo::new();
     if owner.set_rx_queue(0x100000, 0x110000, 0x120000).is_err()
