@@ -1,4 +1,4 @@
-//! WovenWiFi Stage 13.10A Ã¢â‚¬â€ physical PCI Wi-Fi backend boundary.
+//! WovenWiFi - physical PCI Wi-Fi backend foundation.
 //!
 //! Establishes the hardware-facing ownership boundary without claiming support
 //! for a specific chipset yet. A valid candidate must be a PCI network
@@ -247,6 +247,203 @@ impl IntelCsrBank {
     }
 }
 
+/// Intel legacy/INTx CSR interrupt causes used by the AX200-family transport.
+///
+/// These values are hardware ABI constants. Stage 13.10Y deliberately models
+/// the CSR interrupt-service boundary only; vector/MSI-X routing remains a
+/// later integration step.
+pub const INTEL_CSR_INT_BIT_FH_RX: u32 = 1u32 << 31;
+pub const INTEL_CSR_INT_BIT_HW_ERR: u32 = 1u32 << 29;
+pub const INTEL_CSR_INT_BIT_SW_ERR: u32 = 1u32 << 25;
+pub const INTEL_CSR_INT_BIT_RF_KILL: u32 = 1u32 << 7;
+pub const INTEL_CSR_INT_BIT_SW_RX: u32 = 1u32 << 3;
+pub const INTEL_CSR_INT_BIT_RX_PERIODIC: u32 = 1u32 << 0;
+
+pub const INTEL_CSR_RX_INTERRUPT_MASK: u32 =
+    INTEL_CSR_INT_BIT_FH_RX | INTEL_CSR_INT_BIT_SW_RX | INTEL_CSR_INT_BIT_RX_PERIODIC;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntelRxInterruptError {
+    Csr(IntelCsrError),
+    FatalHardware,
+    FatalFirmware,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IntelRxInterruptEvent {
+    pub raw_status: u32,
+    pub enabled_status: u32,
+    pub acknowledged: u32,
+    pub rx_pending: bool,
+}
+
+/// WovenHat-owned Intel CSR RX interrupt service boundary.
+///
+/// Hardware interrupt delivery (INTx/MSI/MSI-X and APIC routing) is intentionally
+/// outside this type. Once WovenHat's generic interrupt layer invokes it, this
+/// controller masks CSR delivery, snapshots causes, acknowledges handled causes,
+/// classifies RX work, and restores the configured mask.
+pub struct IntelRxInterruptController {
+    csr: IntelCsrBank,
+    configured_mask: u32,
+}
+
+impl IntelRxInterruptController {
+    pub fn new(csr: IntelCsrBank) -> Self {
+        Self {
+            csr,
+            configured_mask: 0,
+        }
+    }
+
+    pub const fn configured_mask(&self) -> u32 {
+        self.configured_mask
+    }
+
+    pub fn enable_rx(&mut self) -> Result<(), IntelRxInterruptError> {
+        self.configured_mask = INTEL_CSR_RX_INTERRUPT_MASK;
+        self.csr
+            .write(IntelCsr::IntMask, self.configured_mask)
+            .map_err(IntelRxInterruptError::Csr)
+    }
+
+    pub fn disable(&mut self) -> Result<(), IntelRxInterruptError> {
+        self.csr
+            .write(IntelCsr::IntMask, 0)
+            .map_err(IntelRxInterruptError::Csr)
+    }
+
+    pub fn service(&mut self) -> Result<IntelRxInterruptEvent, IntelRxInterruptError> {
+        // Prevent new CSR delivery while the current cause snapshot is handled.
+        self.csr
+            .write(IntelCsr::IntMask, 0)
+            .map_err(IntelRxInterruptError::Csr)?;
+
+        let raw_status = self
+            .csr
+            .read(IntelCsr::Int)
+            .map_err(IntelRxInterruptError::Csr)?;
+        let enabled_status = raw_status & self.configured_mask;
+
+        if raw_status & INTEL_CSR_INT_BIT_HW_ERR != 0 {
+            return Err(IntelRxInterruptError::FatalHardware);
+        }
+        if raw_status & INTEL_CSR_INT_BIT_SW_ERR != 0 {
+            return Err(IntelRxInterruptError::FatalFirmware);
+        }
+
+        let acknowledged = enabled_status & INTEL_CSR_RX_INTERRUPT_MASK;
+
+        // Real Intel CSR_INT uses write-one-to-clear acknowledgement. Synthetic
+        // MMIO cannot emulate W1C in memory, so the test verifies the value
+        // written here as the ABI contract rather than pretending hardware W1C.
+        if acknowledged != 0 {
+            self.csr
+                .write(IntelCsr::Int, acknowledged)
+                .map_err(IntelRxInterruptError::Csr)?;
+        }
+
+        self.csr
+            .write(IntelCsr::IntMask, self.configured_mask)
+            .map_err(IntelRxInterruptError::Csr)?;
+
+        Ok(IntelRxInterruptEvent {
+            raw_status,
+            enabled_status,
+            acknowledged,
+            rx_pending: acknowledged != 0,
+        })
+    }
+}
+
+pub fn stage13_10y_self_test() -> bool {
+    let Some(function) = stage13_10i_supported_function() else {
+        return false;
+    };
+    let Ok(mut page) = DmaPage::allocate_zeroed() else {
+        return false;
+    };
+    let Ok(region) = MmioRegion::new(page.physical_address(), DMA_PAGE_SIZE) else {
+        return false;
+    };
+
+    // SAFETY: synthetic CSR storage aliases one exclusively-owned DmaPage.
+    let mmio = unsafe { VolatileMmio32::from_mapped(region, page.virtual_address()) };
+    let Ok(csr) = IntelCsrBank::from_supported(function, mmio) else {
+        return false;
+    };
+    let mut irq = IntelRxInterruptController::new(csr);
+
+    if irq.enable_rx().is_err()
+        || irq.configured_mask() != INTEL_CSR_RX_INTERRUPT_MASK
+        || page.read_u32(IntelCsr::IntMask.offset()) != Ok(INTEL_CSR_RX_INTERRUPT_MASK)
+    {
+        return false;
+    }
+
+    // FH_RX is the RX DMA/command-response cause. An unrelated RF-kill cause is
+    // deliberately present and must not be acknowledged by the RX boundary.
+    if page
+        .write_u32(
+            IntelCsr::Int.offset(),
+            INTEL_CSR_INT_BIT_FH_RX | INTEL_CSR_INT_BIT_RF_KILL,
+        )
+        .is_err()
+    {
+        return false;
+    }
+    let Ok(event) = irq.service() else {
+        return false;
+    };
+    if event.raw_status != (INTEL_CSR_INT_BIT_FH_RX | INTEL_CSR_INT_BIT_RF_KILL)
+        || event.enabled_status != INTEL_CSR_INT_BIT_FH_RX
+        || event.acknowledged != INTEL_CSR_INT_BIT_FH_RX
+        || !event.rx_pending
+        || page.read_u32(IntelCsr::Int.offset()) != Ok(INTEL_CSR_INT_BIT_FH_RX)
+        || page.read_u32(IntelCsr::IntMask.offset()) != Ok(INTEL_CSR_RX_INTERRUPT_MASK)
+    {
+        return false;
+    }
+
+    // SW_RX must also classify as receive work.
+    if page
+        .write_u32(IntelCsr::Int.offset(), INTEL_CSR_INT_BIT_SW_RX)
+        .is_err()
+    {
+        return false;
+    }
+    let Ok(sw_event) = irq.service() else {
+        return false;
+    };
+    if !sw_event.rx_pending || sw_event.acknowledged != INTEL_CSR_INT_BIT_SW_RX {
+        return false;
+    }
+
+    // A masked unrelated cause is observable but produces no RX work.
+    if page
+        .write_u32(IntelCsr::Int.offset(), INTEL_CSR_INT_BIT_RF_KILL)
+        .is_err()
+    {
+        return false;
+    }
+    let Ok(masked) = irq.service() else {
+        return false;
+    };
+    if masked.rx_pending || masked.acknowledged != 0 {
+        return false;
+    }
+
+    // Fatal causes fail closed.
+    if page
+        .write_u32(IntelCsr::Int.offset(), INTEL_CSR_INT_BIT_HW_ERR)
+        .is_err()
+        || irq.service() != Err(IntelRxInterruptError::FatalHardware)
+    {
+        return false;
+    }
+
+    true
+}
 pub const INTEL_CSR_RESET_SW_RESET: u32 = 0x0000_0080;
 pub const INTEL_CSR_GP_CNTRL_MAC_CLOCK_READY: u32 = 0x0000_0001;
 pub const INTEL_RESET_POLL_LIMIT: usize = 1024;
