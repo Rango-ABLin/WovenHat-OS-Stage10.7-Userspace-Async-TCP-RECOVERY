@@ -31,6 +31,11 @@ pub fn take_wifi_device_work() -> bool {
     WIFI_DEVICE_WORK.swap(false, Ordering::AcqRel)
 }
 
+#[cfg(feature = "stage13-9-test")]
+pub fn publish_wifi_device_work_for_test() {
+    WIFI_DEVICE_WORK.store(true, Ordering::Release);
+}
+
 pub fn stage13_10z_vector_self_test() -> bool {
     WIFI_DEVICE_VECTOR >= 0x20
         && WIFI_DEVICE_VECTOR != 0x80

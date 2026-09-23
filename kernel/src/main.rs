@@ -709,6 +709,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         serial::write_line(format_args!(
             "[S13.10AB] AX200 PCI MSI binding contract: PASSED"
         ));
+        if !wifi_hw::stage13_10ac_deferred_self_test() {
+            serial::write_line(format_args!(
+                "[S13.10AC] deferred AX200 IRQ -> CSR RX service: FAILED"
+            ));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!(
+            "[S13.10AC] deferred AX200 IRQ -> CSR RX service: PASSED"
+        ));
         if !wifi_backend::self_test() {
             serial::write_line(format_args!(
                 "[S13.9K] Wi-Fi transport/backend contract: FAILED"

@@ -292,6 +292,110 @@ pub fn stage13_10ab_binding_self_test() -> bool {
     no_msi.capabilities.msi_offset = 0;
     ax200_msi_binding_contract(no_msi, 0x2a) == Err(Ax200MsiBindError::MissingMsi)
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ax200DeferredServiceError {
+    Csr(IntelRxInterruptError),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ax200DeferredServiceEvent {
+    pub work_was_pending: bool,
+    pub rx_pending: bool,
+    pub acknowledged: u32,
+    pub raw_status: u32,
+}
+
+/// Deferred half of the AX200 interrupt path.
+///
+/// The vector 0xd0 hard IRQ performs only atomic work publication and LAPIC EOI.
+/// This routine consumes that publication outside hard-IRQ context and routes
+/// the device event through the Stage 13.10Y Intel CSR interrupt controller.
+pub fn service_deferred_ax200_interrupt(
+    controller: &mut IntelRxInterruptController,
+) -> Result<Ax200DeferredServiceEvent, Ax200DeferredServiceError> {
+    if !crate::interrupts::take_wifi_device_work() {
+        return Ok(Ax200DeferredServiceEvent {
+            work_was_pending: false,
+            rx_pending: false,
+            acknowledged: 0,
+            raw_status: 0,
+        });
+    }
+
+    let event = controller
+        .service()
+        .map_err(Ax200DeferredServiceError::Csr)?;
+
+    Ok(Ax200DeferredServiceEvent {
+        work_was_pending: true,
+        rx_pending: event.rx_pending,
+        acknowledged: event.acknowledged,
+        raw_status: event.raw_status,
+    })
+}
+
+pub fn stage13_10ac_deferred_self_test() -> bool {
+    let Some(function) = stage13_10i_supported_function() else {
+        return false;
+    };
+    let Ok(mut page) = DmaPage::allocate_zeroed() else {
+        return false;
+    };
+    let Ok(region) = MmioRegion::new(page.physical_address(), DMA_PAGE_SIZE) else {
+        return false;
+    };
+
+    // SAFETY: synthetic CSR storage aliases one exclusively-owned DmaPage.
+    let mmio = unsafe { VolatileMmio32::from_mapped(region, page.virtual_address()) };
+    let Ok(csr) = IntelCsrBank::from_supported(function, mmio) else {
+        return false;
+    };
+    let mut controller = IntelRxInterruptController::new(csr);
+
+    if controller.enable_rx().is_err() {
+        return false;
+    }
+
+    // With no vector-0xd0 work pending, no CSR service may be performed.
+    let Ok(idle) = service_deferred_ax200_interrupt(&mut controller) else {
+        return false;
+    };
+    if idle.work_was_pending || idle.rx_pending || idle.acknowledged != 0 || idle.raw_status != 0 {
+        return false;
+    }
+
+    // Publish the same atomic work state as the real hard IRQ and seed FH_RX.
+    if page
+        .write_u32(IntelCsr::Int.offset(), INTEL_CSR_INT_BIT_FH_RX)
+        .is_err()
+    {
+        return false;
+    }
+    crate::interrupts::publish_wifi_device_work_for_test();
+
+    let Ok(serviced) = service_deferred_ax200_interrupt(&mut controller) else {
+        return false;
+    };
+    if !serviced.work_was_pending
+        || !serviced.rx_pending
+        || serviced.acknowledged != INTEL_CSR_INT_BIT_FH_RX
+        || serviced.raw_status != INTEL_CSR_INT_BIT_FH_RX
+        || crate::interrupts::take_wifi_device_work()
+    {
+        return false;
+    }
+
+    // Work without an enabled RX cause is consumed but must not fabricate RX.
+    if page.write_u32(IntelCsr::Int.offset(), 0).is_err() {
+        return false;
+    }
+    crate::interrupts::publish_wifi_device_work_for_test();
+    let Ok(empty) = service_deferred_ax200_interrupt(&mut controller) else {
+        return false;
+    };
+
+    empty.work_was_pending && !empty.rx_pending && empty.acknowledged == 0
+}
 pub fn discover_first_supported() -> Option<SupportedWifiFunction> {
     for index in 0..64 {
         let Some(device) = pci::device(index) else {
