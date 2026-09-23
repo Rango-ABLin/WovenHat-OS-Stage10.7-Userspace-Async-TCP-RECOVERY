@@ -1,5 +1,27 @@
 # WovenHat OS Architecture & Codebase Guide
 
+## Intel firmware container parsing follow-up (2026-09-23)
+
+`wifi_firmware_tlv.rs` is the shared safe, allocation-free container parser.
+It borrows immutable image bytes, bounds images at 4 MiB and sections at 1 MiB,
+and returns at most 64 data sections, matching the existing Intel DMA owner
+capacity. The generic firmware image contract retains its 16-section limit.
+TLV 32 declares paging size; secure types 24/25 carry runtime/init sections.
+Per-image separator state assigns LMAC, UMAC and paging groups without exposing
+separator records as DMA data. Host tests include a pinned upstream AX200
+container; the kernel probe exercises the same parser. See the
+[follow-up audit](audit-stage13-10ac-firmware-parser.md) for validation and limits.
+Successful parsing does not select a device ABI, authenticate firmware or
+activate hardware; physical startup and RX integration remain outstanding.
+
+The QEMU acceptance launchers explicitly use TCG with a 128-MiB translation
+cache to bound host commit use. Guest RAM and CPU matrices are unchanged;
+the cache setting does not alter guest allocator capacity or acceptance limits.
+Prior-stage PowerShell calls use child script scopes in the same process rather
+than retaining 27 nested shell processes. Exceptions and native exit checks
+preserve fail-fast behavior. The follow-up aggregate remains blocked by host
+guest-memory allocation failure; see the audit before treating it as accepted.
+
 ## Stage 13.10AC deferred Wi-Fi service (2026-09-23)
 
 Historical AX200 labels 13.10A–AC extend Wi-Fi roadmap Stage 13.9. They do

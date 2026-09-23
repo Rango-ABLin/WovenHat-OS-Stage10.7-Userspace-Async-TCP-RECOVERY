@@ -3,7 +3,7 @@ $ErrorActionPreference = "Stop"
 Write-Host "=== WovenHat Stage 9.3 WovenGuard Security Audit Ledger Acceptance ==="
 Write-Host ""
 Write-Host "=== 1/2 Preserve the complete validated Stage 9.2E baseline ==="
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\run-stage9-2e-acceptance.ps1
+& "$PSScriptRoot\run-stage9-2e-acceptance.ps1"
 if ($LASTEXITCODE -ne 0) {
     throw "Stage 9.2E preservation acceptance failed with exit code $LASTEXITCODE"
 }

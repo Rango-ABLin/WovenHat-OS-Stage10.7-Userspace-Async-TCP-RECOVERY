@@ -36,6 +36,7 @@ def run(root, artifacts):
     env['CARGO_TARGET_DIR'] = str(root / 'target')
     sources = [*root.glob('*.toml'), root / 'Cargo.lock', *root.glob('*.rs'),
                *root.glob('*.ps1'), *root.glob('.cargo/*.toml')]
+    sources.extend(p for p in (root / 'tests' / 'fixtures').rglob('*') if p.is_file())
     for directory, pattern in [('kernel', '*.rs'), ('kernel', '*.S'), ('kernel', '*.toml'),
                                ('src', '*.rs'), ('libwoven', '*.rs'), ('libwoven', '*.toml'),
                                ('tests', '*.rs'), ('tests', '*.py'), ('scripts', '*.py'),

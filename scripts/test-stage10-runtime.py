@@ -125,7 +125,7 @@ def main():
         print(build.stderr, file=sys.stderr)
         return 1
     serial = out / 'serial.log'
-    command = [str(qemu), '-machine', 'q35', '-m', '256M', '-smp', str(args.cpus),
+    command = [str(qemu), '-accel', 'tcg,tb-size=128', '-machine', 'q35', '-m', '256M', '-smp', str(args.cpus),
                '-display', 'none', '-serial', f'file:{serial}', '-no-reboot',
                '-device', 'isa-debug-exit,iobase=0xf4,iosize=0x04',
                '-drive', f'if=pflash,format=raw,readonly=on,file={firmware}',

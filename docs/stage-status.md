@@ -6,6 +6,22 @@ fully complete while a roadmap requirement remains open.
 
 Authoritative development sequence: [supplied Stage 10.7–36 roadmap](master-development-roadmap.md).
 
+## Stage 13.10AC firmware parser follow-up — full gate blocked (2026-09-23)
+
+The [parser follow-up audit](audit-stage13-10ac-firmware-parser.md) records
+repairs for paging metadata, secure runtime/init sections, section grouping,
+input bounds and the Intel container capacity mismatch. A pinned, unmodified
+upstream AX200 image supplies a real container fixture. Build, strict host/kernel
+lint, 34 Rust tests in each configuration and 10 Python tests passed. Focused
+Wi-Fi checks passed on 1/2/4 CPUs. QEMU's host translation cache is bounded and
+27 nested PowerShell launches now execute in one process.
+
+Final-source aggregate `audit-artifacts/ac-full-1790189677915188900` failed
+before its first preservation guest boot: Windows could not allocate QEMU's
+guest RAM. Full acceptance remains blocked until host memory is freed and the
+complete aggregate is rerun. The earlier accepted run below does not certify
+these changes. Physical firmware/RX integration also remains open.
+
 ## Stage 13.10AC remediation — software gate accepted (2026-09-23)
 
 Baseline: `0563d0b` on `stage13.9-wifi`. Historical AX200 labels 13.10A–AC

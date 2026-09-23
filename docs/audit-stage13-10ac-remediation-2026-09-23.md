@@ -232,6 +232,11 @@ compatibility defects, not covered by the bounded CSR worker acceptance.
 Correcting them requires real-image fixtures, separator/group handling and
 loader-policy tests before any claim of firmware compatibility.
 
+Update: the [firmware parser follow-up](audit-stage13-10ac-firmware-parser.md)
+addresses those container parsing defects and adds an upstream binary fixture.
+Its separate evidence applies to the follow-up source; hardware loading and
+firmware ABI policy remain outstanding.
+
 AX201 must not be enabled by adding its PCI ID to AX200 classification. Intel
 documents AX201's [CNVio2 system interface](https://www.intel.com/content/www/us/en/products/sku/130293/intel-wifi-6-ax201-gig/specifications.html)
 and AX200's [PCIe interface](https://www.intel.com/content/www/us/en/support/articles/000057689/wireless.html).
