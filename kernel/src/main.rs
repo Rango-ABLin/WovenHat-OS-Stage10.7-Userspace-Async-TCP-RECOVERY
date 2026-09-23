@@ -682,6 +682,33 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         serial::write_line(format_args!(
             "[S13.10AA] PCI MSI programming contract: PASSED"
         ));
+        if !wifi_hw::stage13_10ab_binding_self_test() {
+            serial::write_line(format_args!(
+                "[S13.10AB] AX200 PCI MSI binding contract: FAILED"
+            ));
+            qemu_test_exit_failure();
+        }
+        match wifi_hw::discover_and_bind_ax200_msi() {
+            Ok(Some(binding)) => serial::write_line(format_args!(
+                "[S13.10AB] physical AX200 MSI programmed apic={} vector={:#x} cap={:#x} 64bit={}",
+                binding.destination_apic_id,
+                binding.vector,
+                binding.capability_offset,
+                binding.is_64_bit as u8,
+            )),
+            Ok(None) => serial::write_line(format_args!(
+                "[S13.10AB] no physical AX200 present; hardware MSI programming skipped"
+            )),
+            Err(_) => {
+                serial::write_line(format_args!(
+                    "[S13.10AB] physical AX200 MSI binding: FAILED"
+                ));
+                qemu_test_exit_failure();
+            }
+        }
+        serial::write_line(format_args!(
+            "[S13.10AB] AX200 PCI MSI binding contract: PASSED"
+        ));
         if !wifi_backend::self_test() {
             serial::write_line(format_args!(
                 "[S13.9K] Wi-Fi transport/backend contract: FAILED"

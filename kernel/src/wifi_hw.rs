@@ -171,6 +171,127 @@ pub fn bind_supported(device: pci::Device) -> Result<SupportedWifiFunction, Supp
     Ok(function)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ax200MsiBindError {
+    UnsupportedDevice,
+    MissingMsi,
+    MissingApicDestination,
+    Msi(pci::MsiError),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ax200MsiBinding {
+    pub vendor_id: u16,
+    pub device_id: u16,
+    pub destination_apic_id: u32,
+    pub vector: u8,
+    pub capability_offset: u16,
+    pub is_64_bit: bool,
+}
+
+/// Validate the exact physical-device authority boundary for AX200 MSI.
+///
+/// This function performs no PCI writes. It confirms that the already-reviewed
+/// WovenHat supported-device classification and the generic PCI MSI layer agree
+/// on the same Intel AX200 function before hardware activation is permitted.
+pub fn ax200_msi_binding_contract(
+    device: pci::Device,
+    destination_apic_id: u32,
+) -> Result<Ax200MsiBinding, Ax200MsiBindError> {
+    if device.vendor_id != 0x8086 || device.device_id != 0x2723 || !is_wireless_candidate(&device) {
+        return Err(Ax200MsiBindError::UnsupportedDevice);
+    }
+    if !device.capabilities.msi || device.capabilities.msi_offset == 0 {
+        return Err(Ax200MsiBindError::MissingMsi);
+    }
+
+    let message =
+        pci::MsiMessage::fixed(destination_apic_id, crate::interrupts::WIFI_DEVICE_VECTOR)
+            .map_err(Ax200MsiBindError::Msi)?;
+
+    Ok(Ax200MsiBinding {
+        vendor_id: device.vendor_id,
+        device_id: device.device_id,
+        destination_apic_id,
+        vector: u8::try_from(message.data).unwrap_or(crate::interrupts::WIFI_DEVICE_VECTOR),
+        capability_offset: device.capabilities.msi_offset,
+        is_64_bit: false,
+    })
+}
+
+/// Program MSI only for the exact supported AX200 function.
+///
+/// This is the first physical binding step: PCI writes occur only after the
+/// generic supported-device classification and MSI capability validation pass.
+pub fn bind_ax200_msi(device: pci::Device) -> Result<Ax200MsiBinding, Ax200MsiBindError> {
+    let _ = classify_supported(device).map_err(|_| Ax200MsiBindError::UnsupportedDevice)?;
+    let destination =
+        crate::smp::device_irq_destination().ok_or(Ax200MsiBindError::MissingApicDestination)?;
+    let mut binding = ax200_msi_binding_contract(device, destination)?;
+    let programmed = pci::program_msi(device, destination, crate::interrupts::WIFI_DEVICE_VECTOR)
+        .map_err(Ax200MsiBindError::Msi)?;
+    binding.capability_offset = programmed.offset;
+    binding.is_64_bit = programmed.is_64_bit;
+    Ok(binding)
+}
+
+/// Discover and bind a real AX200 if one is present in WovenHat's PCI inventory.
+///
+/// QEMU acceptance does not require such hardware to exist. `Ok(None)` means
+/// no genuine AX200 was discovered and no MSI configuration was written.
+pub fn discover_and_bind_ax200_msi() -> Result<Option<Ax200MsiBinding>, Ax200MsiBindError> {
+    for index in 0..64 {
+        let Some(device) = pci::device(index) else {
+            continue;
+        };
+        if device.vendor_id == 0x8086
+            && device.device_id == 0x2723
+            && is_wireless_candidate(&device)
+        {
+            return bind_ax200_msi(device).map(Some);
+        }
+    }
+    Ok(None)
+}
+
+pub fn stage13_10ab_binding_self_test() -> bool {
+    let device = pci::Device {
+        vendor_id: 0x8086,
+        device_id: 0x2723,
+        class: 0x02,
+        subclass: 0x80,
+        capabilities: pci::Capabilities {
+            msi: true,
+            msi_offset: 0x50,
+            ..pci::Capabilities::default()
+        },
+        ..pci::Device::default()
+    };
+
+    let Ok(binding) = ax200_msi_binding_contract(device, 0x2a) else {
+        return false;
+    };
+
+    if binding.vendor_id != 0x8086
+        || binding.device_id != 0x2723
+        || binding.destination_apic_id != 0x2a
+        || binding.vector != crate::interrupts::WIFI_DEVICE_VECTOR
+        || binding.capability_offset != 0x50
+    {
+        return false;
+    }
+
+    let mut wrong = device;
+    wrong.device_id = 0x9999;
+    if ax200_msi_binding_contract(wrong, 0x2a) != Err(Ax200MsiBindError::UnsupportedDevice) {
+        return false;
+    }
+
+    let mut no_msi = device;
+    no_msi.capabilities.msi = false;
+    no_msi.capabilities.msi_offset = 0;
+    ax200_msi_binding_contract(no_msi, 0x2a) == Err(Ax200MsiBindError::MissingMsi)
+}
 pub fn discover_first_supported() -> Option<SupportedWifiFunction> {
     for index in 0..64 {
         let Some(device) = pci::device(index) else {
