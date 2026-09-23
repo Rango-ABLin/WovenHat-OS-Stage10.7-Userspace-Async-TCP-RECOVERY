@@ -1,4 +1,4 @@
-//! WovenWiFi Stage 13.10K â€” firmware image ownership/validation foundation.
+//! WovenWiFi Stage 13.10K ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â firmware image ownership/validation foundation.
 //!
 //! This module deliberately does not parse Intel's real TLV firmware format or
 //! write firmware to hardware yet. It establishes the fail-closed, bounded
@@ -2266,6 +2266,241 @@ pub fn stage13_10v_self_test() -> bool {
         )
         .is_ok()
         && s.state() == IntelFirmwareStartState::FirmwareRunning
+}
+
+// === Stage 13.10W: Intel RX notification packet delivery ===
+pub const INTEL_RX_PACKET_PREFIX_SIZE: usize = 4;
+pub const INTEL_RX_COMMAND_HEADER_SIZE: usize = 4;
+pub const INTEL_RX_PACKET_HEADER_SIZE: usize = 8;
+pub const INTEL_RX_FRAME_SIZE_MASK: u32 = 0x0000_3fff;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IntelRxNotification<'a> {
+    pub command: u8,
+    pub group_id: u8,
+    pub sequence: u16,
+    pub payload: &'a [u8],
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntelRxNotificationError {
+    TooShort,
+    InvalidLength,
+    Truncated,
+    TrailingBytes,
+    Alive(IntelAliveError),
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntelRxDispatchResult {
+    Ignored {
+        command: u8,
+        group_id: u8,
+        sequence: u16,
+    },
+    Alive(IntelVersionedAliveInfo),
+}
+
+pub fn parse_intel_rx_notification(
+    bytes: &[u8],
+) -> Result<IntelRxNotification<'_>, IntelRxNotificationError> {
+    if bytes.len() < INTEL_RX_PACKET_HEADER_SIZE {
+        return Err(IntelRxNotificationError::TooShort);
+    }
+    let len_n_flags = alive_u32(bytes, 0).ok_or(IntelRxNotificationError::TooShort)?;
+    let packet_len = (len_n_flags & INTEL_RX_FRAME_SIZE_MASK) as usize;
+    if packet_len < INTEL_RX_COMMAND_HEADER_SIZE {
+        return Err(IntelRxNotificationError::InvalidLength);
+    }
+    let total_len = INTEL_RX_PACKET_PREFIX_SIZE
+        .checked_add(packet_len)
+        .ok_or(IntelRxNotificationError::InvalidLength)?;
+    if total_len > bytes.len() {
+        return Err(IntelRxNotificationError::Truncated);
+    }
+    if total_len != bytes.len() {
+        return Err(IntelRxNotificationError::TrailingBytes);
+    }
+    Ok(IntelRxNotification {
+        command: bytes[4],
+        group_id: bytes[5],
+        sequence: u16::from_le_bytes([bytes[6], bytes[7]]),
+        payload: &bytes[8..total_len],
+    })
+}
+
+impl<I: IntelFirmwareStartupIo> Intel22000FirmwareStartup<I> {
+    pub fn dispatch_rx_notification(
+        &mut self,
+        abi: IntelAliveAbiVersion,
+        bytes: &[u8],
+    ) -> Result<IntelRxDispatchResult, IntelRxNotificationError> {
+        let packet = parse_intel_rx_notification(bytes)?;
+        if packet.command != INTEL_UCODE_ALIVE_NTFY {
+            return Ok(IntelRxDispatchResult::Ignored {
+                command: packet.command,
+                group_id: packet.group_id,
+                sequence: packet.sequence,
+            });
+        }
+        self.handle_alive_notification_versioned(packet.command, abi, packet.payload)
+            .map(IntelRxDispatchResult::Alive)
+            .map_err(IntelRxNotificationError::Alive)
+    }
+}
+fn stage13_10w_packet_into<'a>(
+    storage: &'a mut [u8],
+    command: u8,
+    group: u8,
+    sequence: u16,
+    payload: &[u8],
+) -> Option<&'a [u8]> {
+    let packet_len = INTEL_RX_COMMAND_HEADER_SIZE.checked_add(payload.len())?;
+    let total_len = INTEL_RX_PACKET_PREFIX_SIZE.checked_add(packet_len)?;
+    if packet_len > INTEL_RX_FRAME_SIZE_MASK as usize || total_len > storage.len() {
+        return None;
+    }
+    storage[..total_len].fill(0);
+    storage[0..4].copy_from_slice(&(packet_len as u32).to_le_bytes());
+    storage[4] = command;
+    storage[5] = group;
+    storage[6..8].copy_from_slice(&sequence.to_le_bytes());
+    storage[8..total_len].copy_from_slice(payload);
+    Some(&storage[..total_len])
+}
+fn stage13_10w_startup(
+    context: &Intel22000HardwareContextInfo,
+) -> Option<Intel22000FirmwareStartup<Stage13_10sMockIo>> {
+    let io = Stage13_10sMockIo {
+        context_offset: 0,
+        context_address: 0,
+        context_writes: 0,
+        prph_register: 0,
+        prph_value: 0,
+        prph_writes: 0,
+        fail_prph: false,
+    };
+    let mut s = Intel22000FirmwareStartup::new(io);
+    if s.publish_context(context).is_err()
+        || s.issue_cpu_init_run().is_err()
+        || s.begin_alive_wait().is_err()
+    {
+        return None;
+    }
+    Some(s)
+}
+pub fn stage13_10w_self_test() -> bool {
+    let mut owner = Intel22000DmaContextInfo::new();
+    if owner.set_rx_queue(0x100000, 0x110000, 0x120000).is_err()
+        || owner.set_command_queue(0x130000, 32).is_err()
+        || owner
+            .stage_firmware_chunk(IntelContextInfoImageKind::Lmac, &[0x31; 512])
+            .is_err()
+        || owner
+            .stage_firmware_chunk(IntelContextInfoImageKind::Umac, &[0x42; 256])
+            .is_err()
+    {
+        return false;
+    }
+    let Ok(context) = owner.build_hardware_context(0x2200) else {
+        return false;
+    };
+    let mut v8 = [0u8; INTEL_ALIVE_V8_SIZE];
+    stage13_10v_fill(&mut v8);
+    stage13_10v_put64(&mut v8, 144, 0x8877665544332211);
+    let mut packet_storage = [0u8; INTEL_RX_PACKET_HEADER_SIZE + INTEL_ALIVE_V8_SIZE];
+    let Some(packet) =
+        stage13_10w_packet_into(&mut packet_storage, INTEL_UCODE_ALIVE_NTFY, 0, 0x1234, &v8)
+    else {
+        return false;
+    };
+    let Ok(p) = parse_intel_rx_notification(packet) else {
+        return false;
+    };
+    if p.command != INTEL_UCODE_ALIVE_NTFY
+        || p.group_id != 0
+        || p.sequence != 0x1234
+        || p.payload != v8
+    {
+        return false;
+    }
+    if parse_intel_rx_notification(&packet[..7]) != Err(IntelRxNotificationError::TooShort) {
+        return false;
+    }
+    // Invalid-length case: fixed storage, no heap allocation.
+    let mut bad = [0u8; INTEL_RX_PACKET_HEADER_SIZE + INTEL_ALIVE_V8_SIZE];
+    bad.copy_from_slice(packet);
+    bad[0..4].copy_from_slice(&3u32.to_le_bytes());
+    if parse_intel_rx_notification(&bad) != Err(IntelRxNotificationError::InvalidLength) {
+        return false;
+    }
+
+    // Truncation case: claim one byte more than the buffer contains.
+    let mut trunc = [0u8; INTEL_RX_PACKET_HEADER_SIZE + INTEL_ALIVE_V8_SIZE];
+    trunc.copy_from_slice(packet);
+    trunc[0..4].copy_from_slice(&((4 + v8.len() + 1) as u32).to_le_bytes());
+    if parse_intel_rx_notification(&trunc) != Err(IntelRxNotificationError::Truncated) {
+        return false;
+    }
+
+    // Trailing-byte case: provide one byte beyond the declared packet.
+    let mut trail = [0u8; INTEL_RX_PACKET_HEADER_SIZE + INTEL_ALIVE_V8_SIZE + 1];
+    trail[..packet.len()].copy_from_slice(packet);
+    trail[packet.len()] = 0;
+    if parse_intel_rx_notification(&trail) != Err(IntelRxNotificationError::TrailingBytes) {
+        return false;
+    }
+    let mut unrelated_storage = [0u8; INTEL_RX_PACKET_HEADER_SIZE + 4];
+    let Some(unrelated) =
+        stage13_10w_packet_into(&mut unrelated_storage, 0x7f, 3, 9, &[1, 2, 3, 4])
+    else {
+        return false;
+    };
+    let Some(mut ignored) = stage13_10w_startup(&context) else {
+        return false;
+    };
+    if ignored.dispatch_rx_notification(IntelAliveAbiVersion::V8, unrelated)
+        != Ok(IntelRxDispatchResult::Ignored {
+            command: 0x7f,
+            group_id: 3,
+            sequence: 9,
+        })
+        || ignored.state() != IntelFirmwareStartState::AwaitingAlive
+    {
+        return false;
+    }
+    let Some(mut startup) = stage13_10w_startup(&context) else {
+        return false;
+    };
+    let Ok(IntelRxDispatchResult::Alive(alive)) =
+        startup.dispatch_rx_notification(IntelAliveAbiVersion::V8, packet)
+    else {
+        return false;
+    };
+    if alive.primary.status != INTEL_ALIVE_STATUS_OK
+        || alive.platform_id != Some(0x8877665544332211)
+        || startup.state() != IntelFirmwareStartState::FirmwareRunning
+    {
+        return false;
+    }
+    let mut rejected_payload = v8;
+    stage13_10v_put16(&mut rejected_payload, 0, INTEL_ALIVE_STATUS_ERR);
+    let mut rejected_storage = [0u8; INTEL_RX_PACKET_HEADER_SIZE + INTEL_ALIVE_V8_SIZE];
+    let Some(rejected_packet) = stage13_10w_packet_into(
+        &mut rejected_storage,
+        INTEL_UCODE_ALIVE_NTFY,
+        0,
+        0x4321,
+        &rejected_payload,
+    ) else {
+        return false;
+    };
+    let Some(mut rejected) = stage13_10w_startup(&context) else {
+        return false;
+    };
+    rejected.dispatch_rx_notification(IntelAliveAbiVersion::V8, rejected_packet)
+        == Err(IntelRxNotificationError::Alive(
+            IntelAliveError::FirmwareRejected(INTEL_ALIVE_STATUS_ERR),
+        ))
+        && rejected.state() == IntelFirmwareStartState::Failed
 }
 
 pub fn stage13_10s_self_test() -> bool {
