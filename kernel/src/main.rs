@@ -662,6 +662,17 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         serial::write_line(format_args!(
             "[S13.10Y] Intel RX interrupt service boundary: PASSED"
         ));
+        if !interrupts::stage13_10z_vector_self_test()
+            || !smp::stage13_10z_irq_foundation_self_test()
+        {
+            serial::write_line(format_args!(
+                "[S13.10Z] PCI device interrupt foundation: FAILED"
+            ));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!(
+            "[S13.10Z] PCI device interrupt foundation: PASSED"
+        ));
         if !wifi_backend::self_test() {
             serial::write_line(format_args!(
                 "[S13.9K] Wi-Fi transport/backend contract: FAILED"

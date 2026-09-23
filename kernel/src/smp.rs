@@ -570,6 +570,28 @@ fn write(reg: u64, value: u32) {
         let _ = read(0x20);
     }
 }
+/// APIC destination used by PCI/MSI device interrupts.
+///
+/// Stage Z deliberately routes device interrupts to the BSP. This keeps the
+/// first physical-device interrupt path deterministic while preserving the
+/// existing per-CPU LAPIC/SMP architecture.
+pub fn device_irq_destination() -> Option<u32> {
+    if !cpu_is_online(0) {
+        return None;
+    }
+    let id = IDS[0].load(Ordering::Acquire);
+    (id != u32::MAX).then_some(id)
+}
+
+pub fn stage13_10z_irq_foundation_self_test() -> bool {
+    let Some(destination) = device_irq_destination() else {
+        return false;
+    };
+    destination == IDS[0].load(Ordering::Acquire)
+        && crate::interrupts::WIFI_DEVICE_VECTOR < TIMER_VECTOR
+        && crate::interrupts::WIFI_DEVICE_VECTOR != RESCHEDULE_VECTOR
+        && crate::interrupts::WIFI_DEVICE_VECTOR != SPURIOUS_VECTOR
+}
 pub fn eoi() {
     write(0xb0, 0);
 }
