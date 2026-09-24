@@ -23,10 +23,12 @@ pub const WIFI_DEVICE_VECTOR: u8 = 0xd0;
 static WIFI_DEVICE_IRQS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static WIFI_DEVICE_WORK: AtomicBool = AtomicBool::new(false);
 
+#[cfg(feature = "stage13-9-test")]
 pub fn wifi_device_irq_count() -> u64 {
     WIFI_DEVICE_IRQS.load(Ordering::Acquire)
 }
 
+#[cfg(feature = "stage13-9-test")]
 pub fn take_wifi_device_work() -> bool {
     WIFI_DEVICE_WORK.swap(false, Ordering::AcqRel)
 }
@@ -36,6 +38,7 @@ pub fn publish_wifi_device_work_for_test() {
     WIFI_DEVICE_WORK.store(true, Ordering::Release);
 }
 
+#[cfg(feature = "stage13-9-test")]
 pub fn stage13_10z_vector_self_test() -> bool {
     WIFI_DEVICE_VECTOR >= 0x20
         && WIFI_DEVICE_VECTOR != 0x80

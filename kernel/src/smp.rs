@@ -575,6 +575,7 @@ fn write(reg: u64, value: u32) {
 /// Stage Z deliberately routes device interrupts to the BSP. This keeps the
 /// first physical-device interrupt path deterministic while preserving the
 /// existing per-CPU LAPIC/SMP architecture.
+#[cfg(feature = "stage13-9-test")]
 pub fn device_irq_destination() -> Option<u32> {
     if !cpu_is_online(0) {
         return None;
@@ -583,6 +584,7 @@ pub fn device_irq_destination() -> Option<u32> {
     (id != u32::MAX).then_some(id)
 }
 
+#[cfg(feature = "stage13-9-test")]
 pub fn stage13_10z_irq_foundation_self_test() -> bool {
     let Some(destination) = device_irq_destination() else {
         return false;

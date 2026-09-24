@@ -6,6 +6,33 @@ fully complete while a roadmap requirement remains open.
 
 Authoritative development sequence: [supplied Stage 10.7–36 roadmap](master-development-roadmap.md).
 
+## Current continuation - 2026-09-24
+
+Base commit `0563d0b` introduced the Stage 13.10AC deferred AX200 interrupt
+service candidate. This continuation passed preservation and bounded QEMU
+acceptance; it does not establish production completion of Stage 13.
+
+- Ordinary build and host/freestanding-kernel Clippy passed with warnings
+  denied; 24 Rust host tests and nine Python harness tests passed.
+- The complete Stage 10.7 preservation gate passed, exit code 0: 75 QEMU boots
+  covering 1/2/4 CPUs, live networking, and async block/file/UDP/TCP.
+- Stages 1-5, 10.8-10.9, 11.1-11.5, 12.1-12.5, and 13.1-13.9 passed
+  per-feature freestanding Clippy and 1/2/4-CPU QEMU (66 additional boots).
+  Wi-Fi required all 54 markers through 13.10AC on every CPU configuration.
+- CPU hotplug passed on 2/4 CPUs. The normal release build and 4-CPU
+  shell/PS2/IOAPIC/SMP smoke passed. Total: 144 successful QEMU boots.
+
+The continuation corrected feature boundaries, a misplaced audio check in
+USB HID's error branch, and a nested Cargo release-build artifact-lock
+conflict in the shell harness. Failed/interrupted attempts remain preserved.
+See [the continuation audit](audit-stage13-10ac-continuation-2026-09-23.md)
+for exact evidence directories and validation scope.
+
+Next prerequisites remain production Wi-Fi worker/lifecycle integration,
+secure entropy provisioning, physical AX200 firmware/IRQ/DMA/RF qualification,
+and the earlier unfulfilled roadmap requirements. Do not advance to a later
+stage or treat these synthetic Wi-Fi results as working physical Wi-Fi.
+
 ## Stage 6 — accepted on 2026-09-16
 
 The bounded SMP foundation passed the complete release matrix: warning-denying

@@ -2,6 +2,7 @@ use crate::irq_lock::IrqMutex as Mutex;
 
 const INPUT_QUEUE_CAPACITY: usize = 128;
 
+#[cfg(feature = "stage13-7-test")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeviceKind {
     Keyboard,
@@ -24,29 +25,35 @@ pub enum Key {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
     Key(Key),
+    #[cfg(feature = "stage13-7-test")]
     PointerMove {
         dx: i16,
         dy: i16,
     },
+    #[cfg(feature = "stage13-7-test")]
     PointerButton {
         button: u8,
         pressed: bool,
     },
+    #[cfg(feature = "stage13-7-test")]
     Scroll {
         vertical: i16,
     },
+    #[cfg(feature = "stage13-7-test")]
     Touch {
         contact: u8,
         x: u16,
         y: u16,
         active: bool,
     },
+    #[cfg(feature = "stage13-7-test")]
     Pen {
         x: u16,
         y: u16,
         pressure: u16,
         touching: bool,
     },
+    #[cfg(feature = "stage13-7-test")]
     GameController {
         control: u16,
         value: i16,
@@ -110,6 +117,12 @@ pub fn poll() -> Option<Event> {
 }
 
 pub fn poll_key() -> Option<Key> {
+    #[cfg(not(feature = "stage13-7-test"))]
+    {
+        let Event::Key(key) = poll()?;
+        Some(key)
+    }
+    #[cfg(feature = "stage13-7-test")]
     loop {
         if let Event::Key(key) = poll()? {
             return Some(key);
@@ -134,10 +147,12 @@ pub fn read_bytes(buffer: &mut [u8]) -> usize {
     count
 }
 
+#[cfg(feature = "stage13-7-test")]
 pub fn dropped_events() -> u64 {
     QUEUE.lock().dropped
 }
 
+#[cfg(feature = "stage13-7-test")]
 pub fn self_test() -> bool {
     {
         let mut q = QUEUE.lock();

@@ -1,4 +1,6 @@
 $ErrorActionPreference = 'Stop'
+$env:CARGO_BUILD_BUILD_DIR = Join-Path $PSScriptRoot '.cargo-build'
+$env:CARGO_TARGET_DIR = Join-Path $PSScriptRoot 'target'
 cargo build --features stage13-9-test
 if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
 cargo clippy -p wovenhat-kernel --target x86_64-unknown-none --features stage13-9-test -- -D warnings

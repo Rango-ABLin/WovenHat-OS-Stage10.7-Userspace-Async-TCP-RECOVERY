@@ -7,6 +7,64 @@ import subprocess
 import sys
 import time
 
+# Explicit acceptance contract: do not derive these from the kernel at runtime.
+WIFI_REQUIRED_MARKERS = (
+    '[S13.9A] WovenWiFi framework + PCI classification: PASSED',
+    '[S13.9B] IEEE 802.11 frame/IE core: PASSED',
+    '[S13.9C] beacon/probe scan pipeline: PASSED',
+    '[S13.9D] Open System authentication + association: PASSED',
+    '[S13.9E] RSN + EAPOL-Key protocol foundation: PASSED',
+    '[S13.9F] WPA2 cryptographic foundation: PASSED',
+    '[S13.9G] WPA2 4-way handshake integration: PASSED',
+    '[S13.9H] GTK + encrypted key data: PASSED',
+    '[S13.9I] CCMP protected data path: PASSED',
+    '[S13.9J] WovenWiFi <-> WovenNet integration: PASSED',
+    '[S13.9X] GTK/group-addressed CCMP data path: PASSED',
+    '[S13.9Y] WPA2 reconnect/rekey lifecycle: PASSED',
+    '[S13.9Z] WPA2 live group-key rekey: PASSED',
+    '[S13.10A] physical PCI Wi-Fi backend boundary: PASSED',
+    '[S13.10B] Wi-Fi MMIO/DMA/interrupt scaffolding: PASSED',
+    '[S13.10C] Wi-Fi real MMIO + DMA memory ownership: PASSED',
+    '[S13.10D] Wi-Fi DMA descriptor ownership + queue lifecycle: PASSED',
+    '[S13.10E] Wi-Fi supported chipset binding boundary: PASSED',
+    '[S13.10F] Wi-Fi DMA buffer ownership binding: PASSED',
+    '[S13.10G] Wi-Fi activation authority hardening: PASSED',
+    '[S13.10H] Intel AX200 CSR boundary: PASSED',
+    '[S13.10I] Intel reset/readiness state machine: PASSED',
+    '[S13.10J] Intel MAC access/device initialization: PASSED',
+    '[S13.10K] Wi-Fi firmware validation/lifecycle foundation: PASSED',
+    '[S13.10L] Intel TLV firmware parser: PASSED',
+    '[S13.10M] Intel firmware DMA staging/transfer boundary: PASSED',
+    '[S13.10N] Intel firmware transfer executor boundary: PASSED',
+    '[S13.10O] Intel 22000 firmware transport contract: PASSED',
+    '[S13.10P] AX200 context-info self-load manifest: PASSED',
+    '[S13.10Q] AX200 DMA-backed context-info construction: PASSED',
+    '[S13.10R] AX200 context-info ABI + publication: PASSED',
+    '[S13.10S] AX200 CPU_INIT_RUN startup sequencing: PASSED',
+    '[S13.10T] AX200 ALIVE notification validation: PASSED',
+    '[S13.10U] contiguous firmware DMA ownership: PASSED',
+    '[S13.10V] version-aware AX200 ALIVE ABI: PASSED',
+    '[S13.10W] Intel RX notification delivery: PASSED',
+    '[S13.10X] Intel RX DMA completion boundary: PASSED',
+    '[S13.10Y] Intel RX interrupt service boundary: PASSED',
+    '[S13.10Z] PCI device interrupt foundation: PASSED',
+    '[S13.10AA] PCI MSI programming contract: PASSED',
+    '[S13.10AB] AX200 PCI MSI binding contract: PASSED',
+    '[S13.10AC] deferred AX200 IRQ -> CSR RX service: PASSED',
+    '[S13.9K] Wi-Fi transport/backend contract: PASSED',
+    '[S13.9L] reconnect/timeout/lifecycle hardening: PASSED',
+    '[S13.9M] cross-module integration closure: PASSED',
+    '[S13.9N] WPA2 security lifecycle integration: PASSED',
+    '[S13.9O] kernel entropy/secure SNonce boundary: PASSED',
+    '[S13.9P] live WPA2 GTK/KRACK integration: PASSED',
+    '[S13.9Q] WPA2 association + RSN integration: PASSED',
+    '[S13.9R] entropy/network randomness split: PASSED',
+    '[S13.9S] WPA2 supplicant/session key handoff: PASSED',
+    '[S13.9T] backend RX/CCMP/Ethernet integration: PASSED',
+    '[S13.9U] WovenWiFi/smoltcp transport adapter: PASSED',
+    '[S13.9V] selectable WovenNet transport integration: PASSED',
+)
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--stage', choices=('10.8', '10.9', '11.1', '11.2', '11.3', '11.4', '11.5', '12.1', '12.2', '12.3', '12.4', '12.5', '13.1', '13.2', '13.3', '13.4', '13.5', '13.6', '13.7', '13.8', '13.9', '1-5'), default='10.8')
@@ -83,7 +141,11 @@ def main():
                   '13.8': '[S13.8] WovenAudio stream/API integration: PASSED',
                   '13.9': '[S13.9H] GTK + encrypted key data: PASSED',
                   '1-5': '[S1-5] storage journal: PASSED'}[args.stage])]
-    if result.returncode != 33 or any(marker not in log for marker in required):
+    if args.stage == '13.9':
+        required.extend(WIFI_REQUIRED_MARKERS)
+    missing = [marker for marker in required if marker not in log]
+    if result.returncode != 33 or missing:
+        print('Missing required markers:', missing, file=sys.stderr)
         print(log[-12000:], file=sys.stderr)
         print('FAILED; evidence:', out, file=sys.stderr)
         return 1

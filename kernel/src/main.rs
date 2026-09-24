@@ -118,7 +118,9 @@ mod wifi_rsn;
 mod wifi_scan;
 #[cfg(feature = "stage13-9-test")]
 mod wifi_security;
+#[cfg(feature = "stage13-9-test")]
 mod wifi_session;
+#[cfg(feature = "stage13-9-test")]
 mod wifi_smol;
 #[cfg(feature = "stage13-9-test")]
 mod wifi_wpa2;
@@ -2667,27 +2669,6 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 let report = match xhci::poll_hid_report() {
                     Ok(report) => report,
                     Err(error) => {
-                        match hda::discover_topology() {
-                            Ok(topology) => {
-                                serial::write_line(format_args!(
-                                "[S13.8] HDA codec topology: PASSED afg={} widgets={} dac={} adc={} mixers={} selectors={} pins={}",
-                                topology.audio_function_groups,
-                                topology.widgets,
-                                topology.audio_outputs,
-                                topology.audio_inputs,
-                                topology.mixers,
-                                topology.selectors,
-                                topology.pin_complexes
-                            ));
-                            }
-                            Err(error) => {
-                                serial::write_line(format_args!(
-                                    "[S13.8] HDA codec topology: FAILED {:?}",
-                                    error
-                                ));
-                                qemu_test_exit_failure();
-                            }
-                        }
                         serial::write_line(format_args!(
                             "[S13.6] USB HID: FAILED report {:?}",
                             error

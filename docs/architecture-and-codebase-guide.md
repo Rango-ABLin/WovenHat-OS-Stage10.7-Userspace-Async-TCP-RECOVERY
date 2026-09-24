@@ -1,5 +1,71 @@
 # WovenHat OS Architecture & Codebase Guide
 
+## Stage 13.10AC integration boundary (2026-09-23)
+
+The sections below describe previously recorded foundations. The current
+Wi-Fi candidate is additional, feature-gated source: `main.rs` includes
+`wifi_hw` and the other Wi-Fi modules only with `stage13-9-test`. It does not
+yet provide the normal boot path with a working physical AX200 driver.
+The session and smoltcp adapter now share that boundary. `network.rs` keeps
+the candidate transport selector in a feature-gated module, while ordinary
+builds use `VirtioSmolDevice` directly. This corrects the previously inconsistent
+module graph without changing the VirtIO packet path.
+
+`interrupts.rs` installs the reserved PCI Wi-Fi vector `0xd0`. Its hard IRQ
+publishes an atomic work flag and acknowledges the LAPIC. `wifi_hw.rs` exposes
+`service_deferred_ax200_interrupt`, which consumes that flag and calls
+`IntelRxInterruptController::service` outside the hard IRQ. The controller
+masks CSR delivery, reads interrupt status, acknowledges enabled RX causes,
+and restores its configured mask; fatal hardware/firmware status returns an
+error with delivery masked. The flag coalesces notifications and is not a
+counted queue or a scheduler wakeup. The only current deferred-service caller
+is the synthetic self-test. A production worker, device lifecycle ownership,
+teardown/recovery, and physical interrupt/DMA qualification remain open.
+
+The synthetic CSR test uses an owned DMA page and verifies written values;
+ordinary RAM does not emulate write-one-to-clear hardware semantics. The
+MSI discovery branch explicitly skips physical programming when AX200 is
+absent. Neither synthetic success nor that skip proves physical Wi-Fi works.
+
+`scripts/test-stage10-runtime.py` now pins all 54 Wi-Fi acceptance markers
+through 13.10AC in addition to the SMP and async ABI markers and exit code 33.
+`tests/test_runtime_harness.py` checks complete evidence, each missing Wi-Fi
+marker, the former incomplete marker set, and unsuccessful QEMU exit.
+The Stage 13.9 launcher uses the same project-local Cargo directories as
+the Stage 10.7 preservation launcher.
+
+## Candidate feature boundaries (2026-09-24)
+
+Ordinary builds retain the VirtIO network transport, PCI discovery and legacy
+I/O bus-master path, the reserved Wi-Fi interrupt vector, and PS/2 keyboard
+input. Candidate-only APIs are compiled alongside their existing callers:
+
+- The Wi-Fi secure-pool candidate and MSI programming module use
+  `stage13-9-test`; the normal best-effort network RNG is unchanged. The
+  deterministic test pool is not a production cryptographic entropy source.
+- PCI MMIO bus-master enablement follows the existing NVMe, AHCI, xHCI, HDA,
+  and Wi-Fi candidate features. Two uncalled private configuration-write
+  wrappers were removed; driver-used configuration transactions are retained.
+- Audio registration uses `stage13-8-test`, matching `woven_audio` and HDA.
+- Extended input event candidates and their self-test use `stage13-7-test`.
+  No non-keyboard producer exists in the ordinary build. Its byte input ABI,
+  bounded queue, overflow accounting, and IRQ-safe locking are unchanged.
+- Wi-Fi deferred-work consumers and BSP MSI destination selection follow the
+  Wi-Fi candidate feature. The installed interrupt handler is unchanged.
+
+These boundaries do not supply missing production drivers. They add no
+syscalls, capabilities, kernel objects, locks, or asynchronous ownership paths.
+Existing candidate acceptance tests remain enabled under their original
+features; no new lint suppression was introduced.
+
+The Stage 13.6 HID report-error branch now reports the HID error directly;
+a duplicated HDA discovery block was removed. Stage 13.8 retains its original
+audio codec/topology checks. The normal-release shell harness isolates the
+bootloader dependency's nested Cargo installer in `target/bootloader`, while
+an explicit parent `--target-dir` keeps the main artifact tree unchanged.
+This avoids the parent/child release artifact-lock deadlock. The validated
+results and physical-driver limits are recorded in the continuation audit.
+
 ## Scope and source of truth
 
 This guide describes the Stage 10.7 source, not the proposed 1.0 system. WovenHat

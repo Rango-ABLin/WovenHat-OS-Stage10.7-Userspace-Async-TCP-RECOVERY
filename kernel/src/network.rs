@@ -6,7 +6,7 @@
 //! static-lifetime bookkeeping in user processes.
 
 use crate::irq_lock::IrqMutex as Mutex;
-use alloc::{boxed::Box, vec, vec::Vec};
+use alloc::{vec, vec::Vec};
 use smoltcp::{
     iface::{Config, Interface, SocketHandle, SocketSet},
     phy::{ChecksumCapabilities, Device, DeviceCapabilities, Medium, RxToken, TxToken},
@@ -19,8 +19,6 @@ use spin::Once;
 use crate::{
     timer,
     virtio_net::{self, MAX_FRAME},
-    wifi_session::WifiSession,
-    wifi_smol,
 };
 
 pub const DEFAULT_IPV4: Ipv4Address = Ipv4Address::new(10, 0, 2, 15);
@@ -115,112 +113,128 @@ impl Device for VirtioSmolDevice {
     }
 }
 
-pub struct WifiNetDevice {
-    session: WifiSession,
-    epoch: u32,
-    rx: [u8; wifi_smol::ETHERNET_MTU],
-}
-impl WifiNetDevice {
-    pub fn new(session: WifiSession, epoch: u32) -> Self {
-        Self {
-            session,
-            epoch,
-            rx: [0; wifi_smol::ETHERNET_MTU],
-        }
-    }
-    #[cfg(feature = "stage13-9-test")]
-    pub fn session_mut(&mut self) -> &mut WifiSession {
-        &mut self.session
-    }
-}
+// The candidate Wi-Fi transport has the same feature boundary as its backend.
+#[cfg(not(feature = "stage13-9-test"))]
+type NetTransport = VirtioSmolDevice;
+#[cfg(feature = "stage13-9-test")]
+pub use wifi_transport::{NetTransport, WifiNetDevice};
 
-#[allow(clippy::large_enum_variant)]
-pub enum NetTransport {
-    Virtio(VirtioSmolDevice),
-    Wifi(WifiNetDevice),
-}
-pub enum NetRxToken<'a> {
-    Virtio(WovenRxToken<'a>),
-    Wifi(wifi_smol::WifiRxToken<'a>),
-}
-pub enum NetTxToken<'a> {
-    Virtio(WovenTxToken),
-    Wifi(wifi_smol::WifiTxToken<'a>),
-}
-impl RxToken for NetRxToken<'_> {
-    fn consume<R, F>(self, f: F) -> R
-    where
-        F: FnOnce(&[u8]) -> R,
-    {
-        match self {
-            Self::Virtio(t) => t.consume(f),
-            Self::Wifi(t) => t.consume(f),
-        }
-    }
-}
-impl TxToken for NetTxToken<'_> {
-    fn consume<R, F>(self, len: usize, f: F) -> R
-    where
-        F: FnOnce(&mut [u8]) -> R,
-    {
-        match self {
-            Self::Virtio(t) => t.consume(len, f),
-            Self::Wifi(t) => t.consume(len, f),
-        }
-    }
-}
-impl Device for NetTransport {
-    type RxToken<'a>
-        = NetRxToken<'a>
-    where
-        Self: 'a;
-    type TxToken<'a>
-        = NetTxToken<'a>
-    where
-        Self: 'a;
+#[cfg(feature = "stage13-9-test")]
+mod wifi_transport {
+    use super::*;
+    use crate::{wifi_session::WifiSession, wifi_smol};
 
-    fn receive(&mut self, timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        match self {
-            Self::Virtio(d) => d
-                .receive(timestamp)
-                .map(|(r, t)| (NetRxToken::Virtio(r), NetTxToken::Virtio(t))),
-            Self::Wifi(d) => {
-                let len = match d.session.receive_ethernet(d.epoch, &mut d.rx) {
-                    Ok(Some(n)) => n,
-                    Ok(None) | Err(_) => return None,
-                };
-                Some((
-                    NetRxToken::Wifi(wifi_smol::WifiRxToken::new(&mut d.rx[..len])),
-                    NetTxToken::Wifi(wifi_smol::WifiTxToken::new(&mut d.session, d.epoch)),
-                ))
+    pub struct WifiNetDevice {
+        session: WifiSession,
+        epoch: u32,
+        rx: [u8; wifi_smol::ETHERNET_MTU],
+    }
+    impl WifiNetDevice {
+        pub fn new(session: WifiSession, epoch: u32) -> Self {
+            Self {
+                session,
+                epoch,
+                rx: [0; wifi_smol::ETHERNET_MTU],
+            }
+        }
+        #[cfg(feature = "stage13-9-test")]
+        pub fn session_mut(&mut self) -> &mut WifiSession {
+            &mut self.session
+        }
+    }
+
+    #[allow(clippy::large_enum_variant)]
+    pub enum NetTransport {
+        Virtio(VirtioSmolDevice),
+        Wifi(WifiNetDevice),
+    }
+    pub enum NetRxToken<'a> {
+        Virtio(WovenRxToken<'a>),
+        Wifi(wifi_smol::WifiRxToken<'a>),
+    }
+    pub enum NetTxToken<'a> {
+        Virtio(WovenTxToken),
+        Wifi(wifi_smol::WifiTxToken<'a>),
+    }
+    impl RxToken for NetRxToken<'_> {
+        fn consume<R, F>(self, f: F) -> R
+        where
+            F: FnOnce(&[u8]) -> R,
+        {
+            match self {
+                Self::Virtio(t) => t.consume(f),
+                Self::Wifi(t) => t.consume(f),
             }
         }
     }
-    fn transmit(&mut self, timestamp: Instant) -> Option<Self::TxToken<'_>> {
-        match self {
-            Self::Virtio(d) => d.transmit(timestamp).map(NetTxToken::Virtio),
-            Self::Wifi(d) => d
-                .session
-                .is_active_epoch(d.epoch)
-                .then_some(NetTxToken::Wifi(wifi_smol::WifiTxToken::new(
-                    &mut d.session,
-                    d.epoch,
-                ))),
+    impl TxToken for NetTxToken<'_> {
+        fn consume<R, F>(self, len: usize, f: F) -> R
+        where
+            F: FnOnce(&mut [u8]) -> R,
+        {
+            match self {
+                Self::Virtio(t) => t.consume(len, f),
+                Self::Wifi(t) => t.consume(len, f),
+            }
         }
     }
-    fn capabilities(&self) -> DeviceCapabilities {
-        match self {
-            Self::Virtio(d) => d.capabilities(),
-            Self::Wifi(_) => {
-                let mut c = DeviceCapabilities::default();
-                c.medium = Medium::Ethernet;
-                c.max_transmission_unit = wifi_smol::ETHERNET_MTU;
-                c.checksum = ChecksumCapabilities::default();
-                c
+    impl Device for NetTransport {
+        type RxToken<'a>
+            = NetRxToken<'a>
+        where
+            Self: 'a;
+        type TxToken<'a>
+            = NetTxToken<'a>
+        where
+            Self: 'a;
+
+        fn receive(
+            &mut self,
+            timestamp: Instant,
+        ) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
+            match self {
+                Self::Virtio(d) => d
+                    .receive(timestamp)
+                    .map(|(r, t)| (NetRxToken::Virtio(r), NetTxToken::Virtio(t))),
+                Self::Wifi(d) => {
+                    let len = match d.session.receive_ethernet(d.epoch, &mut d.rx) {
+                        Ok(Some(n)) => n,
+                        Ok(None) | Err(_) => return None,
+                    };
+                    Some((
+                        NetRxToken::Wifi(wifi_smol::WifiRxToken::new(&mut d.rx[..len])),
+                        NetTxToken::Wifi(wifi_smol::WifiTxToken::new(&mut d.session, d.epoch)),
+                    ))
+                }
+            }
+        }
+        fn transmit(&mut self, timestamp: Instant) -> Option<Self::TxToken<'_>> {
+            match self {
+                Self::Virtio(d) => d.transmit(timestamp).map(NetTxToken::Virtio),
+                Self::Wifi(d) => d
+                    .session
+                    .is_active_epoch(d.epoch)
+                    .then_some(NetTxToken::Wifi(wifi_smol::WifiTxToken::new(
+                        &mut d.session,
+                        d.epoch,
+                    ))),
+            }
+        }
+        fn capabilities(&self) -> DeviceCapabilities {
+            match self {
+                Self::Virtio(d) => d.capabilities(),
+                Self::Wifi(_) => {
+                    let mut c = DeviceCapabilities::default();
+                    c.medium = Medium::Ethernet;
+                    c.max_transmission_unit = wifi_smol::ETHERNET_MTU;
+                    c.checksum = ChecksumCapabilities::default();
+                    c
+                }
             }
         }
     }
 }
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SocketKind {
     Udp = 1,
@@ -330,7 +344,10 @@ pub fn init() -> Result<(), InitError> {
     virtio_net::init().map_err(InitError::Transport)?;
 
     let mac = EthernetAddress(virtio_net::mac_address());
+    #[cfg(feature = "stage13-9-test")]
     let mut device = NetTransport::Virtio(VirtioSmolDevice::new());
+    #[cfg(not(feature = "stage13-9-test"))]
+    let mut device = VirtioSmolDevice::new();
     let mut config = Config::new(mac.into());
     // Previously a fixed constant (0x5748_4f53_4e45_5435), which made TCP
     // initial sequence numbers and smoltcp's internal randomized choices

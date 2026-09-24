@@ -482,6 +482,7 @@ fn cmd_devices(console: &mut Console<'_>) {
                 device::DeviceKind::Timer => "timer",
                 device::DeviceKind::Keyboard => "keyboard",
                 device::DeviceKind::Block => "block",
+                #[cfg(feature = "stage13-8-test")]
                 device::DeviceKind::Audio => "audio",
             });
             if let Some(irq) = dev.irq {
