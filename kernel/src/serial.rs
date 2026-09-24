@@ -54,7 +54,19 @@ impl Write for SerialPort {
 
 impl SerialPort {
     fn write_byte(&mut self, byte: u8) {
+        // The physical inventory target may have no usable legacy UART.
+        // Its framebuffer is authoritative: never hang that diagnostic on
+        // serial readiness. Ordinary/test builds retain their existing path.
+        #[cfg(feature = "physical-probe")]
+        let mut polls = 0u16;
         while unsafe { inb(COM1 + 5) } & LINE_STATUS_TRANSMITTER_EMPTY == 0 {
+            #[cfg(feature = "physical-probe")]
+            {
+                polls += 1;
+                if polls == 4096 {
+                    return;
+                }
+            }
             core::hint::spin_loop();
         }
 

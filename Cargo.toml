@@ -3,6 +3,7 @@ resolver = "3"
 members = ["kernel", "libwoven"]
 
 [features]
+physical-probe = ["kernel/physical-probe"]
 qemu-test = ["kernel/qemu-test"]
 stage6-hotplug-test = ["qemu-test", "kernel/stage6-hotplug-test"]
 network-test = ["qemu-test", "kernel/network-test"]

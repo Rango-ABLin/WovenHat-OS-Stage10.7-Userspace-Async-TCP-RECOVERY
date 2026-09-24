@@ -10,9 +10,26 @@ queued-data loss when a send completion was consumed before transmission.
 See [the TCP repair audit](audit-tcp-close-drain-2026-09-24.md) for failure
 evidence, locking/ownership review and validation limits.
 
+## Selected physical machine and inventory boot (2026-09-24)
+
+The latest user instruction selects this HP Pavilion x360 with AX201
+`8086:A0F0`, superseding the earlier AX200 target preference. Native AX201
+transport is not implemented. The existing AX200 activation boundary remains
+unchanged until the appropriate device-specific implementation is reviewed.
+
+`physical-probe` is an independent root/kernel Cargo feature. After early
+RAM and paging checks, `kernel_main` enters `physical_probe::run`, enumerates
+PCI through the existing HAL, prints network identities and AX201 BAR/capability
+details to the framebuffer and serial, and halts. It does not enter driver
+activation, storage/network runtime, AP startup or candidate QEMU tests. No
+device configuration or MMIO register writes are added by this mode; PCI
+configuration reads use the existing ECAM/legacy address-selection access.
+It is an inventory aid and never radio acceptance. See the
+[AX201 machine audit](audit-ax201-machine-2026-09-24.md).
+
 ## Physical Wi-Fi firmware prerequisite (2026-09-24)
 
-The user selected the existing AX200 target; AX201 support is not enabled.
+The preceding increment targeted AX200; AX201 support is not enabled.
 `wifi_ax200_image.rs` preflights runtime LMAC/UMAC/paging region ordering,
 payload size and total DMA capacity. `Intel22000DmaContextInfo::from_runtime_firmware`
 uses that plan to copy payloads into independently owned DMA buffers. Failure

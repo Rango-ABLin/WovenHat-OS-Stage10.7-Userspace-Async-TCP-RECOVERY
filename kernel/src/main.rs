@@ -6,6 +6,9 @@
 
 extern crate alloc;
 
+#[cfg(feature = "physical-probe")]
+mod physical_probe;
+
 #[cfg(feature = "stage13-4-test")]
 mod ahci;
 #[cfg(feature = "stage10-8-test")]
@@ -271,6 +274,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     }
 
     serial::init();
+    // The physical inventory image stops after RAM/paging checks, before
+    // driver activation, disk/network I/O, AP startup or QEMU acceptance.
+    #[cfg(feature = "physical-probe")]
+    physical_probe::run(&mut console, acpi.as_ref().ok());
+
     #[cfg(feature = "qemu-test")]
     if !paging::table_allocation_rollback_self_test() {
         serial::write_line(format_args!(

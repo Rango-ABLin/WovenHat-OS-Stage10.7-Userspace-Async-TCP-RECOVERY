@@ -4,6 +4,7 @@ version = "0.8.0"
 edition = "2021"
 
 [features]
+physical-probe = []
 qemu-test = []
 stage6-hotplug-test = ["qemu-test"]
 network-test = ["qemu-test"]

@@ -19,10 +19,20 @@ timeouts are unchanged; cleanup now requires transport slots at baseline. See
 
 ## Physical integration request - 2026-09-24
 
-Physical integration is incomplete. Host inventory reports AX201
-`8086:A0F0`; the user selected the existing AX200 `8086:2723` driver target.
-The allowlist is unchanged. An AX200 test machine and boot/serial-log path
-are still needed for physical acceptance.
+Physical integration is incomplete. The latest user instruction selects this
+HP Pavilion x360 as the actual test machine, superseding the earlier AX200
+target choice. Its adapter is AX201 `8086:A0F0`, subsystem `8086:0074`, revision
+`20`. Native AX201 startup and transport remain unimplemented; adding its PCI
+ID to the AX200 activation list is not a valid implementation.
+
+The current Windows session is not elevated; boot-configuration, Secure Boot
+and Hyper-V assignment queries were denied. No serial port is enumerated.
+A Kingston USB appeared later as disk 1 / D:, but contains a Windows installer
+and other files on NTFS. It is unchanged; destructive reuse needs an explicit
+decision and elevated disk access. The verified read-only inventory image is
+in `target/physical-test-ax201-20260924/`; it passed 1/2/4-CPU configured QEMU
+boots plus a no-UART framebuffer check. No AP startup or physical radio is
+tested by that mode. See [the AX201 machine audit](audit-ax201-machine-2026-09-24.md).
 
 The runtime firmware loader now validates the complete AX200 section layout
 before DMA allocation and copies payloads into an unpublished owned context.
@@ -63,7 +73,7 @@ See [the continuation audit](audit-stage13-10ac-continuation-2026-09-23.md)
 for exact evidence directories and validation scope.
 
 Next prerequisites remain production Wi-Fi worker/lifecycle integration,
-secure entropy provisioning, physical AX200 firmware/IRQ/DMA/RF qualification,
+secure entropy provisioning, physical AX201 firmware/IRQ/DMA/RF qualification,
 and the earlier unfulfilled roadmap requirements. Do not advance to a later
 stage or treat these synthetic Wi-Fi results as working physical Wi-Fi.
 
