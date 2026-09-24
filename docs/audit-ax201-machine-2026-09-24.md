@@ -36,9 +36,26 @@ Writing the raw inventory image would replace that partition layout; reuse
 requires an explicit decision and elevated disk access. Merely copying an
 IMG file onto its current filesystem would not make this image bootable.
 
-No Windows driver was detached, no partition/boot entry was changed, no
-disk was flashed and no reboot was initiated. A native boot/screen-capture
-path remains outstanding.
+At that initial preflight no disk had been changed. Subsequently the user
+explicitly authorized erasing this Kingston USB. A standard UAC-elevated helper
+rechecked its exact UniqueId, model, size, USB bus and non-system/non-boot status,
+validated the source hash, cleared only that disk and wrote 8,454,144 bytes.
+Fresh-handle raw readback matched the complete source SHA-256. Windows now
+reports GPT with one 8 MiB EFI system partition. This replaces its old filesystem;
+it is not a secure wipe of every old data sector. The internal disk was not written.
+
+Evidence is retained in `audit-artifacts/kingston-usb-20260924-1747/`, including
+validate-only and actual-write JSON records and the exact helper. The actual write
+record ended `passed`, `verified=true` at 17:47:32 local time. No kernel/source
+change was required, so earlier kernel preservation results remain applicable.
+
+The elevated query confirmed **Secure Boot enabled**. The image's embedded EFI
+PE security directory is `(0, 0)`, with no Authenticode certificate. Windows C:
+is 100% encrypted and BitLocker protection is on. A local operator must have
+the recovery key available before a temporary Secure Boot change; do not expose
+that key in chat. No BitLocker protection, firmware settings, boot entries or
+Windows drivers were changed, and no reboot was initiated. Physical inventory
+and the entire native AX201 checklist remain outstanding.
 
 ## Inventory image
 

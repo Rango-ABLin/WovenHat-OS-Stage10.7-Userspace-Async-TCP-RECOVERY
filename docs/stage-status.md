@@ -25,14 +25,17 @@ target choice. Its adapter is AX201 `8086:A0F0`, subsystem `8086:0074`, revision
 `20`. Native AX201 startup and transport remain unimplemented; adding its PCI
 ID to the AX200 activation list is not a valid implementation.
 
-The current Windows session is not elevated; boot-configuration, Secure Boot
-and Hyper-V assignment queries were denied. No serial port is enumerated.
-A Kingston USB appeared later as disk 1 / D:, but contains a Windows installer
-and other files on NTFS. It is unchanged; destructive reuse needs an explicit
-decision and elevated disk access. The verified read-only inventory image is
-in `target/physical-test-ax201-20260924/`; it passed 1/2/4-CPU configured QEMU
-boots plus a no-UART framebuffer check. No AP startup or physical radio is
-tested by that mode. See [the AX201 machine audit](audit-ax201-machine-2026-09-24.md).
+The authorized Kingston USB was cleared and written with the verified inventory
+image. An elevated helper read back all 8,454,144 image bytes and matched the
+SHA-256. Its new GPT layout contains an 8 MiB EFI system partition. The internal
+system disk was not written. Secure Boot is enabled and the image has no PE
+Authenticode certificate; native boot requires a local firmware decision.
+Windows C: is fully encrypted with BitLocker protection on, so the recovery key
+must be available before changing firmware security settings. Neither BitLocker
+nor firmware settings were changed, and no reboot or physical test has run.
+The inventory image passed 1/2/4-CPU configured QEMU boots plus a no-UART
+framebuffer check. No AP startup or physical radio is tested by that mode.
+See [the AX201 machine audit](audit-ax201-machine-2026-09-24.md).
 
 The runtime firmware loader now validates the complete AX200 section layout
 before DMA allocation and copies payloads into an unpublished owned context.
