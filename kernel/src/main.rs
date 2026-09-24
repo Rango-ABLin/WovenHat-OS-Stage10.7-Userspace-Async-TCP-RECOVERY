@@ -3059,12 +3059,18 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             }
             x86_64::instructions::hlt();
         }
-        if task::wait_process(pid.as_u64()) != Ok(0) {
-            serial::write_line(format_args!("[S10.7] userspace async TCP exit: FAILED"));
+        let tcp_exit = task::wait_process(pid.as_u64());
+        if tcp_exit != Ok(0) {
+            serial::write_line(format_args!(
+                "[S10.7] userspace async TCP exit: FAILED assertion={:?}",
+                tcp_exit.ok()
+            ));
             qemu_test_exit_failure();
         }
         let cleanup_start = timer::ticks();
-        while async_network::stats().active != 0 {
+        while async_network::stats().active != 0
+            || network::stats().user_sockets != sockets_before
+        {
             network::poll();
             if timer::ticks().wrapping_sub(cleanup_start) > 200 {
                 serial::write_line(format_args!("[S10.7] async TCP teardown drain: TIMEOUT"));

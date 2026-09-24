@@ -28,6 +28,9 @@ pub const DEFAULT_PREFIX: u8 = 24;
 pub const MAX_USER_SOCKETS: usize = 16;
 pub const SOCKET_BUFFER_BYTES: usize = 4096;
 pub const UDP_META_SLOTS: usize = 8;
+// Closed descriptors retain their TCP transport for a bounded graceful drain.
+// This is a resource-retirement bound, not an acceptance-test timeout.
+const TCP_CLOSE_GRACE_TICKS: u64 = timer::FREQUENCY_HZ as u64 * 30;
 
 pub fn default_cidr() -> IpCidr {
     IpCidr::new(IpAddress::Ipv4(DEFAULT_IPV4), DEFAULT_PREFIX)
@@ -265,6 +268,7 @@ struct UserSocket {
     generation: u32,
     async_refs: u16,
     closing: bool,
+    close_started: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -507,8 +511,46 @@ pub fn poll() {
         } = &mut *runtime;
         let _ = iface.poll(now(), device, sockets);
     }
+    for index in 0..MAX_USER_SOCKETS {
+        retire_closed_socket(&mut runtime, index);
+    }
     drop(runtime);
     crate::async_network::network_progress();
+}
+
+/// Caller holds the runtime lock. Descriptor revocation is immediate, but
+/// queued TCP bytes and FIN need a live transport until close completes.
+/// Existing async references retain the socket even during owner teardown.
+fn retire_closed_socket(runtime: &mut Runtime, index: usize) {
+    let Some(entry) = runtime.user[index] else {
+        return;
+    };
+    if !entry.closing || entry.async_refs != 0 {
+        return;
+    }
+    if entry.kind == SocketKind::Tcp {
+        let socket = runtime.sockets.get_mut::<tcp::Socket>(entry.handle);
+        if entry.close_started.is_none() {
+            #[cfg(feature = "stage10-7-test")]
+            crate::serial::write_line(format_args!(
+                "[S10.7-DIAG] graceful TCP close tx_queue={}",
+                socket.send_queue()
+            ));
+            socket.close();
+            runtime.user[index].as_mut().unwrap().close_started = Some(timer::ticks());
+        }
+        if socket.is_open() {
+            let started = runtime.user[index].unwrap().close_started.unwrap();
+            if timer::ticks().wrapping_sub(started) < TCP_CLOSE_GRACE_TICKS {
+                return;
+            }
+            // A dead peer cannot retain one of the bounded slots forever.
+            // No async token remains; expiration deliberately abandons drain.
+            socket.abort();
+        }
+    }
+    let _ = runtime.sockets.remove(entry.handle);
+    runtime.user[index] = None;
 }
 
 fn apply_static_locked(runtime: &mut Runtime) {
@@ -640,6 +682,7 @@ pub fn socket_open(owner: u64, kind: SocketKind) -> Result<u64, SocketError> {
         generation,
         async_refs: 0,
         closing: false,
+        close_started: None,
     });
     Ok(slot as u64)
 }
@@ -774,14 +817,12 @@ pub fn socket_close(owner: u64, id: u64) -> Result<(), SocketError> {
         return Err(SocketError::Offline);
     };
     let mut runtime = runtime.lock();
-    let entry = find_slot(&runtime, owner, id)?;
+    let _ = find_slot(&runtime, owner, id)?;
     let index = id as usize;
-    if entry.async_refs == 0 {
-        let _ = runtime.sockets.remove(entry.handle);
-        runtime.user[index] = None;
-    } else if let Some(socket) = runtime.user[index].as_mut() {
+    if let Some(socket) = runtime.user[index].as_mut() {
         socket.closing = true;
     }
+    retire_closed_socket(&mut runtime, index);
     Ok(())
 }
 
@@ -793,12 +834,10 @@ pub fn close_process_sockets(owner: u64) {
     for index in 0..MAX_USER_SOCKETS {
         if let Some(entry) = runtime.user[index] {
             if entry.owner == owner {
-                if entry.async_refs == 0 {
-                    let _ = runtime.sockets.remove(entry.handle);
-                    runtime.user[index] = None;
-                } else if let Some(socket) = runtime.user[index].as_mut() {
+                if let Some(socket) = runtime.user[index].as_mut() {
                     socket.closing = true;
                 }
+                retire_closed_socket(&mut runtime, index);
             }
         }
     }
@@ -849,18 +888,12 @@ pub fn unpin_socket(token: SocketToken) {
     if current.owner != token.owner || current.generation != token.generation {
         return;
     }
-    let mut remove = false;
     if let Some(socket) = runtime.user[index].as_mut() {
         if socket.async_refs != 0 {
             socket.async_refs -= 1;
         }
-        remove = socket.async_refs == 0 && socket.closing;
     }
-    if remove {
-        let handle = runtime.user[index].unwrap().handle;
-        let _ = runtime.sockets.remove(handle);
-        runtime.user[index] = None;
-    }
+    retire_closed_socket(&mut runtime, index);
 }
 
 pub fn socket_connect_pinned(token: SocketToken, endpoint: IpEndpoint) -> Result<(), SocketError> {

@@ -40,10 +40,12 @@ def serve(stop, errors, ready, finished):
                     continue
                 with conn:
                     conn.settimeout(5)
+                    print(f'Host TCP connection {completed + 1}: accepted, awaiting TX', flush=True)
                     payload = recv_exact(conn, len(TX))
                     if payload != TX:
                         raise RuntimeError(f"unexpected guest TCP payload: {payload!r}")
                     completed += 1
+                    print(f'Host TCP connection {completed}: TX verified', flush=True)
                     if completed == 2:
                         conn.sendall(RX)
                         try:

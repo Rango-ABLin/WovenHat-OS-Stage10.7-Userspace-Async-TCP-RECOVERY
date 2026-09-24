@@ -6,6 +6,17 @@ fully complete while a roadmap requirement remains open.
 
 Authoritative development sequence: [supplied Stage 10.7–36 roadmap](master-development-roadmap.md).
 
+## TCP close/drain preservation repair - 2026-09-24
+
+This-machine preflight exposed an intermittent 4-CPU Stage 10.7 failure:
+last-reference release removed a TCP socket with 16 bytes still queued.
+Graceful bounded retirement now preserves that transport. Ten corrected
+4-CPU repeats passed, including queued-close cases; the full 75-boot Stage
+10.7 preservation gate passed. Related 10.8/10.9/13.9 checks on 1/2/4 CPUs
+and normal release shell/SMP smoke also passed. Assertions and existing test
+timeouts are unchanged; cleanup now requires transport slots at baseline. See
+[the TCP repair audit](audit-tcp-close-drain-2026-09-24.md).
+
 ## Physical integration request - 2026-09-24
 
 Physical integration is incomplete. Host inventory reports AX201

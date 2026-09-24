@@ -1,5 +1,15 @@
 # WovenHat OS Architecture & Codebase Guide
 
+## TCP close/drain repair (2026-09-24)
+
+A closed TCP descriptor retains its transport after the final async reference
+until graceful close completes. `network::poll` reaps those existing bounded
+slots; a 30-second grace expires on a subsequent poll for unresponsive peers.
+Slots remain counted and unavailable for reuse until retirement. This fixes
+queued-data loss when a send completion was consumed before transmission.
+See [the TCP repair audit](audit-tcp-close-drain-2026-09-24.md) for failure
+evidence, locking/ownership review and validation limits.
+
 ## Physical Wi-Fi firmware prerequisite (2026-09-24)
 
 The user selected the existing AX200 target; AX201 support is not enabled.
