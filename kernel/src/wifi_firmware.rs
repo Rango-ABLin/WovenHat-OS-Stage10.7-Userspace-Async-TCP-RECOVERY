@@ -1,8 +1,8 @@
 //! WovenWiFi Stage 13.10K - firmware image ownership/validation foundation.
 //!
-//! This module deliberately does not parse Intel's real TLV firmware format or
-//! write firmware to hardware yet. It establishes the fail-closed, bounded
-//! representation that later Intel firmware parsing/loading must use.
+//! Bounded image ownership, Intel TLV container validation and DMA staging.
+//! Container parsing is shared with host tests through `wifi_tlv.rs`.
+//! These foundations do not yet load firmware onto physical hardware.
 
 pub const MAX_FIRMWARE_IMAGE_SIZE: usize = 4 * 1024 * 1024;
 pub const MAX_FIRMWARE_SECTIONS: usize = 16;
@@ -290,165 +290,9 @@ pub fn stage13_10k_self_test() -> bool {
         Err(FirmwareError::AddressOverflow)
     )
 }
-pub const INTEL_TLV_UCODE_MAGIC: u32 = 0x0a4c_5749;
-pub const INTEL_TLV_UCODE_HEADER_SIZE: usize = 88;
-pub const INTEL_TLV_HEADER_SIZE: usize = 8;
-pub const INTEL_TLV_SEC_RT: u32 = 19;
-pub const INTEL_TLV_SEC_INIT: u32 = 20;
-pub const INTEL_TLV_PAGING: u32 = 32;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum IntelFirmwareImageKind {
-    Runtime,
-    Init,
-    Paging,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct IntelFirmwareSection<'a> {
-    pub image: IntelFirmwareImageKind,
-    pub device_offset: u32,
-    pub bytes: &'a [u8],
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum IntelTlvError {
-    TooShort,
-    BadZeroPrefix,
-    BadMagic,
-    LengthOverflow,
-    TruncatedTlv,
-    InvalidPadding,
-    SectionTooShort,
-    EmptySection,
-    TooManySections,
-}
-
-pub struct IntelTlvFirmware<'a> {
-    bytes: &'a [u8],
-    sections: [Option<IntelFirmwareSection<'a>>; MAX_FIRMWARE_SECTIONS],
-    section_count: usize,
-    version: u32,
-    build: u32,
-}
-
-impl<'a> IntelTlvFirmware<'a> {
-    pub fn parse(bytes: &'a [u8]) -> Result<Self, IntelTlvError> {
-        if bytes.len() < INTEL_TLV_UCODE_HEADER_SIZE {
-            return Err(IntelTlvError::TooShort);
-        }
-        if read_le_u32(bytes, 0).ok_or(IntelTlvError::TooShort)? != 0 {
-            return Err(IntelTlvError::BadZeroPrefix);
-        }
-        if read_le_u32(bytes, 4).ok_or(IntelTlvError::TooShort)? != INTEL_TLV_UCODE_MAGIC {
-            return Err(IntelTlvError::BadMagic);
-        }
-
-        let version = read_le_u32(bytes, 72).ok_or(IntelTlvError::TooShort)?;
-        let build = read_le_u32(bytes, 76).ok_or(IntelTlvError::TooShort)?;
-        let mut parsed = Self {
-            bytes,
-            sections: [None; MAX_FIRMWARE_SECTIONS],
-            section_count: 0,
-            version,
-            build,
-        };
-
-        let mut cursor = INTEL_TLV_UCODE_HEADER_SIZE;
-        while cursor < bytes.len() {
-            let header_end = cursor
-                .checked_add(INTEL_TLV_HEADER_SIZE)
-                .ok_or(IntelTlvError::LengthOverflow)?;
-            if header_end > bytes.len() {
-                return Err(IntelTlvError::TruncatedTlv);
-            }
-
-            let tlv_type = read_le_u32(bytes, cursor).ok_or(IntelTlvError::TruncatedTlv)?;
-            let tlv_len = read_le_u32(bytes, cursor + 4).ok_or(IntelTlvError::TruncatedTlv)?;
-            let tlv_len = usize::try_from(tlv_len).map_err(|_| IntelTlvError::LengthOverflow)?;
-
-            let data_start = header_end;
-            let data_end = data_start
-                .checked_add(tlv_len)
-                .ok_or(IntelTlvError::LengthOverflow)?;
-            if data_end > bytes.len() {
-                return Err(IntelTlvError::TruncatedTlv);
-            }
-
-            let aligned_len = tlv_len
-                .checked_add(3)
-                .ok_or(IntelTlvError::LengthOverflow)?
-                & !3usize;
-            let next = data_start
-                .checked_add(aligned_len)
-                .ok_or(IntelTlvError::LengthOverflow)?;
-            if next > bytes.len() {
-                return Err(IntelTlvError::InvalidPadding);
-            }
-
-            let image = match tlv_type {
-                INTEL_TLV_SEC_RT => Some(IntelFirmwareImageKind::Runtime),
-                INTEL_TLV_SEC_INIT => Some(IntelFirmwareImageKind::Init),
-                INTEL_TLV_PAGING => Some(IntelFirmwareImageKind::Paging),
-                _ => None,
-            };
-
-            if let Some(image) = image {
-                if tlv_len < 4 {
-                    return Err(IntelTlvError::SectionTooShort);
-                }
-                if parsed.section_count >= MAX_FIRMWARE_SECTIONS {
-                    return Err(IntelTlvError::TooManySections);
-                }
-                let device_offset =
-                    read_le_u32(bytes, data_start).ok_or(IntelTlvError::SectionTooShort)?;
-                let payload = &bytes[data_start + 4..data_end];
-                if payload.is_empty() {
-                    return Err(IntelTlvError::EmptySection);
-                }
-                parsed.sections[parsed.section_count] = Some(IntelFirmwareSection {
-                    image,
-                    device_offset,
-                    bytes: payload,
-                });
-                parsed.section_count += 1;
-            }
-
-            cursor = next;
-        }
-
-        Ok(parsed)
-    }
-
-    pub const fn version(&self) -> u32 {
-        self.version
-    }
-
-    pub const fn build(&self) -> u32 {
-        self.build
-    }
-
-    pub const fn section_count(&self) -> usize {
-        self.section_count
-    }
-
-    pub fn section(&self, index: usize) -> Option<IntelFirmwareSection<'a>> {
-        if index >= self.section_count {
-            return None;
-        }
-        self.sections[index]
-    }
-
-    pub const fn bytes(&self) -> &'a [u8] {
-        self.bytes
-    }
-}
-
-fn read_le_u32(bytes: &[u8], offset: usize) -> Option<u32> {
-    let end = offset.checked_add(4)?;
-    let slice = bytes.get(offset..end)?;
-    Some(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
-}
+#[path = "wifi_tlv.rs"]
+mod tlv;
+pub use tlv::*;
 
 pub fn stage13_10l_self_test() -> bool {
     let mut blob = [0u8; 128];
@@ -525,6 +369,7 @@ pub const INTEL_FIRMWARE_STAGE_CHUNK_SIZE: usize = crate::wifi_hw::DMA_PAGE_SIZE
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FirmwareStageError {
     InvalidState,
+    Separator,
     EmptySection,
     SectionTooLarge,
     AddressOverflow,
@@ -558,6 +403,9 @@ pub struct IntelFirmwareStager<'a> {
 
 impl<'a> IntelFirmwareStager<'a> {
     pub fn new(section: IntelFirmwareSection<'a>) -> Result<Self, FirmwareStageError> {
+        if section.is_separator() {
+            return Err(FirmwareStageError::Separator);
+        }
         if section.bytes.is_empty() {
             return Err(FirmwareStageError::EmptySection);
         }
@@ -685,6 +533,21 @@ impl<'a> IntelFirmwareStager<'a> {
 }
 
 pub fn stage13_10m_self_test() -> bool {
+    // Separator records control the loader's image map; they are never DMA
+    // payloads, even when the container includes four reserved payload bytes.
+    for offset in [INTEL_CPU_SEPARATOR, INTEL_PAGING_SEPARATOR] {
+        let separator = IntelFirmwareSection {
+            image: IntelFirmwareImageKind::Runtime,
+            device_offset: offset,
+            bytes: &[0; 4],
+        };
+        if !matches!(
+            IntelFirmwareStager::new(separator),
+            Err(FirmwareStageError::Separator)
+        ) {
+            return false;
+        }
+    }
     let mut bytes = [0u8; 5000];
     for (index, byte) in bytes.iter_mut().enumerate() {
         *byte = (index & 0xff) as u8;

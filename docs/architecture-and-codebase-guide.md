@@ -1,5 +1,17 @@
 # WovenHat OS Architecture & Codebase Guide
 
+## Physical Wi-Fi firmware prerequisite (2026-09-24)
+
+`wifi_firmware.rs` delegates Intel container parsing to `wifi_tlv.rs`, an
+allocation-free, immutable-borrow parser shared with host tests. It validates
+a bounded complete blob, exposes paging-size metadata separately, and
+streams runtime/init SEC records including secure variants and explicit
+CPU/paging separators. The DMA stager rejects separators before allocation.
+This closes real-container parsing failures; it does not implement the
+physical transport. The inspected host is AX201, while the candidate match
+is AX200. See [the physical preflight audit](audit-physical-wifi-preflight-2026-09-24.md)
+for firmware hashes, validation and the remaining lifecycle/transport work.
+
 ## Stage 13.10AC integration boundary (2026-09-23)
 
 The sections below describe previously recorded foundations. The current

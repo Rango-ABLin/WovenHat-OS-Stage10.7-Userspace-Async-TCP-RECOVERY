@@ -11,7 +11,7 @@ use x86_64::instructions::interrupts;
 
 #[cfg(not(test))]
 mod lock_order {
-    use core::sync::atomic::{AtomicU8, AtomicU32, AtomicUsize, Ordering};
+    use core::sync::atomic::{AtomicU32, AtomicU8, AtomicUsize, Ordering};
 
     const MAX_DEPTH: usize = 8;
     static DEPTH: [AtomicU8; crate::smp::MAX_CPUS] =
@@ -86,18 +86,6 @@ mod lock_order {
 
     pub fn highest_rank() -> u8 {
         HIGHEST_RANK[crate::smp::lock_cpu_index()].load(Ordering::Relaxed)
-    }
-}
-
-#[cfg(test)]
-mod lock_order {
-    pub struct Token;
-    pub fn enter(_: usize, _: u8) -> Token {
-        Token
-    }
-    pub fn exit(_: Token) {}
-    pub fn highest_rank() -> u8 {
-        0
     }
 }
 
@@ -258,5 +246,17 @@ impl<T> Drop for PreemptMutexGuard<'_, T> {
         drop(self.guard.take());
         interrupts::without_interrupts(|| lock_order::exit(self.token.take().unwrap()));
         drop(self.preemption.take());
+    }
+}
+
+#[cfg(test)]
+mod lock_order {
+    pub struct Token;
+    pub fn enter(_: usize, _: u8) -> Token {
+        Token
+    }
+    pub fn exit(_: Token) {}
+    pub fn highest_rank() -> u8 {
+        0
     }
 }

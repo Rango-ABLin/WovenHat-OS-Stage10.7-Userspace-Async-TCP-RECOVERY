@@ -6,6 +6,21 @@ fully complete while a roadmap requirement remains open.
 
 Authoritative development sequence: [supplied Stage 10.7–36 roadmap](master-development-roadmap.md).
 
+## Physical integration request - 2026-09-24
+
+Physical integration is incomplete. Host inventory reports AX201
+`8086:A0F0`; the current allowlist is AX200 `8086:2723`. Target selection and
+a boot/serial-log path are pending user input. The allowlist is unchanged.
+
+A real AX200 firmware container exposed parser defects. The corrected
+allocation-free TLV parser passes seven new host tests and the real-image
+probe; all 54 Wi-Fi markers still pass on 1/2/4 CPUs. Build, host-test and
+kernel Clippy, and all 31 Rust tests pass. The full Stage 10.7 preservation
+gate passed after the heap lint cleanup: nine Python tests and 75 QEMU
+boots, plus three focused Wi-Fi boots (78 total for this prerequisite).
+See [the physical preflight audit](audit-physical-wifi-preflight-2026-09-24.md).
+This is prerequisite work, not physical firmware/IRQ/DMA/RF acceptance.
+
 ## Current continuation - 2026-09-24
 
 Base commit `0563d0b` introduced the Stage 13.10AC deferred AX200 interrupt
