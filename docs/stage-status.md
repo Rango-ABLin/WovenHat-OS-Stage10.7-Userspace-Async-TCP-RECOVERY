@@ -9,8 +9,16 @@ Authoritative development sequence: [supplied Stage 10.7–36 roadmap](master-de
 ## Physical integration request - 2026-09-24
 
 Physical integration is incomplete. Host inventory reports AX201
-`8086:A0F0`; the current allowlist is AX200 `8086:2723`. Target selection and
-a boot/serial-log path are pending user input. The allowlist is unchanged.
+`8086:A0F0`; the user selected the existing AX200 `8086:2723` driver target.
+The allowlist is unchanged. An AX200 test machine and boot/serial-log path
+are still needed for physical acceptance.
+
+The runtime firmware loader now validates the complete AX200 section layout
+before DMA allocation and copies payloads into an unpublished owned context.
+It skips separators and init-image records and preserves existing DMA bounds.
+Build, warning-denying host/kernel/feature Clippy, all 35 Rust tests and all
+54 Wi-Fi markers on 1/2/4 CPUs passed for this loader increment.
+See [the runtime-loader audit](audit-ax200-runtime-loader-2026-09-24.md).
 
 A real AX200 firmware container exposed parser defects. The corrected
 allocation-free TLV parser passes seven new host tests and the real-image

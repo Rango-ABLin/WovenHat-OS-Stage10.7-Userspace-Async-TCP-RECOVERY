@@ -2,6 +2,14 @@
 
 ## Physical Wi-Fi firmware prerequisite (2026-09-24)
 
+The user selected the existing AX200 target; AX201 support is not enabled.
+`wifi_ax200_image.rs` preflights runtime LMAC/UMAC/paging region ordering,
+payload size and total DMA capacity. `Intel22000DmaContextInfo::from_runtime_firmware`
+uses that plan to copy payloads into independently owned DMA buffers. Failure
+drops the unpublished partial context; success still requires queue setup and
+a reviewed physical publication/lifecycle owner. See the
+[runtime-loader audit](audit-ax200-runtime-loader-2026-09-24.md).
+
 `wifi_firmware.rs` delegates Intel container parsing to `wifi_tlv.rs`, an
 allocation-free, immutable-borrow parser shared with host tests. It validates
 a bounded complete blob, exposes paging-size metadata separately, and

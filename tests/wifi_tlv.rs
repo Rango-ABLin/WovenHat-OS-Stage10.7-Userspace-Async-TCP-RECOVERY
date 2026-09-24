@@ -1,5 +1,9 @@
 #[path = "../kernel/src/wifi_tlv.rs"]
 pub mod wifi_tlv;
+pub use wifi_tlv as tlv;
+#[path = "../kernel/src/wifi_ax200_image.rs"]
+pub mod ax200_image;
+use ax200_image::*;
 use wifi_tlv::*;
 
 fn image() -> Vec<u8> {
@@ -152,4 +156,113 @@ fn header_and_unknown_records_preserve_forward_compatibility() {
     bytes[0] = 0;
     bytes[4] = 0;
     error(&bytes, IntelTlvError::BadMagic);
+}
+
+fn runtime_image(paging: bool) -> Vec<u8> {
+    let mut bytes = image();
+    section(&mut bytes, INTEL_TLV_SEC_RT, 0x1000, &[1]);
+    section(&mut bytes, INTEL_TLV_SEC_RT, INTEL_CPU_SEPARATOR, &[0; 4]);
+    section(&mut bytes, INTEL_TLV_SECURE_SEC_RT, 0x2000, &[2]);
+    section(&mut bytes, INTEL_TLV_SEC_RT, INTEL_PAGING_SEPARATOR, &[]);
+    if paging {
+        section(&mut bytes, INTEL_TLV_SEC_RT, 0x3000, &[3]);
+        record(&mut bytes, INTEL_TLV_PAGING, &4096u32.to_le_bytes());
+    }
+    bytes
+}
+
+fn layout_error(bytes: &[u8], expected: Ax200ImageError) {
+    let fw = IntelTlvFirmware::parse(bytes).unwrap();
+    assert!(matches!(Ax200RuntimeImage::validate(&fw), Err(actual) if actual == expected));
+}
+
+#[test]
+fn ax200_layout_routes_payloads_without_separators_or_init_image() {
+    let mut bytes = runtime_image(true);
+    section(&mut bytes, INTEL_TLV_SEC_INIT, 0x4000, &[9]);
+    section(
+        &mut bytes,
+        INTEL_TLV_SECURE_SEC_INIT,
+        INTEL_CPU_SEPARATOR,
+        &[],
+    );
+    let fw = IntelTlvFirmware::parse(&bytes).unwrap();
+    let plan = Ax200RuntimeImage::validate(&fw).unwrap();
+    assert_eq!(plan.counts(), [1, 1, 1]);
+    assert_eq!(
+        plan.payloads().collect::<Vec<_>>(),
+        vec![
+            (Ax200ImageRegion::Lmac, &[1][..]),
+            (Ax200ImageRegion::Umac, &[2][..]),
+            (Ax200ImageRegion::Paging, &[3][..]),
+        ]
+    );
+}
+
+#[test]
+fn ax200_layout_rejects_missing_reordered_and_duplicate_separators() {
+    layout_error(&image(), Ax200ImageError::MissingSeparator);
+    for offset in [INTEL_CPU_SEPARATOR, INTEL_PAGING_SEPARATOR] {
+        let mut bytes = runtime_image(true);
+        section(&mut bytes, INTEL_TLV_SEC_RT, offset, &[]);
+        layout_error(&bytes, Ax200ImageError::SeparatorOrder);
+    }
+    let mut bytes = image();
+    section(&mut bytes, INTEL_TLV_SEC_RT, 0x1000, &[1]);
+    section(&mut bytes, INTEL_TLV_SEC_RT, INTEL_PAGING_SEPARATOR, &[]);
+    layout_error(&bytes, Ax200ImageError::SeparatorOrder);
+    let mut bytes = image();
+    section(&mut bytes, INTEL_TLV_SEC_RT, INTEL_CPU_SEPARATOR, &[]);
+    layout_error(&bytes, Ax200ImageError::EmptyRegion);
+    let mut bytes = image();
+    section(&mut bytes, INTEL_TLV_SEC_RT, 0x1000, &[1]);
+    section(&mut bytes, INTEL_TLV_SEC_RT, INTEL_CPU_SEPARATOR, &[]);
+    section(&mut bytes, INTEL_TLV_SEC_RT, INTEL_PAGING_SEPARATOR, &[]);
+    layout_error(&bytes, Ax200ImageError::EmptyRegion);
+}
+
+#[test]
+fn ax200_layout_enforces_existing_dma_bounds_before_loading() {
+    let mut bytes = runtime_image(true);
+    for _ in 3..AX200_MAX_IMAGE_BUFFERS {
+        section(&mut bytes, INTEL_TLV_SEC_RT, 0x4000, &[4]);
+    }
+    let fw = IntelTlvFirmware::parse(&bytes).unwrap();
+    assert_eq!(
+        Ax200RuntimeImage::validate(&fw).unwrap().payloads().count(),
+        64
+    );
+    section(&mut bytes, INTEL_TLV_SEC_RT, 0x4000, &[4]);
+    layout_error(&bytes, Ax200ImageError::TooManySections);
+    let mut bytes = runtime_image(true);
+    section(
+        &mut bytes,
+        INTEL_TLV_SEC_RT,
+        0x4000,
+        &vec![0; AX200_MAX_IMAGE_CHUNK],
+    );
+    assert!(Ax200RuntimeImage::validate(&IntelTlvFirmware::parse(&bytes).unwrap()).is_ok());
+    section(
+        &mut bytes,
+        INTEL_TLV_SEC_RT,
+        0x4000,
+        &vec![0; AX200_MAX_IMAGE_CHUNK + 1],
+    );
+    layout_error(&bytes, Ax200ImageError::SectionTooLarge);
+}
+
+#[test]
+fn ax200_layout_requires_paging_metadata_to_agree_with_payload_presence() {
+    let bytes = runtime_image(false);
+    let fw = IntelTlvFirmware::parse(&bytes).unwrap();
+    assert_eq!(
+        Ax200RuntimeImage::validate(&fw).unwrap().counts(),
+        [1, 1, 0]
+    );
+    let mut bytes = runtime_image(false);
+    record(&mut bytes, INTEL_TLV_PAGING, &4096u32.to_le_bytes());
+    layout_error(&bytes, Ax200ImageError::PagingMetadata);
+    let mut bytes = runtime_image(false);
+    section(&mut bytes, INTEL_TLV_SEC_RT, 0x3000, &[3]);
+    layout_error(&bytes, Ax200ImageError::PagingMetadata);
 }

@@ -293,6 +293,9 @@ pub fn stage13_10k_self_test() -> bool {
 #[path = "wifi_tlv.rs"]
 mod tlv;
 pub use tlv::*;
+#[path = "wifi_ax200_image.rs"]
+mod ax200_image;
+pub use ax200_image::{Ax200ImageError, Ax200ImageRegion, Ax200RuntimeImage};
 
 pub fn stage13_10l_self_test() -> bool {
     let mut blob = [0u8; 128];
@@ -1080,8 +1083,8 @@ pub fn stage13_10o_self_test() -> bool {
         && error_executor.state() == FirmwareTransferExecutionState::Failed
 }
 
-pub const INTEL_CONTEXT_INFO_MAX_DRAM_ENTRIES: usize = 64;
-pub const INTEL_CONTEXT_INFO_MAX_DRAM_CHUNK_SIZE: usize = 32 * 1024;
+pub const INTEL_CONTEXT_INFO_MAX_DRAM_ENTRIES: usize = ax200_image::AX200_MAX_IMAGE_BUFFERS;
+pub const INTEL_CONTEXT_INFO_MAX_DRAM_CHUNK_SIZE: usize = ax200_image::AX200_MAX_IMAGE_CHUNK;
 pub const INTEL_CSR_CONTEXT_INFO_BASE: u32 = 0x40;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1310,6 +1313,7 @@ pub fn stage13_10p_self_test() -> bool {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IntelContextInfoBuildError {
+    Image(Ax200ImageError),
     Manifest(IntelContextInfoError),
     Dma,
     LengthOverflow,
@@ -1322,6 +1326,28 @@ pub struct Intel22000DmaContextInfo {
 }
 
 impl Intel22000DmaContextInfo {
+    /// Validate the entire runtime layout before allocating, then copy each
+    /// payload into owned DMA memory. An error drops all unpublished buffers.
+    /// This neither configures queues nor publishes addresses to hardware.
+    pub fn from_runtime_firmware(
+        firmware: &IntelTlvFirmware<'_>,
+    ) -> Result<Self, IntelContextInfoBuildError> {
+        let image =
+            Ax200RuntimeImage::validate(firmware).map_err(IntelContextInfoBuildError::Image)?;
+        let counts = image.counts();
+        let mut context = Self::new();
+        for (region, bytes) in image.payloads() {
+            let kind = match region {
+                Ax200ImageRegion::Lmac => IntelContextInfoImageKind::Lmac,
+                Ax200ImageRegion::Umac => IntelContextInfoImageKind::Umac,
+                Ax200ImageRegion::Paging => IntelContextInfoImageKind::Paging,
+            };
+            context.stage_firmware_chunk(kind, bytes)?;
+        }
+        debug_assert_eq!(context.firmware_buffer_count(), counts.iter().sum());
+        Ok(context)
+    }
+
     pub fn new() -> Self {
         Self {
             manifest: Intel22000ContextInfoManifest::new(),
@@ -2615,6 +2641,9 @@ pub fn stage13_10r_self_test() -> bool {
 }
 
 pub fn stage13_10q_self_test() -> bool {
+    if !ax200_runtime_copy_self_test() {
+        return false;
+    }
     let mut context = Intel22000DmaContextInfo::new();
     if context
         .set_rx_queue(0x0010_0000, 0x0011_0000, 0x0012_0000)
@@ -2676,4 +2705,51 @@ pub fn stage13_10q_self_test() -> bool {
         ))
         && context.firmware_buffer_count() == 3
         && context.manifest().paging_count() == 1
+}
+
+fn ax200_runtime_copy_self_test() -> bool {
+    let before = crate::memory::stats().allocated_frames;
+    // Small real-format runtime layout: three payloads and two separators.
+    // Mutating the source after the constructor returns proves it is not
+    // retained as the asynchronous DMA backing store.
+    let mut bytes = [0u8; INTEL_TLV_UCODE_HEADER_SIZE + 5 * 16 + 12];
+    bytes[4..8].copy_from_slice(&INTEL_TLV_UCODE_MAGIC.to_le_bytes());
+    for (index, offset) in [
+        0x1000u32,
+        INTEL_CPU_SEPARATOR,
+        0x2000,
+        INTEL_PAGING_SEPARATOR,
+        0x3000,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let start = INTEL_TLV_UCODE_HEADER_SIZE + index * 16;
+        bytes[start..start + 4].copy_from_slice(&INTEL_TLV_SEC_RT.to_le_bytes());
+        bytes[start + 4..start + 8].copy_from_slice(&8u32.to_le_bytes());
+        bytes[start + 8..start + 12].copy_from_slice(&offset.to_le_bytes());
+        bytes[start + 12..start + 16].fill(index as u8 + 1);
+    }
+    let start = INTEL_TLV_UCODE_HEADER_SIZE + 5 * 16;
+    bytes[start..start + 4].copy_from_slice(&INTEL_TLV_PAGING.to_le_bytes());
+    bytes[start + 4..start + 8].copy_from_slice(&4u32.to_le_bytes());
+    bytes[start + 8..start + 12].copy_from_slice(&4096u32.to_le_bytes());
+    let Ok(firmware) = IntelTlvFirmware::parse(&bytes) else {
+        return false;
+    };
+    let Ok(context) = Intel22000DmaContextInfo::from_runtime_firmware(&firmware) else {
+        return false;
+    };
+    bytes.fill(0);
+    let valid = context.firmware_buffer_count() == 3
+        && context.manifest().lmac_count() == 1
+        && context.manifest().umac_count() == 1
+        && context.manifest().paging_count() == 1
+        && context.staged_byte(0, 3) == Ok(1)
+        && context.staged_byte(1, 3) == Ok(3)
+        && context.staged_byte(2, 3) == Ok(5)
+        && !context.ready_for_publication()
+        && crate::memory::stats().allocated_frames == before + 3;
+    drop(context);
+    valid && crate::memory::stats().allocated_frames == before
 }
