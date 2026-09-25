@@ -1,12 +1,17 @@
 //! WovenWiFi Stage 13.10K - firmware image ownership/validation foundation.
 //!
+<<<<<<< HEAD
 //! Bounded image ownership, Intel TLV container validation and DMA staging.
 //! Container parsing is shared with host tests through `wifi_tlv.rs`.
 //! These foundations do not yet load firmware onto physical hardware.
+=======
+//! Bounded image parsing, staging and synthetic startup contracts. Physical
+//! firmware/RX-ring integration and hardware qualification remain outstanding.
+>>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
 
-pub const MAX_FIRMWARE_IMAGE_SIZE: usize = 4 * 1024 * 1024;
-pub const MAX_FIRMWARE_SECTIONS: usize = 16;
-pub const MAX_FIRMWARE_SECTION_SIZE: usize = 1024 * 1024;
+#[path = "wifi_firmware_tlv.rs"]
+mod tlv;
+pub use tlv::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FirmwareSectionKind {
@@ -290,15 +295,24 @@ pub fn stage13_10k_self_test() -> bool {
         Err(FirmwareError::AddressOverflow)
     )
 }
+<<<<<<< HEAD
 #[path = "wifi_tlv.rs"]
 mod tlv;
 pub use tlv::*;
 #[path = "wifi_ax200_image.rs"]
 mod ax200_image;
 pub use ax200_image::{Ax200ImageError, Ax200ImageRegion, Ax200RuntimeImage};
+=======
+
+fn read_le_u32(bytes: &[u8], offset: usize) -> Option<u32> {
+    let end = offset.checked_add(4)?;
+    let slice = bytes.get(offset..end)?;
+    Some(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+}
+>>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
 
 pub fn stage13_10l_self_test() -> bool {
-    let mut blob = [0u8; 128];
+    let mut blob = [0u8; 176];
     blob[4..8].copy_from_slice(&INTEL_TLV_UCODE_MAGIC.to_le_bytes());
     blob[72..76].copy_from_slice(&0x1122_3344u32.to_le_bytes());
     blob[76..80].copy_from_slice(&7u32.to_le_bytes());
@@ -317,6 +331,22 @@ pub fn stage13_10l_self_test() -> bool {
     blob[cursor + 8..cursor + 11].copy_from_slice(&[9, 8, 7]);
     cursor += 12;
 
+    // Paging is metadata, not an addressed section. Exercise secure sections
+    // and a CPU delimiter on the kernel target as well as in host fixtures.
+    blob[cursor..cursor + 4].copy_from_slice(&INTEL_TLV_PAGING.to_le_bytes());
+    blob[cursor + 4..cursor + 8].copy_from_slice(&4u32.to_le_bytes());
+    blob[cursor + 8..cursor + 12].copy_from_slice(&4096u32.to_le_bytes());
+    cursor += 12;
+    blob[cursor..cursor + 4].copy_from_slice(&INTEL_TLV_SECURE_SEC_RT.to_le_bytes());
+    blob[cursor + 4..cursor + 8].copy_from_slice(&4u32.to_le_bytes());
+    blob[cursor + 8..cursor + 12].copy_from_slice(&INTEL_CPU_SEPARATOR.to_le_bytes());
+    cursor += 12;
+    blob[cursor..cursor + 4].copy_from_slice(&INTEL_TLV_SECURE_SEC_RT.to_le_bytes());
+    blob[cursor + 4..cursor + 8].copy_from_slice(&8u32.to_le_bytes());
+    blob[cursor + 8..cursor + 12].copy_from_slice(&0x3000u32.to_le_bytes());
+    blob[cursor + 12..cursor + 16].copy_from_slice(&[5, 6, 7, 8]);
+    cursor += 16;
+
     let Ok(parsed) = IntelTlvFirmware::parse(&blob[..cursor]) else {
         return false;
     };
@@ -325,8 +355,12 @@ pub fn stage13_10l_self_test() -> bool {
     };
     if parsed.version() != 0x1122_3344
         || parsed.build() != 7
-        || parsed.section_count() != 1
-        || parsed.section(1).is_some()
+        || parsed.section_count() != 2
+        || parsed.section(2).is_some()
+        || parsed.paging_size() != Some(4096)
+        || parsed.section_group(0) != Some(IntelFirmwareSectionGroup::Lmac)
+        || parsed.section_group(1) != Some(IntelFirmwareSectionGroup::Umac)
+        || parsed.section(1).map(|s| (s.device_offset, s.bytes)) != Some((0x3000, &[5, 6, 7, 8][..]))
         || section.image != IntelFirmwareImageKind::Runtime
         || section.device_offset != 0x2000
         || section.bytes != [1, 2, 3, 4, 5, 6, 7, 8]

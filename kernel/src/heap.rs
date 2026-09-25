@@ -580,7 +580,9 @@ pub fn live_metadata_self_test() -> bool {
         && after.free_bytes == before.free_bytes
 }
 
-#[cfg(feature = "qemu-test")]
+// This boot probe requires the kernel global allocator and real page mapping;
+// host tests exercise HeapState directly instead.
+#[cfg(all(feature = "qemu-test", not(test)))]
 pub fn runtime_growth_self_test() -> bool {
     let before = stats();
     let mut bytes = Vec::new();

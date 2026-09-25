@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 Write-Host "=== WovenHat Stage 10.1 Kernel Event + Async I/O Foundation Acceptance ==="
 Write-Host ""
 Write-Host "=== 1/2 Preserve the complete validated Stage 9.5 baseline ==="
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\run-stage9-5-acceptance.ps1
+& "$PSScriptRoot\run-stage9-5-acceptance.ps1"
 if ($LASTEXITCODE -ne 0) { throw "Stage 9.5 preservation acceptance failed with exit code $LASTEXITCODE" }
 
 Write-Host ""

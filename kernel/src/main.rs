@@ -110,6 +110,10 @@ mod wifi_gtk;
 #[cfg(feature = "stage13-9-test")]
 mod wifi_hw;
 #[cfg(feature = "stage13-9-test")]
+mod irq_mailbox;
+#[cfg(feature = "stage13-9-test")]
+mod wifi_runtime;
+#[cfg(feature = "stage13-9-test")]
 mod wifi_link;
 #[cfg(feature = "stage13-9-test")]
 mod wifi_net;
@@ -698,24 +702,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             ));
             qemu_test_exit_failure();
         }
-        match wifi_hw::discover_and_bind_ax200_msi() {
-            Ok(Some(binding)) => serial::write_line(format_args!(
-                "[S13.10AB] physical AX200 MSI programmed apic={} vector={:#x} cap={:#x} 64bit={}",
-                binding.destination_apic_id,
-                binding.vector,
-                binding.capability_offset,
-                binding.is_64_bit as u8,
-            )),
-            Ok(None) => serial::write_line(format_args!(
-                "[S13.10AB] no physical AX200 present; hardware MSI programming skipped"
-            )),
-            Err(_) => {
-                serial::write_line(format_args!(
-                    "[S13.10AB] physical AX200 MSI binding: FAILED"
-                ));
-                qemu_test_exit_failure();
-            }
-        }
+        // Discovery is not authority to activate DMA/MSI before RX storage,
+        // interrupt routing and the service owner have been established.
+        serial::write_line(format_args!(
+            "[S13.10AB] physical MSI activation deferred until RX DMA ownership is ready"
+        ));
         serial::write_line(format_args!(
             "[S13.10AB] AX200 PCI MSI binding contract: PASSED"
         ));
@@ -2992,7 +2983,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             qemu_test_exit_failure();
         }
         let cleanup_start = timer::ticks();
-        while async_network::stats().active != 0 {
+        while async_network::stats().active != 0
+            || network::stats().user_sockets != sockets_before
+        {
             network::poll();
             if timer::ticks().wrapping_sub(cleanup_start) > 200 {
                 serial::write_line(format_args!(
@@ -3089,7 +3082,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         let net_after = async_network::stats();
         let async_after = async_op::stats();
         let sockets_after = network::stats().user_sockets;
-        if net_after.submitted < net_before.submitted + 8
+        if !network::queued_close_verified()
+            || net_after.submitted < net_before.submitted + 8
             || net_after.completed < net_before.completed + 6
             || net_after.cancelled <= net_before.cancelled
             || net_after.owner_reaped <= net_before.owner_reaped
@@ -3447,6 +3441,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         console.println("BREAKPOINT HANDLER: FAILED");
     }
 
+    #[cfg(feature = "stage13-9-test")]
+    {
+        if !wifi_runtime::self_test() {
+            serial::write_line(format_args!("[S13.10AC] IRQ worker/wakeup/teardown: FAILED"));
+            qemu_test_exit_failure();
+        }
+        serial::write_line(format_args!("[S13.10AC] IRQ worker/wakeup/teardown: PASSED"));
+    }
     smp::self_test();
     serial::write_line(format_args!("[BOOT] ALL VALIDATIONS PASSED"));
     #[cfg(feature = "qemu-test")]

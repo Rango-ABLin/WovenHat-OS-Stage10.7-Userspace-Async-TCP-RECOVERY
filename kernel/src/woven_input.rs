@@ -1,3 +1,4 @@
+// Keyboard input is production; other event producers belong to the Stage 13.7 probe.
 use crate::irq_lock::IrqMutex as Mutex;
 
 const INPUT_QUEUE_CAPACITY: usize = 128;
@@ -116,6 +117,7 @@ pub fn poll() -> Option<Event> {
     QUEUE.lock().pop()
 }
 
+#[cfg(feature = "stage13-7-test")]
 pub fn poll_key() -> Option<Key> {
     #[cfg(not(feature = "stage13-7-test"))]
     {
@@ -128,6 +130,12 @@ pub fn poll_key() -> Option<Key> {
             return Some(key);
         }
     }
+}
+
+#[cfg(not(feature = "stage13-7-test"))]
+pub fn poll_key() -> Option<Key> {
+    let Event::Key(key) = poll()?;
+    Some(key)
 }
 
 pub fn read_bytes(buffer: &mut [u8]) -> usize {

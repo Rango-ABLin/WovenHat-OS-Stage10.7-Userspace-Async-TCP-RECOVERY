@@ -288,13 +288,16 @@ extern "x86-interrupt" fn spurious_handler(_frame: InterruptStackFrame) {}
 
 /// Minimal hard-IRQ entry for a PCI Wi-Fi vector.
 ///
-/// The hard interrupt path does no allocation, locking, firmware parsing, or
-/// scheduler work. It only publishes deferred work and acknowledges the local
-/// APIC. Stage Y remains responsible for reading/acknowledging Intel CSR causes.
+/// The hard interrupt path does no allocation, device locking, firmware
+/// parsing, or device service. It publishes deferred work and acknowledges the local
+/// APIC, then signals the opt-in worker through the scheduler event latch.
+/// Stage Y remains responsible for reading/acknowledging Intel CSR causes.
 extern "x86-interrupt" fn wifi_device_interrupt_handler(_frame: InterruptStackFrame) {
     WIFI_DEVICE_IRQS.fetch_add(1, Ordering::Relaxed);
     WIFI_DEVICE_WORK.store(true, Ordering::Release);
     crate::smp::eoi();
+    #[cfg(feature = "stage13-9-test")]
+    crate::wifi_runtime::notify_from_irq();
 }
 extern "x86-interrupt" fn lapic_timer_handler(_frame: InterruptStackFrame) {
     if crate::smp::cpu_index() == 0 {

@@ -1,5 +1,6 @@
 # WovenHat OS Architecture & Codebase Guide
 
+<<<<<<< HEAD
 ## TCP close/drain repair (2026-09-24)
 
 A closed TCP descriptor retains its transport after the final async reference
@@ -112,6 +113,76 @@ bootloader dependency's nested Cargo installer in `target/bootloader`, while
 an explicit parent `--target-dir` keeps the main artifact tree unchanged.
 This avoids the parent/child release artifact-lock deadlock. The validated
 results and physical-driver limits are recorded in the continuation audit.
+=======
+## Intel firmware container parsing follow-up (2026-09-23)
+
+`wifi_firmware_tlv.rs` is the shared safe, allocation-free container parser.
+It borrows immutable image bytes, bounds images at 4 MiB and sections at 1 MiB,
+and returns at most 64 data sections, matching the existing Intel DMA owner
+capacity. The generic firmware image contract retains its 16-section limit.
+TLV 32 declares paging size; secure types 24/25 carry runtime/init sections.
+Per-image separator state assigns LMAC, UMAC and paging groups without exposing
+separator records as DMA data. Host tests include a pinned upstream AX200
+container; the kernel probe exercises the same parser. See the
+[follow-up audit](audit-stage13-10ac-firmware-parser.md) for validation and limits.
+Successful parsing does not select a device ABI, authenticate firmware or
+activate hardware; physical startup and RX integration remain outstanding.
+
+The QEMU acceptance launchers explicitly use TCG with a 128-MiB translation
+cache to bound host commit use. Guest RAM and CPU matrices are unchanged;
+the cache setting does not alter guest allocator capacity or acceptance limits.
+Prior-stage PowerShell calls use child script scopes in the same process rather
+than retaining 27 nested shell processes. Exceptions and native exit checks
+preserve fail-fast behavior. The follow-up aggregate remains blocked by host
+guest-memory allocation failure; see the audit before treating it as accepted.
+
+## Stage 13.10AC deferred Wi-Fi service (2026-09-23)
+
+Historical AX200 labels 13.10A–AC extend Wi-Fi roadmap Stage 13.9. They do
+not implement Bluetooth Stage 13.10. The [remediation audit](audit-stage13-10ac-remediation-2026-09-23.md)
+records implementation, ownership, source changes, gates, and remaining limits.
+Older sections below describe their recorded stage snapshots.
+
+The opt-in Wi-Fi build now contains `wifi_runtime.rs`, a scheduler worker with
+one owned CSR subscription and one coalescing completion. Vector `0xd0` records
+an interrupt, publishes work, sends LAPIC EOI, and signals the worker through
+the scheduler event latch. `irq_mailbox.rs` tags pending work with a non-reused
+epoch. The worker claims that epoch, services the existing Intel CSR controller
+under the rank-20 slot guard, drops the guard, and notifies the owner. No guard
+crosses blocking or scheduler notification. Fatal errors retire the subscription
+and keep RX disabled. Explicit disable clears both the CSR and saved mask.
+
+Owner exit/termination retires queued work and removes the subscription under
+the service guard, then frees the backing page outside it. The post-SMP QEMU
+probe binds synthetic CSR storage, injects software interrupts through the real
+IDT on the last online CPU, and tests worker wakeup, error propagation, stale
+epochs, and owner cleanup. It complements the earlier pre-SMP CSR tests.
+
+This introduces no syscall, user pointer, capability, or WovenGuard change.
+The experimental transport remains under `stage13-9-test`; default networking
+uses VirtIO. Physical discovery is read-only and does not authorize DMA/MSI.
+Firmware/RX-ring bring-up, actual RX/ALIVE delivery, and physical AX200 testing
+remain open. Hardware vector reuse additionally requires device/interrupt
+quiescence: software epochs cannot distinguish late untagged PCI MSIs.
+
+Optional entropy, input, audio, and PCI programming declarations now follow
+the feature boundaries of their consumers. `hal/pci/msi.rs` contains the
+existing MSI protocol. The heap growth boot probe is excluded only from host
+`cfg(test)` builds; host allocator tests and QEMU growth checks both remain.
+
+The host image builder pins bootloader 0.11.17 through `vendor/bootloader`.
+Its UEFI build script isolates the nested Cargo installer under its own
+`OUT_DIR`, avoiding a wait on the parent's project-local artifact lock.
+Runtime bootloader code is unchanged; provenance and the patch scope are in
+`vendor/bootloader/WOVENHAT-PATCH.md`.
+
+TCP/UDP descriptor close and owner teardown retain the bounded socket slot
+after the last async pin while queued output drains. Normal network polling
+reaps the entry after TCP acknowledgment/closure or UDP dispatch, with a
+30-second bound for an unresponsive peer. Draining slots still count in socket
+statistics and cannot be reused early. Stage 10.7 forces close-before-poll to
+regress payload loss from premature socket removal.
+>>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
 
 ## Scope and source of truth
 

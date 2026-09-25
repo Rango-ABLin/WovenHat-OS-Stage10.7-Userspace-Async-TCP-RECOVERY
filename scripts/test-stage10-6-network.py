@@ -47,7 +47,7 @@ def main():
     host_port = reserve_udp_port()
     netdev = f'user,id=net0,hostfwd=udp:127.0.0.1:{host_port}-10.0.2.15:7001'
     command = [
-        str(qemu), '-machine', 'q35', '-m', '256M', '-smp', str(args.cpus),
+        str(qemu), '-accel', 'tcg,tb-size=128', '-machine', 'q35', '-m', '256M', '-smp', str(args.cpus),
         '-display', 'none', '-serial', f'file:{serial}', '-no-reboot',
         '-device', 'isa-debug-exit,iobase=0xf4,iosize=0x04',
         '-drive', f'if=pflash,format=raw,readonly=on,file={firmware}',

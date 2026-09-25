@@ -3,7 +3,7 @@ $ErrorActionPreference = "Stop"
 Write-Host "=== WovenHat Stage 9.4B IPC / Service Exposure Policy Acceptance ==="
 Write-Host ""
 Write-Host "=== 1/2 Preserve the complete validated Stage 9.4A baseline ==="
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\run-stage9-4a-acceptance.ps1
+& "$PSScriptRoot\run-stage9-4a-acceptance.ps1"
 if ($LASTEXITCODE -ne 0) {
     throw "Stage 9.4A preservation acceptance failed with exit code $LASTEXITCODE"
 }

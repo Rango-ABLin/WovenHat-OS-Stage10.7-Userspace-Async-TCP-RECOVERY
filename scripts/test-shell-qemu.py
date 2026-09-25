@@ -49,7 +49,7 @@ def main():
     with socket.socket() as reservation:
         reservation.bind(('127.0.0.1', 0))
         port = reservation.getsockname()[1]
-    command = [str(qemu), '-machine', 'pc', '-m', '256M', '-smp', str(args.cpus),
+    command = [str(qemu), '-accel', 'tcg,tb-size=128', '-machine', 'pc', '-m', '256M', '-smp', str(args.cpus),
                '-display', 'none', '-serial', f'file:{serial}', '-no-reboot',
                '-qmp', f'tcp:127.0.0.1:{port},server=on,wait=off',
                '-drive', f'if=pflash,format=raw,readonly=on,file={firmware}',

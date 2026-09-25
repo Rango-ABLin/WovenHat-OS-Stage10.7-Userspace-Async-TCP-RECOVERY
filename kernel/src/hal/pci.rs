@@ -229,6 +229,23 @@ pub fn read_config_dword(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
     .unwrap_or(u32::MAX)
 }
 
+<<<<<<< HEAD
+=======
+#[cfg(feature = "stage13-2-test")]
+pub fn write_config_dword(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
+    let _ = write_config(
+        Address {
+            segment: 0,
+            bus,
+            device,
+            function,
+        },
+        u16::from(offset),
+        value,
+    );
+}
+
+>>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
 pub fn enable_io_bus_master(bus: u8, device: u8, function: u8) {
     let address = Address {
         segment: 0,
@@ -245,6 +262,7 @@ pub fn enable_io_bus_master(bus: u8, device: u8, function: u8) {
 
 /// Enable MMIO decoding and DMA bus mastering for a PCI/PCIe function.
 /// Returns false if the configuration transaction cannot be completed.
+<<<<<<< HEAD
 #[cfg(any(
     feature = "stage13-3-test",
     feature = "stage13-4-test",
@@ -254,6 +272,9 @@ pub fn enable_io_bus_master(bus: u8, device: u8, function: u8) {
     feature = "stage13-8-test",
     feature = "stage13-9-test"
 ))]
+=======
+#[cfg(any(feature = "stage13-3-test", feature = "stage13-4-test", feature = "stage13-5-test", feature = "stage13-6-test", feature = "stage13-7-test", feature = "stage13-8-test", feature = "stage13-9-test"))]
+>>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
 pub fn enable_memory_bus_master(address: Address) -> bool {
     let _guard = CONFIG_LOCK.lock();
     let Some(value) = read_config_unlocked(address, 0x04) else {
@@ -419,6 +440,7 @@ fn read_capabilities(address: Address, status: u16, header_type: u8) -> Capabili
     capabilities
 }
 
+<<<<<<< HEAD
 // MSI programming currently belongs to the feature-gated AX200 candidate.
 #[cfg(feature = "stage13-9-test")]
 pub use msi::*;
@@ -596,11 +618,28 @@ mod msi {
     }
 }
 
+=======
+// MSI programming currently belongs to the opt-in AX200 transport.
+#[cfg(feature = "stage13-9-test")]
+mod msi;
+#[cfg(feature = "stage13-9-test")]
+pub use msi::*;
+
+>>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
 fn read_config(address: Address, offset: u16) -> Option<u32> {
     let _guard = CONFIG_LOCK.lock();
     read_config_unlocked(address, offset)
 }
 
+<<<<<<< HEAD
+=======
+#[cfg(feature = "stage13-2-test")]
+fn write_config(address: Address, offset: u16, value: u32) -> bool {
+    let _guard = CONFIG_LOCK.lock();
+    write_config_unlocked(address, offset, value)
+}
+
+>>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
 fn read_config_unlocked(address: Address, offset: u16) -> Option<u32> {
     if offset & 3 != 0 || offset > 0xffc || address.device >= 32 || address.function >= 8 {
         return None;

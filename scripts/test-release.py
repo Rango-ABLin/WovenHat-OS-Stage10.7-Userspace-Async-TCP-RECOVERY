@@ -35,15 +35,11 @@ def main():
 
     run('lint-kernel', ['cargo', 'clippy', '-p', 'wovenhat-kernel', '--target', 'x86_64-unknown-none', '--', '-D', 'warnings'])
     run('lint-host', ['cargo', 'clippy', '-p', 'wovenhat-os', '--', '-D', 'warnings'])
-    unicode_rlibs = sorted((root / 'target' / 'debug' / 'deps').glob('libunicode_normalization-*.rlib'))
-    if not unicode_rlibs:
-        raise SystemExit('unicode-normalization host dependency was not built')
-    unicode_extern = ['-L', str(root / 'target' / 'debug' / 'deps'),
-                      '--extern', f'unicode_normalization={unicode_rlibs[0]}']
+    # Cargo resolves dev dependencies in the configured build directory. Do
+    # not guess an rlib location or select a stale hash from another build.
     for source in sorted((root / 'tests').glob('*.rs')):
-        executable = out / (source.stem + ('.exe' if os.name == 'nt' else ''))
-        run(f'compile-{source.stem}', ['rustc', '--edition=2021', '--test', str(source), *unicode_extern, '-o', str(executable)])
-        run(f'test-{source.stem}', [str(executable)])
+        run(f'compile-{source.stem}', ['cargo', 'test', '--test', source.stem, '--no-run'])
+        run(f'test-{source.stem}', ['cargo', 'test', '--test', source.stem])
     options = []
     for key in ('qemu', 'firmware'):
         if getattr(args, key):

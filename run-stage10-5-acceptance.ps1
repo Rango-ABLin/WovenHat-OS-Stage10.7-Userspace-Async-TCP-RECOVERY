@@ -2,7 +2,7 @@ $ErrorActionPreference = 'Stop'
 Write-Host '=== WovenHat Stage 10.5 Userspace Async VFS/File I/O Acceptance ==='
 Write-Host ''
 Write-Host '=== 1/2 Preserve the complete validated Stage 10.4 baseline ==='
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\run-stage10-4-acceptance.ps1
+& "$PSScriptRoot\run-stage10-4-acceptance.ps1"
 if ($LASTEXITCODE -ne 0) { throw "Stage 10.4 preservation acceptance failed with exit code $LASTEXITCODE" }
 Write-Host ''
 Write-Host '=== 2/2 Isolated Stage 10.5 Ring-3 VFS async I/O boots: 1/2/4 CPUs ==='

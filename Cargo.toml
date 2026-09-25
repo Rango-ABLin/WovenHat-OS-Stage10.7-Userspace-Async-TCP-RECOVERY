@@ -1,6 +1,10 @@
 [workspace]
 resolver = "3"
 members = ["kernel", "libwoven"]
+exclude = ["vendor/bootloader"]
+
+[patch.crates-io]
+bootloader = { path = "vendor/bootloader" }
 
 [features]
 physical-probe = ["kernel/physical-probe"]
