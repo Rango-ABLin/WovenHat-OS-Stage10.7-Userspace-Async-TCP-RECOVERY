@@ -1,12 +1,9 @@
 $ErrorActionPreference = 'Stop'
 $env:CARGO_BUILD_BUILD_DIR = Join-Path $PSScriptRoot '.cargo-build'
 $env:CARGO_TARGET_DIR = Join-Path $PSScriptRoot 'target'
-<<<<<<< HEAD
-=======
 Set-Location $PSScriptRoot
 python -m unittest discover -s tests -p 'test_*.py'
 if ($LASTEXITCODE -ne 0) { throw 'Host harness regressions failed' }
->>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
 cargo build --features stage13-9-test
 if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
 cargo clippy -p wovenhat-kernel --target x86_64-unknown-none --features stage13-9-test -- -D warnings

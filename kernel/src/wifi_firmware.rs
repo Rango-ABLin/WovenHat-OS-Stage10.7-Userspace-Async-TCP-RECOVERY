@@ -2751,7 +2751,11 @@ fn ax200_runtime_copy_self_test() -> bool {
         bytes[start..start + 4].copy_from_slice(&INTEL_TLV_SEC_RT.to_le_bytes());
         bytes[start + 4..start + 8].copy_from_slice(&8u32.to_le_bytes());
         bytes[start + 8..start + 12].copy_from_slice(&offset.to_le_bytes());
-        bytes[start + 12..start + 16].fill(index as u8 + 1);
+        if matches!(offset, INTEL_CPU_SEPARATOR | INTEL_PAGING_SEPARATOR) {
+            bytes[start + 12..start + 16].fill(0);
+        } else {
+            bytes[start + 12..start + 16].fill(index as u8 + 1);
+        }
     }
     let start = INTEL_TLV_UCODE_HEADER_SIZE + 5 * 16;
     bytes[start..start + 4].copy_from_slice(&INTEL_TLV_PAGING.to_le_bytes());
