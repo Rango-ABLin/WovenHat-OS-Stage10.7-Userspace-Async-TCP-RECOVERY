@@ -8,11 +8,7 @@ import subprocess
 import sys
 import time
 
-<<<<<<< HEAD
-# Explicit acceptance contract: do not derive these from the kernel at runtime.
-=======
 # Explicit acceptance contract; do not derive expectations from the tested source at runtime.
->>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
 WIFI_REQUIRED_MARKERS = (
     '[S13.9A] WovenWiFi framework + PCI classification: PASSED',
     '[S13.9B] IEEE 802.11 frame/IE core: PASSED',
@@ -56,10 +52,6 @@ WIFI_REQUIRED_MARKERS = (
     '[S13.10AA] PCI MSI programming contract: PASSED',
     '[S13.10AB] AX200 PCI MSI binding contract: PASSED',
     '[S13.10AC] deferred AX200 IRQ -> CSR RX service: PASSED',
-<<<<<<< HEAD
-=======
-    '[S13.10AC] IRQ worker/wakeup/teardown: PASSED',
->>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
     '[S13.9K] Wi-Fi transport/backend contract: PASSED',
     '[S13.9L] reconnect/timeout/lifecycle hardening: PASSED',
     '[S13.9M] cross-module integration closure: PASSED',
@@ -74,8 +66,6 @@ WIFI_REQUIRED_MARKERS = (
     '[S13.9V] selectable WovenNet transport integration: PASSED',
 )
 
-<<<<<<< HEAD
-=======
 def required_markers(stage, cpus):
     required = [f'[SMP] online={cpus} expected={cpus}',
                 '[S10.3] userspace async completion ABI + cancellation/teardown: PASSED',
@@ -112,7 +102,6 @@ def validation_errors(returncode, log, required):
     return errors
 
 
->>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--stage', choices=('10.8', '10.9', '11.1', '11.2', '11.3', '11.4', '11.5', '12.1', '12.2', '12.3', '12.4', '12.5', '13.1', '13.2', '13.3', '13.4', '13.5', '13.6', '13.7', '13.8', '13.9', '1-5'), default='10.8')
@@ -168,38 +157,9 @@ def main():
             print('QEMU timeout; evidence:', out, file=sys.stderr)
             return 1
     log = serial.read_text(errors='replace') if serial.exists() else ''
-<<<<<<< HEAD
-    required = [f'[SMP] online={args.cpus} expected={args.cpus}',
-                '[S10.3] userspace async completion ABI + cancellation/teardown: PASSED',
-                ({'10.8': '[S10.8] completion ports + batch/cancel/timeout/teardown/SMP: PASSED',
-                  '10.9': '[S10.9] timers/events/deadlines/cancellation/teardown: PASSED',
-                  '11.1': '[S11.1] production process model: PASSED',
-                  '11.2': '[S11.2] threads/TLS/join: PASSED',
-                  '11.3': '[S11.3] notifications: PASSED',
-                  '11.4': '[S11.4] libwoven runtime boundary: PASSED',
-                  '11.5': '[S11.5] loader hardening: PASSED',
-                  '12.1': '[S12.1] VFS boundary: PASSED', '12.2': '[S12.2] WovenFS: PASSED',
-                  '12.3': '[S12.3] encryption: PASSED', '12.4': '[S12.4] snapshots: PASSED',
-                  '12.5': '[S12.5] storage management: PASSED', '13.1': '[S13.1] driver framework: PASSED',
-                  '13.2': '[S13.2] PCI/PCIe configuration + inventory: PASSED',
-                  '13.3': '[S13.3] NVMe controller/queue foundation: PASSED',
-                  '13.4': '[S13.4] AHCI/SATA DMA block I/O: PASSED',
-                  '13.5': '[S13.5] xHCI USB core: PASSED',
-                  '13.6': '[S13.6] USB HID keyboard: PASSED',
-                  '13.7': '[S13.7] WovenInput unified event framework: PASSED',
-                  '13.8': '[S13.8] WovenAudio stream/API integration: PASSED',
-                  '13.9': '[S13.9H] GTK + encrypted key data: PASSED',
-                  '1-5': '[S1-5] storage journal: PASSED'}[args.stage])]
-    if args.stage == '13.9':
-        required.extend(WIFI_REQUIRED_MARKERS)
-    missing = [marker for marker in required if marker not in log]
-    if result.returncode != 33 or missing:
-        print('Missing required markers:', missing, file=sys.stderr)
-=======
     errors = validation_errors(result.returncode, log, required_markers(args.stage, args.cpus))
     if errors:
         print('\n'.join(errors), file=sys.stderr)
->>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
         print(log[-12000:], file=sys.stderr)
         print('FAILED; evidence:', out, file=sys.stderr)
         return 1

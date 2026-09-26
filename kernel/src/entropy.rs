@@ -12,7 +12,6 @@
 //! WPA2 nonces, keys, ASLR secrets, stack canaries, or other cryptographic
 //! material.
 
-<<<<<<< HEAD
 use x86_64::instructions::random::RdRand;
 
 #[cfg(feature = "stage13-9-test")]
@@ -86,35 +85,6 @@ mod secure {
                 let _ = out;
                 Err(EntropyError::Unavailable)
             }
-=======
-#[cfg(feature = "stage13-9-test")]
-use spin::Mutex;
-use x86_64::instructions::random::RdRand;
-#[cfg(feature = "stage13-9-test")]
-use zeroize::Zeroize;
-
-#[cfg(feature = "stage13-9-test")]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EntropyError {
-    Unavailable,
-    InvalidRequest,
-}
-
-#[cfg(feature = "stage13-9-test")]
-struct Pool {
-    seeded: bool,
-    key: [u8; 32],
-    counter: u64,
-}
-
-#[cfg(feature = "stage13-9-test")]
-impl Pool {
-    const fn new() -> Self {
-        Self {
-            seeded: false,
-            key: [0; 32],
-            counter: 0,
->>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
         }
     }
 
@@ -199,35 +169,6 @@ impl Pool {
     }
 }
 
-<<<<<<< HEAD
-=======
-#[cfg(feature = "stage13-9-test")]
-static POOL: Mutex<Pool> = Mutex::new(Pool::new());
-
-/// Cryptographic entropy boundary. Fails closed when no reviewed secure source
-/// has seeded the pool.
-#[cfg(feature = "stage13-9-test")]
-pub fn fill_secure(out: &mut [u8]) -> Result<(), EntropyError> {
-    POOL.lock().fill(out)
-}
-
-/// Produce a WPA2 SNonce only from the secure entropy boundary.
-#[cfg(feature = "stage13-9-test")]
-pub fn snonce() -> Result<[u8; 32], EntropyError> {
-    let mut nonce = [0u8; 32];
-    fill_secure(&mut nonce)?;
-    Ok(nonce)
-}
-
-/// Secure u64 helper for callers that explicitly require cryptographic entropy.
-#[cfg(feature = "stage13-9-test")]
-pub fn try_secure_u64() -> Result<u64, EntropyError> {
-    let mut bytes = [0u8; 8];
-    fill_secure(&mut bytes)?;
-    Ok(u64::from_le_bytes(bytes))
-}
-
->>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
 /// Best-effort, non-cryptographic random value.
 ///
 /// Prefer hardware RDRAND. If unavailable or transiently failing, use the
@@ -269,66 +210,3 @@ fn fallback_u64() -> u64 {
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     z ^ (z >> 31)
 }
-<<<<<<< HEAD
-=======
-
-#[cfg(feature = "stage13-9-test")]
-pub fn available() -> bool {
-    POOL.lock().seeded
-}
-
-#[cfg(feature = "stage13-9-test")]
-pub fn seed_for_test(seed: [u8; 32]) {
-    POOL.lock().seed(seed);
-}
-
-#[cfg(feature = "stage13-9-test")]
-pub fn clear_for_test() {
-    POOL.lock().clear();
-}
-
-#[cfg(feature = "stage13-9-test")]
-pub fn self_test() -> bool {
-    #[cfg(feature = "stage13-9-test")]
-    {
-        clear_for_test();
-
-        let mut unavailable = [0u8; 32];
-        if fill_secure(&mut unavailable) != Err(EntropyError::Unavailable) || available() {
-            return false;
-        }
-
-        // The non-cryptographic network API remains available independently
-        // of the secure pool. We do not assert unpredictability here.
-        let network_a = random_u64();
-        let network_b = random_u64();
-        if network_a == 0 && network_b == 0 {
-            return false;
-        }
-
-        seed_for_test([0xa5; 32]);
-        if !available() {
-            return false;
-        }
-        let Ok(a) = snonce() else {
-            return false;
-        };
-        let Ok(b) = snonce() else {
-            return false;
-        };
-        if a == [0; 32] || b == [0; 32] || a == b {
-            return false;
-        }
-
-        clear_for_test();
-        !available()
-            && snonce() == Err(EntropyError::Unavailable)
-            && try_secure_u64() == Err(EntropyError::Unavailable)
-    }
-
-    #[cfg(not(feature = "stage13-9-test"))]
-    {
-        !available()
-    }
-}
->>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270

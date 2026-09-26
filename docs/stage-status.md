@@ -6,7 +6,6 @@ fully complete while a roadmap requirement remains open.
 
 Authoritative development sequence: [supplied Stage 10.7–36 roadmap](master-development-roadmap.md).
 
-<<<<<<< HEAD
 ## TCP close/drain preservation repair - 2026-09-24
 
 This-machine preflight exposed an intermittent 4-CPU Stage 10.7 failure:
@@ -80,51 +79,6 @@ Next prerequisites remain production Wi-Fi worker/lifecycle integration,
 secure entropy provisioning, physical AX201 firmware/IRQ/DMA/RF qualification,
 and the earlier unfulfilled roadmap requirements. Do not advance to a later
 stage or treat these synthetic Wi-Fi results as working physical Wi-Fi.
-=======
-## Stage 13.10AC firmware parser follow-up — full gate blocked (2026-09-23)
-
-The [parser follow-up audit](audit-stage13-10ac-firmware-parser.md) records
-repairs for paging metadata, secure runtime/init sections, section grouping,
-input bounds and the Intel container capacity mismatch. A pinned, unmodified
-upstream AX200 image supplies a real container fixture. Build, strict host/kernel
-lint, 34 Rust tests in each configuration and 10 Python tests passed. Focused
-Wi-Fi checks passed on 1/2/4 CPUs. QEMU's host translation cache is bounded and
-27 nested PowerShell launches now execute in one process.
-
-Final-source aggregate `audit-artifacts/ac-full-1790189677915188900` failed
-before its first preservation guest boot: Windows could not allocate QEMU's
-guest RAM. Full acceptance remains blocked until host memory is freed and the
-complete aggregate is rerun. The earlier accepted run below does not certify
-these changes. Physical firmware/RX integration also remains open.
-
-## Stage 13.10AC remediation — software gate accepted (2026-09-23)
-
-Baseline: `0563d0b` on `stage13.9-wifi`. Historical AX200 labels 13.10A–AC
-extend Wi-Fi roadmap Stage 13.9; they do not implement Bluetooth Stage 13.10.
-See the [remediation audit](audit-stage13-10ac-remediation-2026-09-23.md).
-
-The final aggregate run `audit-artifacts/ac-full-1790166196507145600`
-passed all 40 checks, including 157 QEMU boots across the required 1/2/4-CPU
-matrices. Default build, warning-denying host/kernel and feature Clippy,
-27 Rust host tests in each configuration, and 9 Python tests passed. The
-source manifest remained unchanged throughout the run. Full Stage 10.7
-preservation, release, hotplug, runtime, storage and driver gates through AC
-passed in one serial chain.
-
-The opt-in Wi-Fi build has an event-driven CSR worker with epoch-tagged work,
-fatal-error retirement and owner cleanup. The checker requires all 55 Wi-Fi
-markers. Build/feature boundaries, the host heap probe, disabled RX masks,
-nested bootloader Cargo locks, premature queued socket removal and a copied
-HDA block in the USB error path are repaired. Earlier failed evidence is
-retained; neither assertions nor acceptance timeouts were weakened.
-
-Acceptance is for the bounded software foundation. Real firmware compatibility
-(including paging metadata and secure section parsing), RX-ring integration,
-device-written ALIVE delivery and physical AX200 MSI/DMA qualification remain
-open. The available host is AX201, outside the reviewed AX200 identity.
-Production Wi-Fi and Bluetooth are not complete. The next work must address
-these Wi-Fi prerequisites before advancing to a later roadmap stage.
->>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
 
 ## Stage 6 — accepted on 2026-09-16
 
@@ -326,7 +280,18 @@ The WovenDriver manager passed device matching, binding, suspend/resume,
 build, freestanding Clippy, and 1/2/4-CPU QEMU validation. See
 [audit](audit-stage13-1-2026-09-16.md).
 
-Next: Stage 13.2 production PCIe support.
+## Stage 13.2 — accepted on 2026-09-26
+
+Stage 13.2 PCI/PCIe configuration and inventory now passes the focused gate:
+`cargo build --features stage13-2-test`, warning-denying kernel Clippy for
+`stage13-2-test`, and the `scripts/test-stage10-runtime.py --stage 13.2`
+QEMU matrix on 1/2/4 CPUs with exit 33.
+
+Additional audit reruns for stages 13.1 through 13.9 on 1 CPU all passed after
+resolving unresolved merge-content in Stage 13 harness/docs and repairing the
+AX200 runtime-image grouping path used by Stage 13.9Q.
+
+Next: Stage 13.3 NVMe controller/queue foundation.
 
 ## Stages 12.2–12.5 — accepted on 2026-09-16
 

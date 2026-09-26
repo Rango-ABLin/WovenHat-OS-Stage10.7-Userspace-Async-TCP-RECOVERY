@@ -119,7 +119,6 @@ impl Device for VirtioSmolDevice {
     }
 }
 
-<<<<<<< HEAD
 // The candidate Wi-Fi transport has the same feature boundary as its backend.
 #[cfg(not(feature = "stage13-9-test"))]
 type NetTransport = VirtioSmolDevice;
@@ -130,79 +129,6 @@ pub use wifi_transport::{NetTransport, WifiNetDevice};
 mod wifi_transport {
     use super::*;
     use crate::{wifi_session::WifiSession, wifi_smol};
-=======
-#[cfg(feature = "stage13-9-test")]
-pub struct WifiNetDevice {
-    session: WifiSession,
-    epoch: u32,
-    rx: [u8; wifi_smol::ETHERNET_MTU],
-}
-#[cfg(feature = "stage13-9-test")]
-impl WifiNetDevice {
-    pub fn new(session: WifiSession, epoch: u32) -> Self {
-        Self {
-            session,
-            epoch,
-            rx: [0; wifi_smol::ETHERNET_MTU],
-        }
-    }
-    #[cfg(feature = "stage13-9-test")]
-    pub fn session_mut(&mut self) -> &mut WifiSession {
-        &mut self.session
-    }
-}
-
-#[cfg(feature = "stage13-9-test")]
-#[allow(clippy::large_enum_variant)]
-pub enum NetTransport {
-    Virtio(VirtioSmolDevice),
-    Wifi(WifiNetDevice),
-}
-#[cfg(feature = "stage13-9-test")]
-pub enum NetRxToken<'a> {
-    Virtio(WovenRxToken<'a>),
-    Wifi(wifi_smol::WifiRxToken<'a>),
-}
-#[cfg(feature = "stage13-9-test")]
-pub enum NetTxToken<'a> {
-    Virtio(WovenTxToken),
-    Wifi(wifi_smol::WifiTxToken<'a>),
-}
-#[cfg(feature = "stage13-9-test")]
-impl RxToken for NetRxToken<'_> {
-    fn consume<R, F>(self, f: F) -> R
-    where
-        F: FnOnce(&[u8]) -> R,
-    {
-        match self {
-            Self::Virtio(t) => t.consume(f),
-            Self::Wifi(t) => t.consume(f),
-        }
-    }
-}
-#[cfg(feature = "stage13-9-test")]
-impl TxToken for NetTxToken<'_> {
-    fn consume<R, F>(self, len: usize, f: F) -> R
-    where
-        F: FnOnce(&mut [u8]) -> R,
-    {
-        match self {
-            Self::Virtio(t) => t.consume(len, f),
-            Self::Wifi(t) => t.consume(len, f),
-        }
-    }
-}
-#[cfg(feature = "stage13-9-test")]
-impl Device for NetTransport {
-    type RxToken<'a>
-        = NetRxToken<'a>
-    where
-        Self: 'a;
-    type TxToken<'a>
-        = NetTxToken<'a>
-    where
-        Self: 'a;
->>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
 
     pub struct WifiNetDevice {
         session: WifiSession,
@@ -314,11 +240,6 @@ impl Device for NetTransport {
         }
     }
 }
-<<<<<<< HEAD
-=======
-#[cfg(not(feature = "stage13-9-test"))]
-type NetTransport = VirtioSmolDevice;
->>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SocketKind {
@@ -350,11 +271,7 @@ struct UserSocket {
     generation: u32,
     async_refs: u16,
     closing: bool,
-<<<<<<< HEAD
     close_started: Option<u64>,
-=======
-    drain_deadline: Option<u64>,
->>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -618,11 +535,7 @@ pub fn poll() {
         let _ = iface.poll(now(), device, sockets);
     }
     for index in 0..MAX_USER_SOCKETS {
-<<<<<<< HEAD
         retire_closed_socket(&mut runtime, index);
-=======
-        finish_close(&mut runtime, index);
->>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
     }
     drop(runtime);
     crate::async_network::network_progress();
@@ -792,11 +705,7 @@ pub fn socket_open(owner: u64, kind: SocketKind) -> Result<u64, SocketError> {
         generation,
         async_refs: 0,
         closing: false,
-<<<<<<< HEAD
         close_started: None,
-=======
-        drain_deadline: None,
->>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
     });
     Ok(slot as u64)
 }
@@ -931,19 +840,12 @@ pub fn socket_close(owner: u64, id: u64) -> Result<(), SocketError> {
         return Err(SocketError::Offline);
     };
     let mut runtime = runtime.lock();
-<<<<<<< HEAD
     let _ = find_slot(&runtime, owner, id)?;
     let index = id as usize;
     if let Some(socket) = runtime.user[index].as_mut() {
         socket.closing = true;
     }
     retire_closed_socket(&mut runtime, index);
-=======
-    find_slot(&runtime, owner, id)?;
-    let index = id as usize;
-    runtime.user[index].as_mut().unwrap().closing = true;
-    finish_close(&mut runtime, index);
->>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
     Ok(())
 }
 
@@ -955,15 +857,10 @@ pub fn close_process_sockets(owner: u64) {
     for index in 0..MAX_USER_SOCKETS {
         if let Some(entry) = runtime.user[index] {
             if entry.owner == owner {
-<<<<<<< HEAD
                 if let Some(socket) = runtime.user[index].as_mut() {
                     socket.closing = true;
                 }
                 retire_closed_socket(&mut runtime, index);
-=======
-                runtime.user[index].as_mut().unwrap().closing = true;
-                finish_close(&mut runtime, index);
->>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
             }
         }
     }
@@ -1031,7 +928,7 @@ fn finish_close(runtime: &mut Runtime, index: usize) {
     if !entry.closing || entry.async_refs != 0 {
         return;
     }
-    let pending = match entry.kind {
+    let _pending = match entry.kind {
         SocketKind::Tcp => {
             let socket = runtime.sockets.get_mut::<tcp::Socket>(entry.handle);
             let pending = socket.is_open() && socket.send_queue() != 0;
@@ -1042,28 +939,9 @@ fn finish_close(runtime: &mut Runtime, index: usize) {
             socket.close();
             pending
         }
-<<<<<<< HEAD
-    }
-    retire_closed_socket(&mut runtime, index);
-=======
-        SocketKind::Udp => {
-            runtime
-                .sockets
-                .get::<udp::Socket>(entry.handle)
-                .send_queue()
-                != 0
-        }
+        SocketKind::Udp => false,
     };
-    let deadline = runtime.user[index]
-        .as_mut()
-        .unwrap()
-        .drain_deadline
-        .get_or_insert_with(|| timer::ticks().saturating_add(30 * u64::from(timer::FREQUENCY_HZ)));
-    if pending && timer::ticks() < *deadline {
-        return;
-    }
-    let _ = runtime.sockets.remove(entry.handle);
-    runtime.user[index] = None;
+    retire_closed_socket(runtime, index);
 }
 
 #[cfg(feature = "stage10-7-test")]
@@ -1071,7 +949,6 @@ pub fn queued_close_verified() -> bool {
     RUNTIME
         .get()
         .is_some_and(|runtime| runtime.lock().queued_close_verified)
->>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
 }
 
 pub fn socket_connect_pinned(token: SocketToken, endpoint: IpEndpoint) -> Result<(), SocketError> {

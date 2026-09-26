@@ -39,6 +39,15 @@ pub struct IntelFirmwareSection<'a> {
     pub bytes: &'a [u8],
 }
 
+impl IntelFirmwareSection<'_> {
+    pub const fn is_separator(&self) -> bool {
+        matches!(
+            self.device_offset,
+            INTEL_CPU_SEPARATOR | INTEL_PAGING_SEPARATOR
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IntelTlvError {
     TooShort,
@@ -67,6 +76,13 @@ pub struct IntelTlvFirmware<'a> {
     paging_size: Option<u32>,
     version: u32,
     build: u32,
+}
+
+#[derive(Clone, Copy)]
+pub struct IntelSections<'a> {
+    sections: [Option<IntelFirmwareSection<'a>>; MAX_INTEL_TLV_SECTIONS],
+    section_count: usize,
+    index: usize,
 }
 
 impl<'a> IntelTlvFirmware<'a> {
@@ -252,6 +268,27 @@ impl<'a> IntelTlvFirmware<'a> {
 
     pub fn section_group(&self, index: usize) -> Option<IntelFirmwareSectionGroup> {
         (index < self.section_count).then(|| self.groups[index])
+    }
+
+    pub fn sections(&self) -> IntelSections<'a> {
+        IntelSections {
+            sections: self.sections,
+            section_count: self.section_count,
+            index: 0,
+        }
+    }
+}
+
+impl<'a> Iterator for IntelSections<'a> {
+    type Item = IntelFirmwareSection<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index >= self.section_count {
+            return None;
+        }
+        let section = self.sections[self.index];
+        self.index += 1;
+        section
     }
 }
 
