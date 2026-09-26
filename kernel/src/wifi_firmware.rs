@@ -296,6 +296,10 @@ fn read_le_u32(bytes: &[u8], offset: usize) -> Option<u32> {
     Some(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
 }
 
+#[path = "wifi_ax200_image.rs"]
+mod ax200_image;
+pub use ax200_image::{Ax200ImageError, Ax200ImageRegion, Ax200RuntimeImage};
+
 pub fn stage13_10l_self_test() -> bool {
     let mut blob = [0u8; 176];
     blob[4..8].copy_from_slice(&INTEL_TLV_UCODE_MAGIC.to_le_bytes());
