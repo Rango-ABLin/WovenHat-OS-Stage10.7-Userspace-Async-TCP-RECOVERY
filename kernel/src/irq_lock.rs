@@ -89,10 +89,6 @@ mod lock_order {
     }
 }
 
-<<<<<<< HEAD
-=======
-
->>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
 /// A pager operation acquires rank 10 and can wait for remote TLB flushes.
 /// It must begin outside other ranked guards with local IRQs enabled.
 pub fn pager_entry_allowed() -> bool {

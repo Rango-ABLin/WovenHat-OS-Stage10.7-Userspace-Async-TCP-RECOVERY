@@ -1,13 +1,8 @@
 //! WovenWiFi Stage 13.10K - firmware image ownership/validation foundation.
 //!
-<<<<<<< HEAD
 //! Bounded image ownership, Intel TLV container validation and DMA staging.
 //! Container parsing is shared with host tests through `wifi_tlv.rs`.
 //! These foundations do not yet load firmware onto physical hardware.
-=======
-//! Bounded image parsing, staging and synthetic startup contracts. Physical
-//! firmware/RX-ring integration and hardware qualification remain outstanding.
->>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
 
 #[path = "wifi_firmware_tlv.rs"]
 mod tlv;
@@ -295,21 +290,11 @@ pub fn stage13_10k_self_test() -> bool {
         Err(FirmwareError::AddressOverflow)
     )
 }
-<<<<<<< HEAD
-#[path = "wifi_tlv.rs"]
-mod tlv;
-pub use tlv::*;
-#[path = "wifi_ax200_image.rs"]
-mod ax200_image;
-pub use ax200_image::{Ax200ImageError, Ax200ImageRegion, Ax200RuntimeImage};
-=======
-
 fn read_le_u32(bytes: &[u8], offset: usize) -> Option<u32> {
     let end = offset.checked_add(4)?;
     let slice = bytes.get(offset..end)?;
     Some(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
 }
->>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
 
 pub fn stage13_10l_self_test() -> bool {
     let mut blob = [0u8; 176];
