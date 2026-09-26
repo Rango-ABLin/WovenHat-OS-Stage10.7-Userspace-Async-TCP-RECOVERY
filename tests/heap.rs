@@ -3,12 +3,20 @@
 extern crate alloc;
 
 mod memory {
-    pub struct Stats { pub remaining_frames: u64 }
-    pub fn stats() -> Stats { Stats { remaining_frames: 4096 } }
+    pub struct Stats {
+        pub remaining_frames: u64,
+    }
+    pub fn stats() -> Stats {
+        Stats {
+            remaining_frames: 4096,
+        }
+    }
 }
 
 mod paging {
-    pub fn map_range(_: u64, _: usize) -> Result<(), ()> { Ok(()) }
+    pub fn map_range(_: u64, _: usize) -> Result<(), ()> {
+        Ok(())
+    }
 }
 
 mod irq_lock {

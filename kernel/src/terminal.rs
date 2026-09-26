@@ -7,9 +7,9 @@
 //! also prevents the kernel debug shell from stealing PS/2 input while `/bin/sh`
 //! is running.
 
+use crate::irq_lock::PreemptMutex as Mutex;
 use bootloader_api::info::{FrameBufferInfo, PixelFormat};
 use core::sync::atomic::{AtomicU64, Ordering};
-use crate::irq_lock::PreemptMutex as Mutex;
 
 use crate::console::glyph;
 

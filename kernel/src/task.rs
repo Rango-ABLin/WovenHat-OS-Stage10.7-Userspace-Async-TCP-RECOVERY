@@ -7,7 +7,9 @@ use core::{
 use crate::{
     capability::{Capability, CapabilitySet},
     config::{MAX_FILE_DESCRIPTORS, MAX_PAGER_REQUESTS, MAX_PROCESSES, MAX_TASKS, TASK_STACK_SIZE},
-    gdt, ipc, irq_lock::{IrqMutex, IrqMutexGuard}, paging, timer, userspace, vfs, wovenguard,
+    gdt, ipc,
+    irq_lock::{IrqMutex, IrqMutexGuard},
+    paging, timer, userspace, vfs, wovenguard,
 };
 
 const KERNEL_TASK_ID: TaskId = TaskId(0);
@@ -44,7 +46,9 @@ impl core::ops::DerefMut for ProcessTableGuard {
 }
 
 fn process_table_lock() -> ProcessTableGuard {
-    ProcessTableGuard { guard: PROCESS_TABLE.lock() }
+    ProcessTableGuard {
+        guard: PROCESS_TABLE.lock(),
+    }
 }
 static IDLE_HEARTBEATS: AtomicU64 = AtomicU64::new(0);
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(2);
@@ -718,7 +722,6 @@ pub enum MigrationError {
     NotReady,
 }
 
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AffinityError {
     UnknownTask,
@@ -890,9 +893,11 @@ impl Scheduler {
         let best_priority = self
             .tasks
             .iter()
-            .filter(|task| task.state == TaskState::Ready
-                && task.cpu == crate::smp::cpu_index()
-                && (task.affinity_mask & cpu_bit(crate::smp::cpu_index())) != 0)
+            .filter(|task| {
+                task.state == TaskState::Ready
+                    && task.cpu == crate::smp::cpu_index()
+                    && (task.affinity_mask & cpu_bit(crate::smp::cpu_index())) != 0
+            })
             .map(|task| task.priority)
             .max()?;
         let priority_index = best_priority.index();
@@ -924,8 +929,7 @@ impl Scheduler {
             // otherwise migrate or run this task while it is still physically
             // executing on `cpu`. The incoming context finalizes this state.
             assert_eq!(
-                self.switching_out[cpu],
-                MAX_TASKS,
+                self.switching_out[cpu], MAX_TASKS,
                 "nested scheduler hand-off on one CPU"
             );
             self.tasks[previous_slot].state = TaskState::Switching;
@@ -1027,7 +1031,9 @@ impl Scheduler {
 
     fn wake_sleeping(&mut self, now: u64) {
         for task in &mut self.tasks {
-            if task.state == TaskState::Blocked && task.event_deadline.is_some_and(|deadline| now >= deadline) {
+            if task.state == TaskState::Blocked
+                && task.event_deadline.is_some_and(|deadline| now >= deadline)
+            {
                 task.state = TaskState::Ready;
                 task.event_deadline = None;
             }
@@ -1039,7 +1045,10 @@ impl Scheduler {
     }
 
     fn run_loads(&self) -> [CpuRunLoad; crate::smp::MAX_CPUS] {
-        let mut loads = [CpuRunLoad { ready: 0, running: 0 }; crate::smp::MAX_CPUS];
+        let mut loads = [CpuRunLoad {
+            ready: 0,
+            running: 0,
+        }; crate::smp::MAX_CPUS];
         for task in &self.tasks {
             if task.cpu >= crate::smp::MAX_CPUS || matches!(task.name, "idle" | "cpu-idle") {
                 continue;
@@ -1066,7 +1075,9 @@ impl Scheduler {
         let loads = self.run_loads();
         let local_domain = crate::smp::cpu_domain(crate::smp::cpu_index());
         (0..crate::smp::MAX_CPUS)
-            .filter(|cpu| crate::smp::cpu_is_schedulable(*cpu) && affinity_mask & cpu_bit(*cpu) != 0)
+            .filter(|cpu| {
+                crate::smp::cpu_is_schedulable(*cpu) && affinity_mask & cpu_bit(*cpu) != 0
+            })
             .min_by_key(|cpu| {
                 (
                     usize::from(crate::smp::cpu_domain(*cpu) != local_domain),
@@ -1115,13 +1126,11 @@ impl Scheduler {
                     continue;
                 }
                 let gain = source_load - target_load;
-                let cross_domain = usize::from(
-                    crate::smp::cpu_domain(source) != crate::smp::cpu_domain(target),
-                );
+                let cross_domain =
+                    usize::from(crate::smp::cpu_domain(source) != crate::smp::cpu_domain(target));
                 if best.is_none_or(|(_, best_source, best_target, best_gain)| {
                     let best_cross = usize::from(
-                        crate::smp::cpu_domain(best_source)
-                            != crate::smp::cpu_domain(best_target),
+                        crate::smp::cpu_domain(best_source) != crate::smp::cpu_domain(best_target),
                     );
                     cross_domain < best_cross
                         || (cross_domain == best_cross
@@ -1150,9 +1159,11 @@ impl Scheduler {
         let ready_tasks = self
             .tasks
             .iter()
-            .filter(|task| task.state == TaskState::Ready
-                && task.cpu == crate::smp::cpu_index()
-                && (task.affinity_mask & cpu_bit(crate::smp::cpu_index())) != 0)
+            .filter(|task| {
+                task.state == TaskState::Ready
+                    && task.cpu == crate::smp::cpu_index()
+                    && (task.affinity_mask & cpu_bit(crate::smp::cpu_index())) != 0
+            })
             .count();
         let blocked_tasks = self
             .tasks
@@ -1373,9 +1384,9 @@ pub fn spawn_user_system_service(
     capabilities: CapabilitySet,
 ) -> Result<(ProcessId, TaskId, UserTaskContext), ProcessError> {
     if !program.image.is_valid()
-        || !capabilities.is_subset_of(
-            wovenguard::domain_ceiling(wovenguard::SecurityDomain::SystemService),
-        )
+        || !capabilities.is_subset_of(wovenguard::domain_ceiling(
+            wovenguard::SecurityDomain::SystemService,
+        ))
     {
         let _ = userspace::destroy(program.address_space);
         return Err(ProcessError::Full);
@@ -1448,10 +1459,7 @@ pub fn spawn_multicore_user_process(
     affinity_mask: usize,
 ) -> Result<(ProcessId, TaskId, UserTaskContext, MulticoreSpawnPlacement), ProcessError> {
     let online = online_affinity_mask();
-    if !program.image.is_valid()
-        || affinity_mask == 0
-        || affinity_mask & !online != 0
-    {
+    if !program.image.is_valid() || affinity_mask == 0 || affinity_mask & !online != 0 {
         let _ = userspace::destroy(program.address_space);
         return Err(ProcessError::Full);
     }
@@ -1715,7 +1723,10 @@ pub fn local_preemption_guard() -> LocalPreemptGuard {
     if enabled {
         x86_64::instructions::interrupts::enable();
     }
-    LocalPreemptGuard { cpu, _not_send: core::marker::PhantomData }
+    LocalPreemptGuard {
+        cpu,
+        _not_send: core::marker::PhantomData,
+    }
 }
 
 impl Drop for LocalPreemptGuard {
@@ -1768,7 +1779,8 @@ pub fn file_fault_io_self_test() -> bool {
         }
         let stayed = current_task_id() == id;
         drop(guard);
-        state && stayed
+        state
+            && stayed
             && LOCAL_PREEMPT_DEPTH[cpu].load(Ordering::Acquire) == 0
             && x86_64::instructions::interrupts::are_enabled() == enabled
     };
@@ -1913,8 +1925,7 @@ fn pager_wait_for_request() -> PagerRequest {
             let cpu = crate::smp::cpu_index();
             let slot = scheduler.current_slot[cpu];
             assert_eq!(
-                scheduler.tasks[slot].name,
-                "pager",
+                scheduler.tasks[slot].name, "pager",
                 "pager wait executed outside pager task"
             );
             scheduler.tasks[slot].state = TaskState::Blocked;
@@ -1925,9 +1936,8 @@ fn pager_wait_for_request() -> PagerRequest {
         // producer that was waiting to enqueue can now push and wake this task.
         drop(queue);
 
-        let context_switch = switch.expect(
-            "blocked pager has no runnable replacement; per-CPU idle fallback is missing",
-        );
+        let context_switch = switch
+            .expect("blocked pager has no runnable replacement; per-CPU idle fallback is missing");
         unsafe { switch_stacks(context_switch) };
 
         if interrupts_were_enabled {
@@ -2209,10 +2219,8 @@ pub fn fork_current(frame: crate::syscall::UserForkFrame) -> Result<ProcessId, P
         let _ = ipc::unregister(child_id.as_u64());
         drop(scheduler);
         release_file_table(&mut child_files);
-        let _ = userspace::destroy_process_address_space(
-            cloned_address_space,
-            parent.memory_mappings,
-        );
+        let _ =
+            userspace::destroy_process_address_space(cloned_address_space, parent.memory_mappings);
         return Err(ProcessError::Full);
     }
     let Some(process_slot) = processes.iter().position(Option::is_none) else {
@@ -2332,6 +2340,8 @@ pub fn exit_current_process(exit_code: i32) -> ! {
         // Stage 10.3: an exiting owner must not strand generic async slots.
         // Producers racing this teardown are serialized by async_op::TABLE;
         // a late completion sees a stale generation-tagged handle.
+        #[cfg(feature = "stage13-9-test")]
+        crate::wifi_runtime::release_owner(task_id);
         crate::async_network::release_owner(task_id);
         crate::async_events::release_owner(exiting_pid);
         crate::async_file::release_owner(task_id);
@@ -2660,7 +2670,9 @@ pub fn mmap_file_current(
             .position(|p| p.is_some_and(|p| p.task_id == task_id))
             .ok_or(MemoryError::NoProcess)?;
         let process = processes[index].ok_or(MemoryError::NoProcess)?;
-        let Some(FdKind::File { id: file, scope }) = process.files.get(descriptor).copied().flatten() else {
+        let Some(FdKind::File { id: file, scope }) =
+            process.files.get(descriptor).copied().flatten()
+        else {
             return Err(MemoryError::BadDescriptor);
         };
         if !profile.allows_file_read(scope) || (shared && !profile.allows_file_write(scope)) {
@@ -2773,7 +2785,9 @@ pub fn munmap_current(address: u64, length: u64) -> Result<(), MemoryError> {
         return Err(MemoryError::MappingFailed);
     }
     let mut processes = process_table_lock();
-    let process = processes[process_index].as_mut().ok_or(MemoryError::NoProcess)?;
+    let process = processes[process_index]
+        .as_mut()
+        .ok_or(MemoryError::NoProcess)?;
     process.memory_mappings[slot] = None;
     process.memory_mapping_scopes[slot] = None;
     Ok(())
@@ -2873,7 +2887,11 @@ pub fn pin_current_file_for_async(
     };
     drop(processes);
     if !current_file_access_allowed(
-        if write { Capability::FileWrite } else { Capability::FileRead },
+        if write {
+            Capability::FileWrite
+        } else {
+            Capability::FileRead
+        },
         scope,
         write,
     ) {
@@ -2891,7 +2909,11 @@ pub fn pin_current_file_for_async(
 /// async result. Cancellation itself intentionally does not require this check.
 pub fn authorize_current_file_scope(scope: wovenguard::FileScope, write: bool) -> bool {
     current_file_access_allowed(
-        if write { Capability::FileWrite } else { Capability::FileRead },
+        if write {
+            Capability::FileWrite
+        } else {
+            Capability::FileRead
+        },
         scope,
         write,
     )
@@ -2919,7 +2941,7 @@ pub fn read_current(descriptor: u64, buffer: &mut [u8]) -> Result<usize, FileErr
                 return Err(FileError::PermissionDenied);
             }
             vfs::read(id, buffer).map_err(|_| FileError::BadDescriptor)
-        },
+        }
         FdKind::PipeRead(id) => crate::pipe::read(id, buffer).map_err(|_| FileError::BadDescriptor),
         FdKind::PipeWrite(_) => Err(FileError::BadDescriptor),
     }
@@ -2973,7 +2995,12 @@ pub fn dup_current(descriptor: u64) -> Result<u64, FileError> {
             .flatten()
             .find(|process| process.task_id == task_id)
             .ok_or(FileError::NoProcess)?;
-        process.files.get(descriptor).copied().flatten().ok_or(FileError::BadDescriptor)?
+        process
+            .files
+            .get(descriptor)
+            .copied()
+            .flatten()
+            .ok_or(FileError::BadDescriptor)?
     };
     let cloned = clone_fd(fd)?;
     let result = (|| {
@@ -3013,7 +3040,12 @@ pub fn dup2_current(old: u64, new: u64) -> Result<u64, FileError> {
             .flatten()
             .find(|process| process.task_id == task_id)
             .ok_or(FileError::NoProcess)?;
-        process.files.get(old).copied().flatten().ok_or(FileError::BadDescriptor)?
+        process
+            .files
+            .get(old)
+            .copied()
+            .flatten()
+            .ok_or(FileError::BadDescriptor)?
     };
     if old == new {
         return Ok(new as u64);
@@ -3056,8 +3088,7 @@ pub fn pipe_current() -> Result<(u64, u64), FileError> {
             .flatten()
             .find(|process| process.task_id == task_id)
             .ok_or(FileError::NoProcess)?;
-        let mut available = (3..MAX_FILE_DESCRIPTORS)
-            .filter(|slot| process.files[*slot].is_none());
+        let mut available = (3..MAX_FILE_DESCRIPTORS).filter(|slot| process.files[*slot].is_none());
         let read_fd = available.next().ok_or(FileError::TooManyFiles)?;
         let write_fd = available.next().ok_or(FileError::TooManyFiles)?;
         process.files[read_fd] = Some(FdKind::PipeRead(pipe_id));
@@ -3676,6 +3707,8 @@ pub fn sleep_current(ticks: u64) {
 
 pub fn exit_current_task() -> ! {
     x86_64::instructions::interrupts::disable();
+    #[cfg(feature = "stage13-9-test")]
+    crate::wifi_runtime::release_owner(current_task_id());
     let switch = {
         let mut scheduler = SCHEDULER.lock();
         let slot = scheduler.current_slot[crate::smp::cpu_index()];
@@ -3784,8 +3817,18 @@ pub fn grant(target: TaskId, capability: Capability) -> Result<(), CapabilityErr
             .position(|task| task.state != TaskState::Empty && task.id == target)
         else {
             drop(scheduler);
-            crate::audit::record(audit_actor, crate::audit::Action::WovenGuardDeny, target.as_u64(), false);
-            crate::audit::record(audit_actor, crate::audit::Action::CapabilityGrant, target.as_u64(), false);
+            crate::audit::record(
+                audit_actor,
+                crate::audit::Action::WovenGuardDeny,
+                target.as_u64(),
+                false,
+            );
+            crate::audit::record(
+                audit_actor,
+                crate::audit::Action::CapabilityGrant,
+                target.as_u64(),
+                false,
+            );
             return Err(CapabilityError::UnknownTask);
         };
         let target_domain = scheduler.tasks[target_index].security_domain;
@@ -3805,21 +3848,23 @@ pub fn grant(target: TaskId, capability: Capability) -> Result<(), CapabilityErr
             // Do not replace intrinsic authority with a revocable child token.
             (Ok(()), decision)
         } else {
-            let parent_lineage = match scheduler.tasks[actor_index].capability_lineages[capability.index()] {
-                Some(lineage) if wovenguard::lineage_authorizes(lineage, capability) => lineage,
-                _ => {
-                    match wovenguard::issue_lineage_root(
-                        actor_task_id.as_u64(),
-                        CapabilitySet::only(capability),
-                    ) {
-                        Ok(lineage) => {
-                            scheduler.tasks[actor_index].capability_lineages[capability.index()] = Some(lineage);
-                            lineage
+            let parent_lineage =
+                match scheduler.tasks[actor_index].capability_lineages[capability.index()] {
+                    Some(lineage) if wovenguard::lineage_authorizes(lineage, capability) => lineage,
+                    _ => {
+                        match wovenguard::issue_lineage_root(
+                            actor_task_id.as_u64(),
+                            CapabilitySet::only(capability),
+                        ) {
+                            Ok(lineage) => {
+                                scheduler.tasks[actor_index].capability_lineages
+                                    [capability.index()] = Some(lineage);
+                                lineage
+                            }
+                            Err(_) => return Err(CapabilityError::PermissionDenied),
                         }
-                        Err(_) => return Err(CapabilityError::PermissionDenied),
                     }
-                }
-            };
+                };
             match wovenguard::derive_lineage(
                 actor_task_id.as_u64(),
                 parent_lineage,
@@ -3829,7 +3874,8 @@ pub fn grant(target: TaskId, capability: Capability) -> Result<(), CapabilityErr
                 Ok(child) => {
                     scheduler.tasks[target_index].capabilities =
                         scheduler.tasks[target_index].capabilities.with(capability);
-                    scheduler.tasks[target_index].capability_lineages[capability.index()] = Some(child);
+                    scheduler.tasks[target_index].capability_lineages[capability.index()] =
+                        Some(child);
                     (Ok(()), decision)
                 }
                 Err(_) => (Err(CapabilityError::PermissionDenied), decision),
@@ -3839,11 +3885,20 @@ pub fn grant(target: TaskId, capability: Capability) -> Result<(), CapabilityErr
     let _ = decision.reason;
     crate::audit::record(
         audit_actor,
-        if result.is_ok() { crate::audit::Action::WovenGuardAllow } else { crate::audit::Action::WovenGuardDeny },
+        if result.is_ok() {
+            crate::audit::Action::WovenGuardAllow
+        } else {
+            crate::audit::Action::WovenGuardDeny
+        },
         target.as_u64(),
         result.is_ok(),
     );
-    crate::audit::record(audit_actor, crate::audit::Action::CapabilityGrant, target.as_u64(), result.is_ok());
+    crate::audit::record(
+        audit_actor,
+        crate::audit::Action::CapabilityGrant,
+        target.as_u64(),
+        result.is_ok(),
+    );
     result
 }
 
@@ -3870,12 +3925,8 @@ pub fn bind_sandbox_profile(
             return Err(CapabilityError::UnknownTask);
         };
         let target_domain = scheduler.tasks[target_index].security_domain;
-        let decision = wovenguard::authorize_sandbox_bind(
-            actor_domain,
-            authority,
-            target_domain,
-            profile,
-        );
+        let decision =
+            wovenguard::authorize_sandbox_bind(actor_domain, authority, target_domain, profile);
         if !decision.allowed {
             Err(CapabilityError::PermissionDenied)
         } else {
@@ -3883,11 +3934,14 @@ pub fn bind_sandbox_profile(
                 if profile.allows(capability) {
                     continue;
                 }
-                if let Some(lineage) = scheduler.tasks[target_index].capability_lineages[capability.index()] {
+                if let Some(lineage) =
+                    scheduler.tasks[target_index].capability_lineages[capability.index()]
+                {
                     let _ = wovenguard::revoke_lineage_subtree_by_controller(controller, lineage);
                 }
-                scheduler.tasks[target_index].capabilities =
-                    scheduler.tasks[target_index].capabilities.without(capability);
+                scheduler.tasks[target_index].capabilities = scheduler.tasks[target_index]
+                    .capabilities
+                    .without(capability);
                 scheduler.tasks[target_index].capability_lineages[capability.index()] = None;
             }
             scheduler.tasks[target_index].sandbox_profile = profile;
@@ -3925,9 +3979,7 @@ pub fn sandbox_profile_for_process(process_id: u64) -> Option<wovenguard::Sandbo
     scheduler
         .tasks
         .iter()
-        .find(|task| {
-            task.state != TaskState::Empty && task.id.as_u64() == process_id
-        })
+        .find(|task| task.state != TaskState::Empty && task.id.as_u64() == process_id)
         .map(|task| task.sandbox_profile)
 }
 
@@ -4000,7 +4052,11 @@ fn sandbox_file_access_for_task(target: TaskId, path: &str, write: bool) -> bool
 fn authorize_current_file_path(path: &str, write: bool) -> bool {
     let scope = wovenguard::classify_file_path(path);
     let allowed = current_file_access_allowed(
-        if write { Capability::FileWrite } else { Capability::FileRead },
+        if write {
+            Capability::FileWrite
+        } else {
+            Capability::FileRead
+        },
         scope,
         write,
     );
@@ -4036,8 +4092,12 @@ pub fn revoke(target: TaskId, capability: Capability) -> Result<(), CapabilityEr
             .iter()
             .position(|task| task.state != TaskState::Empty && task.id == target)
         {
-            if let Some(lineage) = scheduler.tasks[target_index].capability_lineages[capability.index()] {
-                let parent = wovenguard::lineage_info(lineage).ok().and_then(|info| info.parent);
+            if let Some(lineage) =
+                scheduler.tasks[target_index].capability_lineages[capability.index()]
+            {
+                let parent = wovenguard::lineage_info(lineage)
+                    .ok()
+                    .and_then(|info| info.parent);
                 let _ = wovenguard::revoke_lineage_subtree_by_controller(controller, lineage);
 
                 // Lazily-created intrinsic roots exist only to give one task
@@ -4058,8 +4118,9 @@ pub fn revoke(target: TaskId, capability: Capability) -> Result<(), CapabilityEr
                     }
                 }
             }
-            scheduler.tasks[target_index].capabilities =
-                scheduler.tasks[target_index].capabilities.without(capability);
+            scheduler.tasks[target_index].capabilities = scheduler.tasks[target_index]
+                .capabilities
+                .without(capability);
             scheduler.tasks[target_index].capability_lineages[capability.index()] = None;
             (Ok(()), decision)
         } else {
@@ -4069,11 +4130,20 @@ pub fn revoke(target: TaskId, capability: Capability) -> Result<(), CapabilityEr
     let _ = decision.reason;
     crate::audit::record(
         audit_actor,
-        if result.is_ok() { crate::audit::Action::WovenGuardAllow } else { crate::audit::Action::WovenGuardDeny },
+        if result.is_ok() {
+            crate::audit::Action::WovenGuardAllow
+        } else {
+            crate::audit::Action::WovenGuardDeny
+        },
         target.as_u64(),
         result.is_ok(),
     );
-    crate::audit::record(audit_actor, crate::audit::Action::CapabilityRevoke, target.as_u64(), result.is_ok());
+    crate::audit::record(
+        audit_actor,
+        crate::audit::Action::CapabilityRevoke,
+        target.as_u64(),
+        result.is_ok(),
+    );
     result
 }
 
@@ -4100,11 +4170,9 @@ pub fn filesystem_sandbox_foundation_valid() -> bool {
     let read_mask = wovenguard::FilePolicy::scope_mask(wovenguard::FileScope::System)
         | wovenguard::FilePolicy::scope_mask(wovenguard::FileScope::Temporary);
     let write_mask = wovenguard::FilePolicy::scope_mask(wovenguard::FileScope::Temporary);
-    let scoped = wovenguard::SandboxProfile::new(
-        0x94c0,
-        CapabilitySet::only(Capability::TimerRead),
-    )
-    .with_file_policy(wovenguard::FilePolicy::scoped(read_mask, write_mask));
+    let scoped =
+        wovenguard::SandboxProfile::new(0x94c0, CapabilitySet::only(Capability::TimerRead))
+            .with_file_policy(wovenguard::FilePolicy::scoped(read_mask, write_mask));
 
     if bind_sandbox_profile(IDLE_TASK_ID, scoped).is_err()
         || !sandbox_file_access_for_task(IDLE_TASK_ID, "/etc/motd", false)
@@ -4117,11 +4185,9 @@ pub fn filesystem_sandbox_foundation_valid() -> bool {
         return false;
     }
 
-    let tightened = wovenguard::SandboxProfile::new(
-        0x94c1,
-        CapabilitySet::only(Capability::TimerRead),
-    )
-    .with_file_policy(wovenguard::FilePolicy::NONE);
+    let tightened =
+        wovenguard::SandboxProfile::new(0x94c1, CapabilitySet::only(Capability::TimerRead))
+            .with_file_policy(wovenguard::FilePolicy::NONE);
     if bind_sandbox_profile(IDLE_TASK_ID, tightened).is_err()
         || sandbox_file_access_for_task(IDLE_TASK_ID, "/tmp/stage94c", false)
         || !crate::audit::latest().is_some_and(|event| {
@@ -4235,7 +4301,8 @@ pub fn sandbox_lifecycle_smp_closure_valid() -> bool {
     for (cpu, slot) in ids.iter_mut().enumerate().take(online) {
         // SAFETY: the worker uses only atomics, scheduler-owned sandbox/capability
         // queries, yield, and exit; all are already SMP-safe kernel-task services.
-        let Ok(id) = (unsafe { spawn_on(cpu, "s9.4d-sandbox-worker", stage9_4d_worker_task) }) else {
+        let Ok(id) = (unsafe { spawn_on(cpu, "s9.4d-sandbox-worker", stage9_4d_worker_task) })
+        else {
             return false;
         };
         *slot = id;
@@ -4253,9 +4320,7 @@ pub fn sandbox_lifecycle_smp_closure_valid() -> bool {
         // Kernel workers begin with an empty capability set. Delegate two live
         // authorities first so the closure proves that tightening removes a
         // real lineage-backed DeviceIo grant while preserving TimerRead.
-        if grant(id, Capability::TimerRead).is_err()
-            || grant(id, Capability::DeviceIo).is_err()
-        {
+        if grant(id, Capability::TimerRead).is_err() || grant(id, Capability::DeviceIo).is_err() {
             return false;
         }
         let scoped = wovenguard::SandboxProfile::new(
@@ -4278,7 +4343,10 @@ pub fn sandbox_lifecycle_smp_closure_valid() -> bool {
 
     let phase1_deadline = timer::ticks().saturating_add(1024);
     while STAGE9_4D_PHASE1_OK.load(Ordering::Acquire) < online as u64 {
-        if STAGE9_4D_FAIL.iter().take(online).any(|f| f.load(Ordering::Acquire) != 0)
+        if STAGE9_4D_FAIL
+            .iter()
+            .take(online)
+            .any(|f| f.load(Ordering::Acquire) != 0)
             || timer::ticks() >= phase1_deadline
         {
             return false;
@@ -4301,7 +4369,10 @@ pub fn sandbox_lifecycle_smp_closure_valid() -> bool {
 
     let phase2_deadline = timer::ticks().saturating_add(1024);
     while STAGE9_4D_PHASE2_OK.load(Ordering::Acquire) < online as u64 {
-        if STAGE9_4D_FAIL.iter().take(online).any(|f| f.load(Ordering::Acquire) != 0)
+        if STAGE9_4D_FAIL
+            .iter()
+            .take(online)
+            .any(|f| f.load(Ordering::Acquire) != 0)
             || timer::ticks() >= phase2_deadline
         {
             return false;
@@ -4327,7 +4398,10 @@ pub fn sandbox_lifecycle_smp_closure_valid() -> bool {
     STAGE9_4D_CPU_MASK.load(Ordering::Acquire) == (1u64 << online) - 1
         && STAGE9_4D_PHASE1_OK.load(Ordering::Acquire) == online as u64
         && STAGE9_4D_PHASE2_OK.load(Ordering::Acquire) == online as u64
-        && STAGE9_4D_FAIL.iter().take(online).all(|f| f.load(Ordering::Acquire) == 0)
+        && STAGE9_4D_FAIL
+            .iter()
+            .take(online)
+            .all(|f| f.load(Ordering::Acquire) == 0)
 }
 
 /// Stage 9.5 production proof for class-specific resource/device gates.
@@ -4342,45 +4416,53 @@ pub fn device_capability_gates_valid() -> bool {
         user,
         wovenguard::SandboxProfile::USER_DEFAULT,
         wovenguard::DeviceClass::Network,
-    ).allowed;
+    )
+    .allowed;
     let user_storage_denied = !wovenguard::authorize_device_access(
         user,
         wovenguard::SandboxProfile::USER_DEFAULT,
         wovenguard::DeviceClass::Storage,
-    ).allowed;
+    )
+    .allowed;
     let system_storage = wovenguard::authorize_device_access(
         system,
         wovenguard::SandboxProfile::SYSTEM_SERVICE,
         wovenguard::DeviceClass::Storage,
-    ).allowed;
+    )
+    .allowed;
     let system_display = wovenguard::authorize_device_access(
         system,
         wovenguard::SandboxProfile::SYSTEM_SERVICE,
         wovenguard::DeviceClass::Display,
-    ).allowed;
+    )
+    .allowed;
     let system_input = wovenguard::authorize_device_access(
         system,
         wovenguard::SandboxProfile::SYSTEM_SERVICE,
         wovenguard::DeviceClass::Input,
-    ).allowed;
+    )
+    .allowed;
     let masked_storage_denied = !wovenguard::authorize_device_access(
         kernel,
         wovenguard::SandboxProfile::KERNEL_TRUSTED.with_device_policy(
             wovenguard::DevicePolicy::only(wovenguard::DeviceClass::Network),
         ),
         wovenguard::DeviceClass::Storage,
-    ).allowed;
+    )
+    .allowed;
     let masked_network_denied = !wovenguard::authorize_device_access(
         kernel,
         wovenguard::SandboxProfile::KERNEL_TRUSTED
             .with_device_policy(wovenguard::DevicePolicy::NONE),
         wovenguard::DeviceClass::Network,
-    ).allowed;
+    )
+    .allowed;
     let legacy_generic = wovenguard::authorize_device_access(
         kernel,
         wovenguard::SandboxProfile::KERNEL_TRUSTED,
         wovenguard::DeviceClass::Generic,
-    ).allowed;
+    )
+    .allowed;
 
     user_network
         && user_storage_denied
@@ -4430,10 +4512,7 @@ pub fn wovenguard_domain_policy_valid() -> bool {
             wovenguard::SecurityDomain::Restricted,
             Capability::TimerRead,
         )
-        && !wovenguard::domain_allows(
-            wovenguard::SecurityDomain::Restricted,
-            Capability::DeviceIo,
-        )
+        && !wovenguard::domain_allows(wovenguard::SecurityDomain::Restricted, Capability::DeviceIo)
 }
 
 pub fn capability_delegation_valid() -> bool {
@@ -4484,7 +4563,9 @@ pub fn capability_lineage_enforcement_valid() -> bool {
     {
         let mut scheduler = SCHEDULER.lock();
         scheduler.tasks[0].capability_lineages[Capability::TimerRead.index()] = None;
-        scheduler.tasks[1].capabilities = scheduler.tasks[1].capabilities.without(Capability::TimerRead);
+        scheduler.tasks[1].capabilities = scheduler.tasks[1]
+            .capabilities
+            .without(Capability::TimerRead);
         scheduler.tasks[1].capability_lineages[Capability::TimerRead.index()] = None;
     }
 
@@ -4512,11 +4593,8 @@ pub fn sandbox_profile_foundation_valid() -> bool {
     let denied = grant(IDLE_TASK_ID, Capability::TimerRead).is_err()
         && !task_has(IDLE_TASK_ID, Capability::TimerRead);
 
-    let invalid_broaden = bind_sandbox_profile(
-        IDLE_TASK_ID,
-        wovenguard::SandboxProfile::USER_DEFAULT,
-    )
-    .is_err();
+    let invalid_broaden =
+        bind_sandbox_profile(IDLE_TASK_ID, wovenguard::SandboxProfile::USER_DEFAULT).is_err();
 
     if bind_sandbox_profile(IDLE_TASK_ID, wovenguard::SandboxProfile::RESTRICTED).is_err() {
         return false;
@@ -4583,6 +4661,8 @@ unsafe fn push_stack_value(cursor: &mut usize, value: u64) {
 fn complete_process_termination(task_id: TaskId, signal: u8) {
     // Remote/scheduler-driven termination bypasses exit_current_process(), so
     // it needs the same Stage 10.3 async-owner reclamation guarantee.
+    #[cfg(feature = "stage13-9-test")]
+    crate::wifi_runtime::release_owner(task_id);
     crate::async_network::release_owner(task_id);
     crate::async_file::release_owner(task_id);
     crate::block_io::release_owner(task_id);
@@ -4823,7 +4903,7 @@ pub fn seek_current(descriptor: u64, offset: u64) -> Result<u64, FileError> {
             vfs::seek(id, offset)
                 .map(|pos| pos as u64)
                 .map_err(|_| FileError::BadDescriptor)
-        },
+        }
         _ => Err(FileError::BadDescriptor),
     }
 }
@@ -5227,7 +5307,10 @@ pub fn spawn_io_service(name: &'static str, entry: fn() -> !) -> Result<TaskId, 
             .filter(|cpu| crate::smp::cpu_is_schedulable(*cpu))
             .min_by_key(|cpu| {
                 (
-                    usize::from(crate::smp::cpu_domain(*cpu) != crate::smp::cpu_domain(crate::smp::cpu_index())),
+                    usize::from(
+                        crate::smp::cpu_domain(*cpu)
+                            != crate::smp::cpu_domain(crate::smp::cpu_index()),
+                    ),
                     loads[*cpu].runnable(),
                     *cpu,
                 )

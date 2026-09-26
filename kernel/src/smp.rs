@@ -4,7 +4,7 @@ use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
 use core::{
     arch::{asm, global_asm, x86_64::__cpuid},
     cell::UnsafeCell,
-    sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering},
 };
 use x86_64::{registers::model_specific::Msr, structures::paging::PageTable};
 
@@ -115,7 +115,11 @@ pub fn cpu_is_schedulable(cpu: usize) -> bool {
 
 pub fn schedulable_mask() -> usize {
     (0..MAX_CPUS).fold(0, |mask, cpu| {
-        if cpu_is_schedulable(cpu) { mask | (1usize << cpu) } else { mask }
+        if cpu_is_schedulable(cpu) {
+            mask | (1usize << cpu)
+        } else {
+            mask
+        }
     })
 }
 
@@ -181,17 +185,19 @@ pub fn hotplug_cancellation_self_test() -> bool {
     let state = AtomicU8::new(1);
     let offline_cancel = cancel_unclaimed(&state, 1, 7)
         && state.load(Ordering::Acquire) == 7
-        && state.compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire).is_err();
+        && state
+            .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire)
+            .is_err();
     state.store(2, Ordering::Release);
-    let offline_claim = !cancel_unclaimed(&state, 1, 7)
-        && state.load(Ordering::Acquire) == 2;
+    let offline_claim = !cancel_unclaimed(&state, 1, 7) && state.load(Ordering::Acquire) == 2;
     state.store(6, Ordering::Release);
     let online_cancel = cancel_unclaimed(&state, 6, 5)
         && state.load(Ordering::Acquire) == 5
-        && state.compare_exchange(6, 8, Ordering::AcqRel, Ordering::Acquire).is_err();
+        && state
+            .compare_exchange(6, 8, Ordering::AcqRel, Ordering::Acquire)
+            .is_err();
     state.store(8, Ordering::Release);
-    let online_claim = !cancel_unclaimed(&state, 6, 5)
-        && state.load(Ordering::Acquire) == 8;
+    let online_claim = !cancel_unclaimed(&state, 6, 5) && state.load(Ordering::Acquire) == 8;
     serialized && retryable && offline_cancel && offline_claim && online_cancel && online_claim
 }
 
@@ -215,7 +221,10 @@ pub fn request_cpu_offline(cpu: usize) -> bool {
     }
     OFFLINE_STATE[cpu].store(1, Ordering::Release);
     if !reschedule_cpu(cpu) {
-        serial::write_line(format_args!("[S6.HOTPLUG] reschedule request rejected cpu={}", cpu));
+        serial::write_line(format_args!(
+            "[S6.HOTPLUG] reschedule request rejected cpu={}",
+            cpu
+        ));
         if cancel_unclaimed(&OFFLINE_STATE[cpu], 1, state) {
             return false;
         }
@@ -235,7 +244,8 @@ pub fn request_cpu_offline(cpu: usize) -> bool {
         if elapsed >= HOTPLUG_TIMEOUT_CYCLES && !timeout_reported {
             serial::write_line(format_args!(
                 "[S6.HOTPLUG] offline request timeout cpu={} state={}",
-                cpu, OFFLINE_STATE[cpu].load(Ordering::Acquire)
+                cpu,
+                OFFLINE_STATE[cpu].load(Ordering::Acquire)
             ));
             if cancel_unclaimed(&OFFLINE_STATE[cpu], 1, state) {
                 return false;
@@ -245,7 +255,8 @@ pub fn request_cpu_offline(cpu: usize) -> bool {
         if elapsed >= HOTPLUG_CLAIMED_TIMEOUT_CYCLES {
             serial::write_line(format_args!(
                 "[S6.HOTPLUG] claimed offline transition unresolved cpu={} state={}",
-                cpu, OFFLINE_STATE[cpu].load(Ordering::Acquire)
+                cpu,
+                OFFLINE_STATE[cpu].load(Ordering::Acquire)
             ));
             request.poison();
             return false;
@@ -262,16 +273,11 @@ pub fn request_cpu_online(cpu: usize) -> bool {
     let Some(request) = HotplugRequestGuard::claim() else {
         return false;
     };
-    if cpu == 0
-        || cpu >= MAX_CPUS
-        || OFFLINE_STATE[cpu].load(Ordering::Acquire) != 5
-    {
+    if cpu == 0 || cpu >= MAX_CPUS || OFFLINE_STATE[cpu].load(Ordering::Acquire) != 5 {
         return false;
     }
     OFFLINE_STATE[cpu].store(6, Ordering::Release);
-    if !wake_offline_cpu(cpu)
-        && cancel_unclaimed(&OFFLINE_STATE[cpu], 6, 5)
-    {
+    if !wake_offline_cpu(cpu) && cancel_unclaimed(&OFFLINE_STATE[cpu], 6, 5) {
         return false;
     }
     let start = unsafe { core::arch::x86_64::_rdtsc() };
@@ -300,7 +306,8 @@ pub fn request_cpu_online(cpu: usize) -> bool {
         if elapsed >= HOTPLUG_CLAIMED_TIMEOUT_CYCLES {
             serial::write_line(format_args!(
                 "[S6.HOTPLUG] claimed online transition unresolved cpu={} state={}",
-                cpu, OFFLINE_STATE[cpu].load(Ordering::Acquire)
+                cpu,
+                OFFLINE_STATE[cpu].load(Ordering::Acquire)
             ));
             request.poison();
             return false;
@@ -360,10 +367,7 @@ pub fn offline_checkpoint(cpu: usize) -> bool {
 /// a parked AP receives an online request. The old offline-idle slot is reused
 /// so repeated lifecycle tests do not consume task-table capacity.
 pub fn online_checkpoint(cpu: usize) -> bool {
-    if cpu == 0
-        || cpu >= MAX_CPUS
-        || OFFLINE_STATE[cpu].load(Ordering::Acquire) != 6
-    {
+    if cpu == 0 || cpu >= MAX_CPUS || OFFLINE_STATE[cpu].load(Ordering::Acquire) != 6 {
         return false;
     }
     x86_64::instructions::interrupts::disable();
@@ -399,7 +403,10 @@ pub fn online_checkpoint(cpu: usize) -> bool {
         OFFLINE_STATE[cpu].store(7, Ordering::Release);
         true
     } else {
-        serial::write_line(format_args!("[S6.HOTPLUG] online checkpoint rejected cpu={}", cpu));
+        serial::write_line(format_args!(
+            "[S6.HOTPLUG] online checkpoint rejected cpu={}",
+            cpu
+        ));
         lock_shootdown();
         ONLINE[cpu].store(false, Ordering::Release);
         COUNT.fetch_sub(1, Ordering::AcqRel);
@@ -464,10 +471,7 @@ pub fn hotplug_rejection_recovery_probe(cpu: usize) -> bool {
         && online_mask() == offline_mask
         && OFFLINE_STATE[cpu].load(Ordering::Acquire) == 5;
     FORCE_ONLINE_REJECT.store(false, Ordering::Release);
-    online_rejected
-        && request_cpu_online(cpu)
-        && online_count() == count
-        && online_mask() == mask
+    online_rejected && request_cpu_online(cpu) && online_count() == count && online_mask() == mask
 }
 
 #[cfg(feature = "stage6-hotplug-test")]
@@ -500,10 +504,7 @@ pub fn hotplug_timeout_recovery_probe(cpu: usize) -> bool {
         && online_count() == count - 1
         && online_mask() == offline_mask;
     HOLD_ONLINE_CLAIM.store(false, Ordering::Release);
-    online_cancelled
-        && request_cpu_online(cpu)
-        && online_count() == count
-        && online_mask() == mask
+    online_cancelled && request_cpu_online(cpu) && online_count() == count && online_mask() == mask
 }
 pub fn cpu_domain(cpu: usize) -> u32 {
     if cpu < MAX_CPUS {
@@ -559,13 +560,39 @@ fn read(reg: u64) -> u32 {
 }
 fn write(reg: u64, value: u32) {
     if X2APIC_ACTIVE.load(Ordering::Acquire) {
-        unsafe { Msr::new((0x800 + (reg >> 4)) as u32).write(u64::from(value)); }
+        unsafe {
+            Msr::new((0x800 + (reg >> 4)) as u32).write(u64::from(value));
+        }
     } else {
         unsafe {
             ((LAPIC.load(Ordering::Relaxed) + reg) as *mut u32).write_volatile(value);
         }
         let _ = read(0x20);
     }
+}
+/// APIC destination used by PCI/MSI device interrupts.
+///
+/// Stage Z deliberately routes device interrupts to the BSP. This keeps the
+/// first physical-device interrupt path deterministic while preserving the
+/// existing per-CPU LAPIC/SMP architecture.
+#[cfg(feature = "stage13-9-test")]
+pub fn device_irq_destination() -> Option<u32> {
+    if !cpu_is_online(0) {
+        return None;
+    }
+    let id = IDS[0].load(Ordering::Acquire);
+    (id != u32::MAX).then_some(id)
+}
+
+#[cfg(feature = "stage13-9-test")]
+pub fn stage13_10z_irq_foundation_self_test() -> bool {
+    let Some(destination) = device_irq_destination() else {
+        return false;
+    };
+    destination == IDS[0].load(Ordering::Acquire)
+        && crate::interrupts::WIFI_DEVICE_VECTOR < TIMER_VECTOR
+        && crate::interrupts::WIFI_DEVICE_VECTOR != RESCHEDULE_VECTOR
+        && crate::interrupts::WIFI_DEVICE_VECTOR != SPURIOUS_VECTOR
 }
 pub fn eoi() {
     write(0xb0, 0);
@@ -601,8 +628,7 @@ fn send(id: u32, command: u32) {
     }
     if X2APIC_ACTIVE.load(Ordering::Acquire) {
         unsafe {
-            Msr::new(0x830)
-                .write((u64::from(id) << 32) | u64::from(command));
+            Msr::new(0x830).write((u64::from(id) << 32) | u64::from(command));
         }
     } else {
         write(0x310, id << 24);
@@ -624,7 +650,10 @@ pub fn reschedule_cpu(cpu: usize) -> bool {
     }
     RESCHEDULE_IPIS.fetch_add(1, Ordering::Relaxed);
     x86_64::instructions::interrupts::without_interrupts(|| {
-        send(IDS[cpu].load(Ordering::Relaxed), u32::from(RESCHEDULE_VECTOR));
+        send(
+            IDS[cpu].load(Ordering::Relaxed),
+            u32::from(RESCHEDULE_VECTOR),
+        );
     });
     true
 }
@@ -640,7 +669,10 @@ fn wake_offline_cpu(cpu: usize) -> bool {
     }
     RESCHEDULE_IPIS.fetch_add(1, Ordering::Relaxed);
     x86_64::instructions::interrupts::without_interrupts(|| {
-        send(IDS[cpu].load(Ordering::Relaxed), u32::from(RESCHEDULE_VECTOR));
+        send(
+            IDS[cpu].load(Ordering::Relaxed),
+            u32::from(RESCHEDULE_VECTOR),
+        );
     });
     true
 }
@@ -728,7 +760,10 @@ pub fn start(topology: Option<crate::hal::acpi::Summary>, offset: u64) {
     // Legacy IOAPIC keyboard delivery carries an 8-bit destination. x2APIC
     // remains usable for peer IPIs, but a BSP ID above that width cannot be
     // routed by this bounded IOAPIC path.
-    assert!(IDS[0].load(Ordering::Relaxed) <= u8::MAX as u32, "IOAPIC BSP APIC ID");
+    assert!(
+        IDS[0].load(Ordering::Relaxed) <= u8::MAX as u32,
+        "IOAPIC BSP APIC ID"
+    );
     write(0x3e0, 3);
     write(0x380, u32::MAX);
     delay_10ms();
@@ -932,9 +967,9 @@ fn shootdown_inner() {
         }
     }
     let start = unsafe { core::arch::x86_64::_rdtsc() };
-    while (0..MAX_CPUS).any(|cpu| {
-        mask & (1usize << cpu) != 0 && ACK[cpu].load(Ordering::Acquire) < generation
-    }) {
+    while (0..MAX_CPUS)
+        .any(|cpu| mask & (1usize << cpu) != 0 && ACK[cpu].load(Ordering::Acquire) < generation)
+    {
         assert!(
             unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) < 5_000_000_000,
             "TLB shootdown timeout"
@@ -1193,7 +1228,10 @@ fn affinity_foundation_test() {
     let expected_cpu = if online_count() > 1 { 1 } else { 0 };
     let deadline = crate::timer::ticks() + 500;
     while AFFINITY_OBSERVED_CPU.load(Ordering::Acquire) == usize::MAX {
-        assert!(crate::timer::ticks() < deadline, "affinity execution timeout");
+        assert!(
+            crate::timer::ticks() < deadline,
+            "affinity execution timeout"
+        );
         task::yield_now();
     }
     assert_eq!(
@@ -1204,7 +1242,10 @@ fn affinity_foundation_test() {
 
     AFFINITY_RELEASE.store(true, Ordering::Release);
     while !AFFINITY_DONE.load(Ordering::Acquire) {
-        assert!(crate::timer::ticks() < deadline, "affinity completion timeout");
+        assert!(
+            crate::timer::ticks() < deadline,
+            "affinity completion timeout"
+        );
         task::yield_now();
     }
 
@@ -1317,7 +1358,10 @@ fn runnable_load_accounting_test() {
     let expected_done = online_count() * PROBES_PER_CPU;
     let deadline = crate::timer::ticks() + 500;
     while LOAD_PROBE_DONE.load(Ordering::Acquire) < expected_done {
-        assert!(crate::timer::ticks() < deadline, "load probe completion timeout");
+        assert!(
+            crate::timer::ticks() < deadline,
+            "load probe completion timeout"
+        );
         task::yield_now();
     }
 }
@@ -1385,7 +1429,10 @@ fn automatic_rebalance_test() {
     AUTO_BALANCE_RELEASE.store(true, Ordering::Release);
     let deadline = crate::timer::ticks() + 500;
     while AUTO_BALANCE_DONE.load(Ordering::Acquire) < jobs {
-        assert!(crate::timer::ticks() < deadline, "automatic rebalance completion timeout");
+        assert!(
+            crate::timer::ticks() < deadline,
+            "automatic rebalance completion timeout"
+        );
         task::yield_now();
     }
     assert_eq!(
@@ -1424,7 +1471,10 @@ fn reschedule_ipi_test() {
         assert!(crate::timer::ticks() < deadline, "reschedule IPI timeout");
         task::yield_now();
     }
-    assert!(reschedule_ipi_count() > before, "reschedule IPI was not emitted");
+    assert!(
+        reschedule_ipi_count() > before,
+        "reschedule IPI was not emitted"
+    );
     serial::write_line(format_args!(
         "[SMP] reschedule IPI: PASSED count={}",
         reschedule_ipi_count()
@@ -1528,13 +1578,22 @@ fn migration_stress_test() {
         }
         let _ = task::rebalance_once();
         task::yield_now();
-        assert!(crate::timer::ticks() < deadline, "migration stress rebalance timeout");
+        assert!(
+            crate::timer::ticks() < deadline,
+            "migration stress rebalance timeout"
+        );
     }
-    assert!(migrations >= jobs, "migration stress made too few ownership transfers");
+    assert!(
+        migrations >= jobs,
+        "migration stress made too few ownership transfers"
+    );
 
     STRESS_RELEASE.store(true, Ordering::Release);
     while STRESS_DONE.load(Ordering::Acquire) < jobs {
-        assert!(crate::timer::ticks() < deadline, "migration stress completion timeout");
+        assert!(
+            crate::timer::ticks() < deadline,
+            "migration stress completion timeout"
+        );
         task::yield_now();
     }
     assert_eq!(

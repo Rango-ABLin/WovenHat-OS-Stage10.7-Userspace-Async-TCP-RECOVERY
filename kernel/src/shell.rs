@@ -4,12 +4,12 @@
 //! the current task's capability set) and operates directly on the VFS,
 //! scheduler, and hardware status helpers.
 
+use crate::irq_lock::{IrqMutex, IrqMutexGuard};
 use crate::{
     benchmark, block_io, capability::Capability, console::Console, device, heap, keyboard::Key,
     memory, network, paging, storage, swap, syscall, task, terminal, timer, userspace, vfs,
     virtio_net,
 };
-use crate::irq_lock::{IrqMutex, IrqMutexGuard};
 
 const PROMPT_PREFIX: &str = "wovenhat:";
 const COMMAND_CAPACITY: usize = 128;
@@ -143,7 +143,9 @@ impl Shell {
                 }
             }
             "smp" => {
-                if authorize(Capability::TaskInspect, console) { crate::smp::diagnostic(console); }
+                if authorize(Capability::TaskInspect, console) {
+                    crate::smp::diagnostic(console);
+                }
             }
             "smptest" => {
                 if authorize(Capability::TaskControl, console) {
@@ -412,7 +414,9 @@ impl Shell {
 
 fn print_help(console: &mut Console<'_>) {
     console.println("WovenHat kernel shell 0.8.0 Multicore Foundation");
-    console.println("system:  help clear version ticks|uptime tasks|ps smp smptest caps devices net netstat");
+    console.println(
+        "system:  help clear version ticks|uptime tasks|ps smp smptest caps devices net netstat",
+    );
     console.println(
         "         memory|mem heap paging bench fs blockio|iostat mount|umount df fscheck sync syscall",
     );
@@ -422,7 +426,8 @@ fn print_help(console: &mut Console<'_>) {
     console.println("test:    mmaptest (private/shared mappings, fork, msync), msynctest (disk)");
     console.println("nav:     cd [path]  pwd  echo <text>");
     console.println("process: run <elf>  sh  init  spawn  user|ring3  kill <pid> [sig]");
-    console.println("runtime: userland udpecho [port] dhcp <on|off>   (Multicore Foundation runtime)");
+    console
+        .println("runtime: userland udpecho [port] dhcp <on|off>   (Multicore Foundation runtime)");
 }
 
 fn cmd_tasks(console: &mut Console<'_>) {
@@ -459,7 +464,14 @@ fn cmd_devices(console: &mut Console<'_>) {
     print_u64(console, device::count() as u64);
     console.newline();
 
-    for name in ["framebuffer-console", "com1", "pit", "ps2-keyboard", "ata0"] {
+    for name in [
+        "framebuffer-console",
+        "com1",
+        "pit",
+        "ps2-keyboard",
+        "ata0",
+        "hda0",
+    ] {
         if let Some(dev) = device::find(name) {
             console.print("  ");
             console.print(dev.name);
@@ -470,6 +482,8 @@ fn cmd_devices(console: &mut Console<'_>) {
                 device::DeviceKind::Timer => "timer",
                 device::DeviceKind::Keyboard => "keyboard",
                 device::DeviceKind::Block => "block",
+                #[cfg(feature = "stage13-8-test")]
+                device::DeviceKind::Audio => "audio",
             });
             if let Some(irq) = dev.irq {
                 console.print(" irq=");
@@ -1745,11 +1759,7 @@ fn lowercase<'a>(verb: &'a str, buf: &'a mut [u8; 32]) -> &'a str {
         return verb;
     }
     for (i, b) in verb.bytes().enumerate() {
-        buf[i] = if b.is_ascii_uppercase() {
-            b + 32
-        } else {
-            b
-        };
+        buf[i] = if b.is_ascii_uppercase() { b + 32 } else { b };
     }
     core::str::from_utf8(&buf[..verb.len()]).unwrap_or(verb)
 }

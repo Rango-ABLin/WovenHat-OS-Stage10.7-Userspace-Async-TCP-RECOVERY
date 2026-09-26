@@ -5,6 +5,7 @@
 //! owned buffers so sockets can be created and destroyed dynamically without
 //! static-lifetime bookkeeping in user processes.
 
+use crate::irq_lock::IrqMutex as Mutex;
 use alloc::{vec, vec::Vec};
 use smoltcp::{
     iface::{Config, Interface, SocketHandle, SocketSet},
@@ -14,12 +15,14 @@ use smoltcp::{
     wire::{EthernetAddress, IpAddress, IpCidr, IpEndpoint, Ipv4Address},
 };
 use spin::Once;
-use crate::irq_lock::IrqMutex as Mutex;
 
 use crate::{
     timer,
     virtio_net::{self, MAX_FRAME},
 };
+
+#[cfg(feature = "stage13-9-test")]
+use crate::{wifi_session::WifiSession, wifi_smol};
 
 pub const DEFAULT_IPV4: Ipv4Address = Ipv4Address::new(10, 0, 2, 15);
 pub const DEFAULT_GATEWAY: Ipv4Address = Ipv4Address::new(10, 0, 2, 2);
@@ -28,6 +31,9 @@ pub const DEFAULT_PREFIX: u8 = 24;
 pub const MAX_USER_SOCKETS: usize = 16;
 pub const SOCKET_BUFFER_BYTES: usize = 4096;
 pub const UDP_META_SLOTS: usize = 8;
+// Closed descriptors retain their TCP transport for a bounded graceful drain.
+// This is a resource-retirement bound, not an acceptance-test timeout.
+const TCP_CLOSE_GRACE_TICKS: u64 = timer::FREQUENCY_HZ as u64 * 30;
 
 pub fn default_cidr() -> IpCidr {
     IpCidr::new(IpAddress::Ipv4(DEFAULT_IPV4), DEFAULT_PREFIX)
@@ -113,6 +119,207 @@ impl Device for VirtioSmolDevice {
     }
 }
 
+<<<<<<< HEAD
+// The candidate Wi-Fi transport has the same feature boundary as its backend.
+#[cfg(not(feature = "stage13-9-test"))]
+type NetTransport = VirtioSmolDevice;
+#[cfg(feature = "stage13-9-test")]
+pub use wifi_transport::{NetTransport, WifiNetDevice};
+
+#[cfg(feature = "stage13-9-test")]
+mod wifi_transport {
+    use super::*;
+    use crate::{wifi_session::WifiSession, wifi_smol};
+=======
+#[cfg(feature = "stage13-9-test")]
+pub struct WifiNetDevice {
+    session: WifiSession,
+    epoch: u32,
+    rx: [u8; wifi_smol::ETHERNET_MTU],
+}
+#[cfg(feature = "stage13-9-test")]
+impl WifiNetDevice {
+    pub fn new(session: WifiSession, epoch: u32) -> Self {
+        Self {
+            session,
+            epoch,
+            rx: [0; wifi_smol::ETHERNET_MTU],
+        }
+    }
+    #[cfg(feature = "stage13-9-test")]
+    pub fn session_mut(&mut self) -> &mut WifiSession {
+        &mut self.session
+    }
+}
+
+#[cfg(feature = "stage13-9-test")]
+#[allow(clippy::large_enum_variant)]
+pub enum NetTransport {
+    Virtio(VirtioSmolDevice),
+    Wifi(WifiNetDevice),
+}
+#[cfg(feature = "stage13-9-test")]
+pub enum NetRxToken<'a> {
+    Virtio(WovenRxToken<'a>),
+    Wifi(wifi_smol::WifiRxToken<'a>),
+}
+#[cfg(feature = "stage13-9-test")]
+pub enum NetTxToken<'a> {
+    Virtio(WovenTxToken),
+    Wifi(wifi_smol::WifiTxToken<'a>),
+}
+#[cfg(feature = "stage13-9-test")]
+impl RxToken for NetRxToken<'_> {
+    fn consume<R, F>(self, f: F) -> R
+    where
+        F: FnOnce(&[u8]) -> R,
+    {
+        match self {
+            Self::Virtio(t) => t.consume(f),
+            Self::Wifi(t) => t.consume(f),
+        }
+    }
+}
+#[cfg(feature = "stage13-9-test")]
+impl TxToken for NetTxToken<'_> {
+    fn consume<R, F>(self, len: usize, f: F) -> R
+    where
+        F: FnOnce(&mut [u8]) -> R,
+    {
+        match self {
+            Self::Virtio(t) => t.consume(len, f),
+            Self::Wifi(t) => t.consume(len, f),
+        }
+    }
+}
+#[cfg(feature = "stage13-9-test")]
+impl Device for NetTransport {
+    type RxToken<'a>
+        = NetRxToken<'a>
+    where
+        Self: 'a;
+    type TxToken<'a>
+        = NetTxToken<'a>
+    where
+        Self: 'a;
+>>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
+
+    pub struct WifiNetDevice {
+        session: WifiSession,
+        epoch: u32,
+        rx: [u8; wifi_smol::ETHERNET_MTU],
+    }
+    impl WifiNetDevice {
+        pub fn new(session: WifiSession, epoch: u32) -> Self {
+            Self {
+                session,
+                epoch,
+                rx: [0; wifi_smol::ETHERNET_MTU],
+            }
+        }
+        #[cfg(feature = "stage13-9-test")]
+        pub fn session_mut(&mut self) -> &mut WifiSession {
+            &mut self.session
+        }
+    }
+
+    #[allow(clippy::large_enum_variant)]
+    pub enum NetTransport {
+        Virtio(VirtioSmolDevice),
+        Wifi(WifiNetDevice),
+    }
+    pub enum NetRxToken<'a> {
+        Virtio(WovenRxToken<'a>),
+        Wifi(wifi_smol::WifiRxToken<'a>),
+    }
+    pub enum NetTxToken<'a> {
+        Virtio(WovenTxToken),
+        Wifi(wifi_smol::WifiTxToken<'a>),
+    }
+    impl RxToken for NetRxToken<'_> {
+        fn consume<R, F>(self, f: F) -> R
+        where
+            F: FnOnce(&[u8]) -> R,
+        {
+            match self {
+                Self::Virtio(t) => t.consume(f),
+                Self::Wifi(t) => t.consume(f),
+            }
+        }
+    }
+    impl TxToken for NetTxToken<'_> {
+        fn consume<R, F>(self, len: usize, f: F) -> R
+        where
+            F: FnOnce(&mut [u8]) -> R,
+        {
+            match self {
+                Self::Virtio(t) => t.consume(len, f),
+                Self::Wifi(t) => t.consume(len, f),
+            }
+        }
+    }
+    impl Device for NetTransport {
+        type RxToken<'a>
+            = NetRxToken<'a>
+        where
+            Self: 'a;
+        type TxToken<'a>
+            = NetTxToken<'a>
+        where
+            Self: 'a;
+
+        fn receive(
+            &mut self,
+            timestamp: Instant,
+        ) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
+            match self {
+                Self::Virtio(d) => d
+                    .receive(timestamp)
+                    .map(|(r, t)| (NetRxToken::Virtio(r), NetTxToken::Virtio(t))),
+                Self::Wifi(d) => {
+                    let len = match d.session.receive_ethernet(d.epoch, &mut d.rx) {
+                        Ok(Some(n)) => n,
+                        Ok(None) | Err(_) => return None,
+                    };
+                    Some((
+                        NetRxToken::Wifi(wifi_smol::WifiRxToken::new(&mut d.rx[..len])),
+                        NetTxToken::Wifi(wifi_smol::WifiTxToken::new(&mut d.session, d.epoch)),
+                    ))
+                }
+            }
+        }
+        fn transmit(&mut self, timestamp: Instant) -> Option<Self::TxToken<'_>> {
+            match self {
+                Self::Virtio(d) => d.transmit(timestamp).map(NetTxToken::Virtio),
+                Self::Wifi(d) => d
+                    .session
+                    .is_active_epoch(d.epoch)
+                    .then_some(NetTxToken::Wifi(wifi_smol::WifiTxToken::new(
+                        &mut d.session,
+                        d.epoch,
+                    ))),
+            }
+        }
+        fn capabilities(&self) -> DeviceCapabilities {
+            match self {
+                Self::Virtio(d) => d.capabilities(),
+                Self::Wifi(_) => {
+                    let mut c = DeviceCapabilities::default();
+                    c.medium = Medium::Ethernet;
+                    c.max_transmission_unit = wifi_smol::ETHERNET_MTU;
+                    c.checksum = ChecksumCapabilities::default();
+                    c
+                }
+            }
+        }
+    }
+}
+<<<<<<< HEAD
+=======
+#[cfg(not(feature = "stage13-9-test"))]
+type NetTransport = VirtioSmolDevice;
+>>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SocketKind {
     Udp = 1,
@@ -143,6 +350,11 @@ struct UserSocket {
     generation: u32,
     async_refs: u16,
     closing: bool,
+<<<<<<< HEAD
+    close_started: Option<u64>,
+=======
+    drain_deadline: Option<u64>,
+>>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -154,9 +366,11 @@ pub struct SocketToken {
 
 struct Runtime {
     iface: Interface,
-    device: VirtioSmolDevice,
+    device: NetTransport,
     sockets: SocketSet<'static>,
     user: [Option<UserSocket>; MAX_USER_SOCKETS],
+    #[cfg(feature = "stage10-7-test")]
+    queued_close_verified: bool,
     echo_handle: Option<SocketHandle>,
     echo_port: u16,
     echo_packets: u64,
@@ -222,6 +436,9 @@ pub fn init() -> Result<(), InitError> {
     virtio_net::init().map_err(InitError::Transport)?;
 
     let mac = EthernetAddress(virtio_net::mac_address());
+    #[cfg(feature = "stage13-9-test")]
+    let mut device = NetTransport::Virtio(VirtioSmolDevice::new());
+    #[cfg(not(feature = "stage13-9-test"))]
     let mut device = VirtioSmolDevice::new();
     let mut config = Config::new(mac.into());
     // Previously a fixed constant (0x5748_4f53_4e45_5435), which made TCP
@@ -258,29 +475,34 @@ pub fn init() -> Result<(), InitError> {
     let ping_handle = sockets.add(ping_socket);
 
     RUNTIME.call_once(|| {
-        Mutex::with_rank(Runtime {
-            iface,
-            device,
-            sockets,
-            user: [None; MAX_USER_SOCKETS],
-            echo_handle: None,
-            echo_port: 0,
-            echo_packets: 0,
-            dhcp_handle: Some(dhcp_handle),
-            dns_handle: Some(dns_handle),
-            dns_queries: [None; 4],
-            dhcp_enabled: true,
-            using_dhcp: false,
-            ipv4: DEFAULT_IPV4,
-            prefix: DEFAULT_PREFIX,
-            gateway: DEFAULT_GATEWAY,
-            dns_server: DEFAULT_DNS,
-            next_ephemeral: 49152,
-            next_socket_generation: 1,
-            ping_handle: Some(ping_handle),
-            ping_pending: None,
-            ping_sequence: 0,
-        }, 20)
+        Mutex::with_rank(
+            Runtime {
+                iface,
+                device,
+                sockets,
+                user: [None; MAX_USER_SOCKETS],
+                #[cfg(feature = "stage10-7-test")]
+                queued_close_verified: false,
+                echo_handle: None,
+                echo_port: 0,
+                echo_packets: 0,
+                dhcp_handle: Some(dhcp_handle),
+                dns_handle: Some(dns_handle),
+                dns_queries: [None; 4],
+                dhcp_enabled: true,
+                using_dhcp: false,
+                ipv4: DEFAULT_IPV4,
+                prefix: DEFAULT_PREFIX,
+                gateway: DEFAULT_GATEWAY,
+                dns_server: DEFAULT_DNS,
+                next_ephemeral: 49152,
+                next_socket_generation: 1,
+                ping_handle: Some(ping_handle),
+                ping_pending: None,
+                ping_sequence: 0,
+            },
+            20,
+        )
     });
     Ok(())
 }
@@ -291,6 +513,22 @@ pub fn poll() {
         return;
     };
     let mut runtime = runtime.lock();
+
+    // Force the Stage 10.7 close-before-poll interleaving: the first TCP
+    // payload cannot leave until the final pin is released on a closed fd.
+    #[cfg(feature = "stage10-7-test")]
+    if !runtime.queued_close_verified
+        && runtime.user.iter().flatten().any(|entry| {
+            entry.kind == SocketKind::Tcp
+                && runtime
+                    .sockets
+                    .get::<tcp::Socket>(entry.handle)
+                    .send_queue()
+                    != 0
+        })
+    {
+        return;
+    }
 
     {
         let Runtime {
@@ -379,8 +617,50 @@ pub fn poll() {
         } = &mut *runtime;
         let _ = iface.poll(now(), device, sockets);
     }
+    for index in 0..MAX_USER_SOCKETS {
+<<<<<<< HEAD
+        retire_closed_socket(&mut runtime, index);
+=======
+        finish_close(&mut runtime, index);
+>>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
+    }
     drop(runtime);
     crate::async_network::network_progress();
+}
+
+/// Caller holds the runtime lock. Descriptor revocation is immediate, but
+/// queued TCP bytes and FIN need a live transport until close completes.
+/// Existing async references retain the socket even during owner teardown.
+fn retire_closed_socket(runtime: &mut Runtime, index: usize) {
+    let Some(entry) = runtime.user[index] else {
+        return;
+    };
+    if !entry.closing || entry.async_refs != 0 {
+        return;
+    }
+    if entry.kind == SocketKind::Tcp {
+        let socket = runtime.sockets.get_mut::<tcp::Socket>(entry.handle);
+        if entry.close_started.is_none() {
+            #[cfg(feature = "stage10-7-test")]
+            crate::serial::write_line(format_args!(
+                "[S10.7-DIAG] graceful TCP close tx_queue={}",
+                socket.send_queue()
+            ));
+            socket.close();
+            runtime.user[index].as_mut().unwrap().close_started = Some(timer::ticks());
+        }
+        if socket.is_open() {
+            let started = runtime.user[index].unwrap().close_started.unwrap();
+            if timer::ticks().wrapping_sub(started) < TCP_CLOSE_GRACE_TICKS {
+                return;
+            }
+            // A dead peer cannot retain one of the bounded slots forever.
+            // No async token remains; expiration deliberately abandons drain.
+            socket.abort();
+        }
+    }
+    let _ = runtime.sockets.remove(entry.handle);
+    runtime.user[index] = None;
 }
 
 fn apply_static_locked(runtime: &mut Runtime) {
@@ -512,6 +792,11 @@ pub fn socket_open(owner: u64, kind: SocketKind) -> Result<u64, SocketError> {
         generation,
         async_refs: 0,
         closing: false,
+<<<<<<< HEAD
+        close_started: None,
+=======
+        drain_deadline: None,
+>>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
     });
     Ok(slot as u64)
 }
@@ -646,14 +931,19 @@ pub fn socket_close(owner: u64, id: u64) -> Result<(), SocketError> {
         return Err(SocketError::Offline);
     };
     let mut runtime = runtime.lock();
-    let entry = find_slot(&runtime, owner, id)?;
+<<<<<<< HEAD
+    let _ = find_slot(&runtime, owner, id)?;
     let index = id as usize;
-    if entry.async_refs == 0 {
-        let _ = runtime.sockets.remove(entry.handle);
-        runtime.user[index] = None;
-    } else if let Some(socket) = runtime.user[index].as_mut() {
+    if let Some(socket) = runtime.user[index].as_mut() {
         socket.closing = true;
     }
+    retire_closed_socket(&mut runtime, index);
+=======
+    find_slot(&runtime, owner, id)?;
+    let index = id as usize;
+    runtime.user[index].as_mut().unwrap().closing = true;
+    finish_close(&mut runtime, index);
+>>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
     Ok(())
 }
 
@@ -665,79 +955,173 @@ pub fn close_process_sockets(owner: u64) {
     for index in 0..MAX_USER_SOCKETS {
         if let Some(entry) = runtime.user[index] {
             if entry.owner == owner {
-                if entry.async_refs == 0 {
-                    let _ = runtime.sockets.remove(entry.handle);
-                    runtime.user[index] = None;
-                } else if let Some(socket) = runtime.user[index].as_mut() {
+<<<<<<< HEAD
+                if let Some(socket) = runtime.user[index].as_mut() {
                     socket.closing = true;
                 }
+                retire_closed_socket(&mut runtime, index);
+=======
+                runtime.user[index].as_mut().unwrap().closing = true;
+                finish_close(&mut runtime, index);
+>>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
             }
         }
     }
 }
 
-
 pub fn pin_socket(owner: u64, id: u64) -> Result<SocketToken, SocketError> {
-    let Some(runtime) = RUNTIME.get() else { return Err(SocketError::Offline); };
+    let Some(runtime) = RUNTIME.get() else {
+        return Err(SocketError::Offline);
+    };
     let mut runtime = runtime.lock();
     let entry = find_slot(&runtime, owner, id)?;
     let index = usize::try_from(id).map_err(|_| SocketError::Invalid)?;
-    let Some(socket) = runtime.user.get_mut(index).and_then(Option::as_mut) else { return Err(SocketError::Invalid); };
-    socket.async_refs = socket.async_refs.checked_add(1).ok_or(SocketError::BufferFull)?;
-    Ok(SocketToken { slot: index as u16, generation: entry.generation, owner })
+    let Some(socket) = runtime.user.get_mut(index).and_then(Option::as_mut) else {
+        return Err(SocketError::Invalid);
+    };
+    socket.async_refs = socket
+        .async_refs
+        .checked_add(1)
+        .ok_or(SocketError::BufferFull)?;
+    Ok(SocketToken {
+        slot: index as u16,
+        generation: entry.generation,
+        owner,
+    })
 }
 
 fn find_token(runtime: &Runtime, token: SocketToken) -> Result<UserSocket, SocketError> {
-    let socket = runtime.user.get(token.slot as usize).and_then(|s| *s).ok_or(SocketError::Invalid)?;
-    if socket.owner != token.owner || socket.generation != token.generation { return Err(SocketError::Invalid); }
+    let socket = runtime
+        .user
+        .get(token.slot as usize)
+        .and_then(|s| *s)
+        .ok_or(SocketError::Invalid)?;
+    if socket.owner != token.owner || socket.generation != token.generation {
+        return Err(SocketError::Invalid);
+    }
     Ok(socket)
 }
 
 pub fn unpin_socket(token: SocketToken) {
-    let Some(runtime) = RUNTIME.get() else { return; };
+    let Some(runtime) = RUNTIME.get() else {
+        return;
+    };
     let mut runtime = runtime.lock();
     let index = token.slot as usize;
-    let Some(current) = runtime.user.get(index).and_then(|s| *s) else { return; };
-    if current.owner != token.owner || current.generation != token.generation { return; }
-    let mut remove = false;
+    let Some(current) = runtime.user.get(index).and_then(|s| *s) else {
+        return;
+    };
+    if current.owner != token.owner || current.generation != token.generation {
+        return;
+    }
     if let Some(socket) = runtime.user[index].as_mut() {
-        if socket.async_refs != 0 { socket.async_refs -= 1; }
-        remove = socket.async_refs == 0 && socket.closing;
+        socket.async_refs = socket.async_refs.saturating_sub(1);
     }
-    if remove {
-        let handle = runtime.user[index].unwrap().handle;
-        let _ = runtime.sockets.remove(handle);
-        runtime.user[index] = None;
-    }
+    finish_close(&mut runtime, index);
 }
 
+// Keep the original bounded slot and generation until queued output drains.
+// No blocking or scheduling occurs under the runtime lock. The normal network
+// poll services these sockets even after their process has exited. A peer that
+// never acknowledges cannot retain a slot forever (30-second drain bound).
+fn finish_close(runtime: &mut Runtime, index: usize) {
+    let Some(entry) = runtime.user[index] else {
+        return;
+    };
+    if !entry.closing || entry.async_refs != 0 {
+        return;
+    }
+    let pending = match entry.kind {
+        SocketKind::Tcp => {
+            let socket = runtime.sockets.get_mut::<tcp::Socket>(entry.handle);
+            let pending = socket.is_open() && socket.send_queue() != 0;
+            #[cfg(feature = "stage10-7-test")]
+            if pending {
+                runtime.queued_close_verified = true;
+            }
+            socket.close();
+            pending
+        }
+<<<<<<< HEAD
+    }
+    retire_closed_socket(&mut runtime, index);
+=======
+        SocketKind::Udp => {
+            runtime
+                .sockets
+                .get::<udp::Socket>(entry.handle)
+                .send_queue()
+                != 0
+        }
+    };
+    let deadline = runtime.user[index]
+        .as_mut()
+        .unwrap()
+        .drain_deadline
+        .get_or_insert_with(|| timer::ticks().saturating_add(30 * u64::from(timer::FREQUENCY_HZ)));
+    if pending && timer::ticks() < *deadline {
+        return;
+    }
+    let _ = runtime.sockets.remove(entry.handle);
+    runtime.user[index] = None;
+}
+
+#[cfg(feature = "stage10-7-test")]
+pub fn queued_close_verified() -> bool {
+    RUNTIME
+        .get()
+        .is_some_and(|runtime| runtime.lock().queued_close_verified)
+>>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
+}
 
 pub fn socket_connect_pinned(token: SocketToken, endpoint: IpEndpoint) -> Result<(), SocketError> {
-    if endpoint.port == 0 { return Err(SocketError::Address); }
-    let Some(runtime) = RUNTIME.get() else { return Err(SocketError::Offline); };
+    if endpoint.port == 0 {
+        return Err(SocketError::Address);
+    }
+    let Some(runtime) = RUNTIME.get() else {
+        return Err(SocketError::Offline);
+    };
     let mut runtime = runtime.lock();
     let entry = find_token(&runtime, token)?;
-    if entry.kind != SocketKind::Tcp { return Err(SocketError::WrongKind); }
+    if entry.kind != SocketKind::Tcp {
+        return Err(SocketError::WrongKind);
+    }
 
     if let Some(peer) = entry.peer {
-        if peer != endpoint { return Err(SocketError::Address); }
+        if peer != endpoint {
+            return Err(SocketError::Address);
+        }
     } else {
         let local_port = next_ephemeral(&mut runtime);
-        let Runtime { iface, sockets, user, .. } = &mut *runtime;
-        sockets.get_mut::<tcp::Socket>(entry.handle)
+        let Runtime {
+            iface,
+            sockets,
+            user,
+            ..
+        } = &mut *runtime;
+        sockets
+            .get_mut::<tcp::Socket>(entry.handle)
             .connect(iface.context(), endpoint, local_port)
             .map_err(|_| SocketError::Address)?;
-        if let Some(socket) = user[token.slot as usize].as_mut() { socket.peer = Some(endpoint); }
+        if let Some(socket) = user[token.slot as usize].as_mut() {
+            socket.peer = Some(endpoint);
+        }
     }
 
     let socket = runtime.sockets.get::<tcp::Socket>(entry.handle);
-    if socket.may_send() { return Ok(()); }
-    if socket.is_active() { return Err(SocketError::WouldBlock); }
+    if socket.may_send() {
+        return Ok(());
+    }
+    if socket.is_active() {
+        return Err(SocketError::WouldBlock);
+    }
     Err(SocketError::NotConnected)
 }
 
 pub fn socket_send_pinned(token: SocketToken, data: &[u8]) -> Result<usize, SocketError> {
-    let Some(runtime) = RUNTIME.get() else { return Err(SocketError::Offline); };
+    let Some(runtime) = RUNTIME.get() else {
+        return Err(SocketError::Offline);
+    };
     let mut runtime = runtime.lock();
     let entry = find_token(&runtime, token)?;
     match entry.kind {
@@ -768,21 +1152,35 @@ pub fn socket_send_pinned(token: SocketToken, data: &[u8]) -> Result<usize, Sock
     }
 }
 
-pub fn socket_recv_pinned(token: SocketToken, out: &mut [u8]) -> Result<(usize, Option<IpEndpoint>), SocketError> {
-    let Some(runtime) = RUNTIME.get() else { return Err(SocketError::Offline); };
+pub fn socket_recv_pinned(
+    token: SocketToken,
+    out: &mut [u8],
+) -> Result<(usize, Option<IpEndpoint>), SocketError> {
+    let Some(runtime) = RUNTIME.get() else {
+        return Err(SocketError::Offline);
+    };
     let mut runtime = runtime.lock();
     let entry = find_token(&runtime, token)?;
     match entry.kind {
         SocketKind::Udp => {
-            let (len, endpoint) = runtime.sockets.get_mut::<udp::Socket>(entry.handle)
-                .recv_slice(out).map(|(len, meta)| (len, meta.endpoint)).map_err(|_| SocketError::WouldBlock)?;
-            if let Some(socket) = runtime.user[token.slot as usize].as_mut() { socket.peer = Some(endpoint); }
+            let (len, endpoint) = runtime
+                .sockets
+                .get_mut::<udp::Socket>(entry.handle)
+                .recv_slice(out)
+                .map(|(len, meta)| (len, meta.endpoint))
+                .map_err(|_| SocketError::WouldBlock)?;
+            if let Some(socket) = runtime.user[token.slot as usize].as_mut() {
+                socket.peer = Some(endpoint);
+            }
             Ok((len, Some(endpoint)))
         }
         SocketKind::Tcp => {
             let socket = runtime.sockets.get_mut::<tcp::Socket>(entry.handle);
             if socket.can_recv() {
-                return socket.recv_slice(out).map(|len| (len, entry.peer)).map_err(|_| SocketError::WouldBlock);
+                return socket
+                    .recv_slice(out)
+                    .map(|len| (len, entry.peer))
+                    .map_err(|_| SocketError::WouldBlock);
             }
             if !socket.may_recv() {
                 return Ok((0, entry.peer));

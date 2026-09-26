@@ -1,5 +1,189 @@
 # WovenHat OS Architecture & Codebase Guide
 
+<<<<<<< HEAD
+## TCP close/drain repair (2026-09-24)
+
+A closed TCP descriptor retains its transport after the final async reference
+until graceful close completes. `network::poll` reaps those existing bounded
+slots; a 30-second grace expires on a subsequent poll for unresponsive peers.
+Slots remain counted and unavailable for reuse until retirement. This fixes
+queued-data loss when a send completion was consumed before transmission.
+See [the TCP repair audit](audit-tcp-close-drain-2026-09-24.md) for failure
+evidence, locking/ownership review and validation limits.
+
+## Selected physical machine and inventory boot (2026-09-24)
+
+The latest user instruction selects this HP Pavilion x360 with AX201
+`8086:A0F0`, superseding the earlier AX200 target preference. Native AX201
+transport is not implemented. The existing AX200 activation boundary remains
+unchanged until the appropriate device-specific implementation is reviewed.
+
+`physical-probe` is an independent root/kernel Cargo feature. After early
+RAM and paging checks, `kernel_main` enters `physical_probe::run`, enumerates
+PCI through the existing HAL, prints network identities and AX201 BAR/capability
+details to the framebuffer and serial, and halts. It does not enter driver
+activation, storage/network runtime, AP startup or candidate QEMU tests. No
+device configuration or MMIO register writes are added by this mode; PCI
+configuration reads use the existing ECAM/legacy address-selection access.
+It is an inventory aid and never radio acceptance. See the
+[AX201 machine audit](audit-ax201-machine-2026-09-24.md).
+
+## Physical Wi-Fi firmware prerequisite (2026-09-24)
+
+The preceding increment targeted AX200; AX201 support is not enabled.
+`wifi_ax200_image.rs` preflights runtime LMAC/UMAC/paging region ordering,
+payload size and total DMA capacity. `Intel22000DmaContextInfo::from_runtime_firmware`
+uses that plan to copy payloads into independently owned DMA buffers. Failure
+drops the unpublished partial context; success still requires queue setup and
+a reviewed physical publication/lifecycle owner. See the
+[runtime-loader audit](audit-ax200-runtime-loader-2026-09-24.md).
+
+`wifi_firmware.rs` delegates Intel container parsing to `wifi_tlv.rs`, an
+allocation-free, immutable-borrow parser shared with host tests. It validates
+a bounded complete blob, exposes paging-size metadata separately, and
+streams runtime/init SEC records including secure variants and explicit
+CPU/paging separators. The DMA stager rejects separators before allocation.
+This closes real-container parsing failures; it does not implement the
+physical transport. The inspected host is AX201, while the candidate match
+is AX200. See [the physical preflight audit](audit-physical-wifi-preflight-2026-09-24.md)
+for firmware hashes, validation and the remaining lifecycle/transport work.
+
+## Stage 13.10AC integration boundary (2026-09-23)
+
+The sections below describe previously recorded foundations. The current
+Wi-Fi candidate is additional, feature-gated source: `main.rs` includes
+`wifi_hw` and the other Wi-Fi modules only with `stage13-9-test`. It does not
+yet provide the normal boot path with a working physical AX200 driver.
+The session and smoltcp adapter now share that boundary. `network.rs` keeps
+the candidate transport selector in a feature-gated module, while ordinary
+builds use `VirtioSmolDevice` directly. This corrects the previously inconsistent
+module graph without changing the VirtIO packet path.
+
+`interrupts.rs` installs the reserved PCI Wi-Fi vector `0xd0`. Its hard IRQ
+publishes an atomic work flag and acknowledges the LAPIC. `wifi_hw.rs` exposes
+`service_deferred_ax200_interrupt`, which consumes that flag and calls
+`IntelRxInterruptController::service` outside the hard IRQ. The controller
+masks CSR delivery, reads interrupt status, acknowledges enabled RX causes,
+and restores its configured mask; fatal hardware/firmware status returns an
+error with delivery masked. The flag coalesces notifications and is not a
+counted queue or a scheduler wakeup. The only current deferred-service caller
+is the synthetic self-test. A production worker, device lifecycle ownership,
+teardown/recovery, and physical interrupt/DMA qualification remain open.
+
+The synthetic CSR test uses an owned DMA page and verifies written values;
+ordinary RAM does not emulate write-one-to-clear hardware semantics. The
+MSI discovery branch explicitly skips physical programming when AX200 is
+absent. Neither synthetic success nor that skip proves physical Wi-Fi works.
+
+`scripts/test-stage10-runtime.py` now pins all 54 Wi-Fi acceptance markers
+through 13.10AC in addition to the SMP and async ABI markers and exit code 33.
+`tests/test_runtime_harness.py` checks complete evidence, each missing Wi-Fi
+marker, the former incomplete marker set, and unsuccessful QEMU exit.
+The Stage 13.9 launcher uses the same project-local Cargo directories as
+the Stage 10.7 preservation launcher.
+
+## Candidate feature boundaries (2026-09-24)
+
+Ordinary builds retain the VirtIO network transport, PCI discovery and legacy
+I/O bus-master path, the reserved Wi-Fi interrupt vector, and PS/2 keyboard
+input. Candidate-only APIs are compiled alongside their existing callers:
+
+- The Wi-Fi secure-pool candidate and MSI programming module use
+  `stage13-9-test`; the normal best-effort network RNG is unchanged. The
+  deterministic test pool is not a production cryptographic entropy source.
+- PCI MMIO bus-master enablement follows the existing NVMe, AHCI, xHCI, HDA,
+  and Wi-Fi candidate features. Two uncalled private configuration-write
+  wrappers were removed; driver-used configuration transactions are retained.
+- Audio registration uses `stage13-8-test`, matching `woven_audio` and HDA.
+- Extended input event candidates and their self-test use `stage13-7-test`.
+  No non-keyboard producer exists in the ordinary build. Its byte input ABI,
+  bounded queue, overflow accounting, and IRQ-safe locking are unchanged.
+- Wi-Fi deferred-work consumers and BSP MSI destination selection follow the
+  Wi-Fi candidate feature. The installed interrupt handler is unchanged.
+
+These boundaries do not supply missing production drivers. They add no
+syscalls, capabilities, kernel objects, locks, or asynchronous ownership paths.
+Existing candidate acceptance tests remain enabled under their original
+features; no new lint suppression was introduced.
+
+The Stage 13.6 HID report-error branch now reports the HID error directly;
+a duplicated HDA discovery block was removed. Stage 13.8 retains its original
+audio codec/topology checks. The normal-release shell harness isolates the
+bootloader dependency's nested Cargo installer in `target/bootloader`, while
+an explicit parent `--target-dir` keeps the main artifact tree unchanged.
+This avoids the parent/child release artifact-lock deadlock. The validated
+results and physical-driver limits are recorded in the continuation audit.
+=======
+## Intel firmware container parsing follow-up (2026-09-23)
+
+`wifi_firmware_tlv.rs` is the shared safe, allocation-free container parser.
+It borrows immutable image bytes, bounds images at 4 MiB and sections at 1 MiB,
+and returns at most 64 data sections, matching the existing Intel DMA owner
+capacity. The generic firmware image contract retains its 16-section limit.
+TLV 32 declares paging size; secure types 24/25 carry runtime/init sections.
+Per-image separator state assigns LMAC, UMAC and paging groups without exposing
+separator records as DMA data. Host tests include a pinned upstream AX200
+container; the kernel probe exercises the same parser. See the
+[follow-up audit](audit-stage13-10ac-firmware-parser.md) for validation and limits.
+Successful parsing does not select a device ABI, authenticate firmware or
+activate hardware; physical startup and RX integration remain outstanding.
+
+The QEMU acceptance launchers explicitly use TCG with a 128-MiB translation
+cache to bound host commit use. Guest RAM and CPU matrices are unchanged;
+the cache setting does not alter guest allocator capacity or acceptance limits.
+Prior-stage PowerShell calls use child script scopes in the same process rather
+than retaining 27 nested shell processes. Exceptions and native exit checks
+preserve fail-fast behavior. The follow-up aggregate remains blocked by host
+guest-memory allocation failure; see the audit before treating it as accepted.
+
+## Stage 13.10AC deferred Wi-Fi service (2026-09-23)
+
+Historical AX200 labels 13.10A–AC extend Wi-Fi roadmap Stage 13.9. They do
+not implement Bluetooth Stage 13.10. The [remediation audit](audit-stage13-10ac-remediation-2026-09-23.md)
+records implementation, ownership, source changes, gates, and remaining limits.
+Older sections below describe their recorded stage snapshots.
+
+The opt-in Wi-Fi build now contains `wifi_runtime.rs`, a scheduler worker with
+one owned CSR subscription and one coalescing completion. Vector `0xd0` records
+an interrupt, publishes work, sends LAPIC EOI, and signals the worker through
+the scheduler event latch. `irq_mailbox.rs` tags pending work with a non-reused
+epoch. The worker claims that epoch, services the existing Intel CSR controller
+under the rank-20 slot guard, drops the guard, and notifies the owner. No guard
+crosses blocking or scheduler notification. Fatal errors retire the subscription
+and keep RX disabled. Explicit disable clears both the CSR and saved mask.
+
+Owner exit/termination retires queued work and removes the subscription under
+the service guard, then frees the backing page outside it. The post-SMP QEMU
+probe binds synthetic CSR storage, injects software interrupts through the real
+IDT on the last online CPU, and tests worker wakeup, error propagation, stale
+epochs, and owner cleanup. It complements the earlier pre-SMP CSR tests.
+
+This introduces no syscall, user pointer, capability, or WovenGuard change.
+The experimental transport remains under `stage13-9-test`; default networking
+uses VirtIO. Physical discovery is read-only and does not authorize DMA/MSI.
+Firmware/RX-ring bring-up, actual RX/ALIVE delivery, and physical AX200 testing
+remain open. Hardware vector reuse additionally requires device/interrupt
+quiescence: software epochs cannot distinguish late untagged PCI MSIs.
+
+Optional entropy, input, audio, and PCI programming declarations now follow
+the feature boundaries of their consumers. `hal/pci/msi.rs` contains the
+existing MSI protocol. The heap growth boot probe is excluded only from host
+`cfg(test)` builds; host allocator tests and QEMU growth checks both remain.
+
+The host image builder pins bootloader 0.11.17 through `vendor/bootloader`.
+Its UEFI build script isolates the nested Cargo installer under its own
+`OUT_DIR`, avoiding a wait on the parent's project-local artifact lock.
+Runtime bootloader code is unchanged; provenance and the patch scope are in
+`vendor/bootloader/WOVENHAT-PATCH.md`.
+
+TCP/UDP descriptor close and owner teardown retain the bounded socket slot
+after the last async pin while queued output drains. Normal network polling
+reaps the entry after TCP acknowledgment/closure or UDP dispatch, with a
+30-second bound for an unresponsive peer. Draining slots still count in socket
+statistics and cannot be reused early. Stage 10.7 forces close-before-poll to
+regress payload loss from premature socket removal.
+>>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
+
 ## Scope and source of truth
 
 This guide describes the Stage 10.7 source, not the proposed 1.0 system. WovenHat

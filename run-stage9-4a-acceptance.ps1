@@ -3,7 +3,7 @@ $ErrorActionPreference = "Stop"
 Write-Host "=== WovenHat Stage 9.4A Sandbox Profile + Capability Ceiling Acceptance ==="
 Write-Host ""
 Write-Host "=== 1/2 Preserve the complete validated Stage 9.3 baseline ==="
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\run-stage9-3-acceptance.ps1
+& "$PSScriptRoot\run-stage9-3-acceptance.ps1"
 if ($LASTEXITCODE -ne 0) {
     throw "Stage 9.3 preservation acceptance failed with exit code $LASTEXITCODE"
 }

@@ -73,7 +73,8 @@ impl<const N: usize> PageCache<N> {
     }
 
     pub fn validate_read(&self, key: &str, offset: usize, length: usize) -> Result<(), Error> {
-        if key.is_empty() || key.len() > KEY_SIZE || N == 0 || offset.checked_add(length).is_none() {
+        if key.is_empty() || key.len() > KEY_SIZE || N == 0 || offset.checked_add(length).is_none()
+        {
             Err(Error::InvalidBuffer)
         } else {
             Ok(())
@@ -90,7 +91,9 @@ impl<const N: usize> PageCache<N> {
         output: &mut [u8],
     ) -> Option<(usize, usize)> {
         let Some(index) = self.slots.iter().position(|slot| {
-            slot.valid && slot.page == page && slot.key_len == key.len()
+            slot.valid
+                && slot.page == page
+                && slot.key_len == key.len()
                 && &slot.key[..slot.key_len] == key.as_bytes()
         }) else {
             self.misses = self.misses.saturating_add(1);
@@ -116,7 +119,10 @@ impl<const N: usize> PageCache<N> {
         length: usize,
         expected_epoch: u64,
     ) -> Result<bool, Error> {
-        if key.is_empty() || key.len() > KEY_SIZE || N == 0 || length > PAGE_SIZE
+        if key.is_empty()
+            || key.len() > KEY_SIZE
+            || N == 0
+            || length > PAGE_SIZE
             || data.len() < length
         {
             return Err(Error::InvalidBuffer);
@@ -125,11 +131,21 @@ impl<const N: usize> PageCache<N> {
             return Ok(false);
         }
         let existing = self.slots.iter().position(|slot| {
-            slot.valid && slot.page == page && slot.key_len == key.len()
+            slot.valid
+                && slot.page == page
+                && slot.key_len == key.len()
                 && &slot.key[..slot.key_len] == key.as_bytes()
         });
-        let index = existing.or_else(|| self.slots.iter().position(|slot| !slot.valid))
-            .unwrap_or_else(|| self.slots.iter().enumerate().max_by_key(|(_, slot)| slot.age).unwrap().0);
+        let index = existing
+            .or_else(|| self.slots.iter().position(|slot| !slot.valid))
+            .unwrap_or_else(|| {
+                self.slots
+                    .iter()
+                    .enumerate()
+                    .max_by_key(|(_, slot)| slot.age)
+                    .unwrap()
+                    .0
+            });
         if existing.is_none() && self.slots[index].valid {
             self.evictions = self.evictions.saturating_add(1);
         }
@@ -304,7 +320,10 @@ mod tests {
         assert_eq!(cache.read_cached_page("/file", 0, 0, &mut bytes), None);
         assert_eq!(cache.stats().misses, 1);
         assert!(cache.publish_loaded_page("/file", 0, &[9; 16], 16, cache.epoch()) == Ok(true));
-        assert_eq!(cache.read_cached_page("/file", 0, 0, &mut bytes), Some((16, 16)));
+        assert_eq!(
+            cache.read_cached_page("/file", 0, 0, &mut bytes),
+            Some((16, 16))
+        );
         assert_eq!(bytes, [9; 16]);
     }
     #[test]

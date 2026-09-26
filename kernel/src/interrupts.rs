@@ -17,6 +17,36 @@ static BREAKPOINT_REACHED: AtomicBool = AtomicBool::new(false);
 
 static IDT: Once<InterruptDescriptorTable> = Once::new();
 
+/// First WovenHat-owned PCI device vector reserved for WovenWiFi.
+/// Kept below the LAPIC timer/IPI range (0xe0+) and away from syscall 0x80.
+pub const WIFI_DEVICE_VECTOR: u8 = 0xd0;
+static WIFI_DEVICE_IRQS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static WIFI_DEVICE_WORK: AtomicBool = AtomicBool::new(false);
+
+#[cfg(feature = "stage13-9-test")]
+pub fn wifi_device_irq_count() -> u64 {
+    WIFI_DEVICE_IRQS.load(Ordering::Acquire)
+}
+
+#[cfg(feature = "stage13-9-test")]
+pub fn take_wifi_device_work() -> bool {
+    WIFI_DEVICE_WORK.swap(false, Ordering::AcqRel)
+}
+
+#[cfg(feature = "stage13-9-test")]
+pub fn publish_wifi_device_work_for_test() {
+    WIFI_DEVICE_WORK.store(true, Ordering::Release);
+}
+
+#[cfg(feature = "stage13-9-test")]
+pub fn stage13_10z_vector_self_test() -> bool {
+    WIFI_DEVICE_VECTOR >= 0x20
+        && WIFI_DEVICE_VECTOR != 0x80
+        && WIFI_DEVICE_VECTOR != crate::smp::TIMER_VECTOR
+        && WIFI_DEVICE_VECTOR != crate::smp::RESCHEDULE_VECTOR
+        && WIFI_DEVICE_VECTOR != crate::smp::SPURIOUS_VECTOR
+}
+
 pub fn init() {
     let idt = IDT.call_once(|| {
         let mut idt = InterruptDescriptorTable::new();
@@ -26,6 +56,7 @@ pub fn init() {
         idt[crate::smp::TIMER_VECTOR].set_handler_fn(lapic_timer_handler);
         idt[crate::smp::RESCHEDULE_VECTOR].set_handler_fn(reschedule_ipi_handler);
         idt[crate::smp::SPURIOUS_VECTOR].set_handler_fn(spurious_handler);
+        idt[WIFI_DEVICE_VECTOR].set_handler_fn(wifi_device_interrupt_handler);
         idt.divide_error.set_handler_fn(divide_error_handler);
         idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
         // SAFETY: The selected IST entry is initialized with a dedicated,
@@ -254,6 +285,20 @@ extern "x86-interrupt" fn tlb_nmi_handler(_frame: InterruptStackFrame) {
     crate::smp::acknowledge_tlb();
 }
 extern "x86-interrupt" fn spurious_handler(_frame: InterruptStackFrame) {}
+
+/// Minimal hard-IRQ entry for a PCI Wi-Fi vector.
+///
+/// The hard interrupt path does no allocation, device locking, firmware
+/// parsing, or device service. It publishes deferred work and acknowledges the local
+/// APIC, then signals the opt-in worker through the scheduler event latch.
+/// Stage Y remains responsible for reading/acknowledging Intel CSR causes.
+extern "x86-interrupt" fn wifi_device_interrupt_handler(_frame: InterruptStackFrame) {
+    WIFI_DEVICE_IRQS.fetch_add(1, Ordering::Relaxed);
+    WIFI_DEVICE_WORK.store(true, Ordering::Release);
+    crate::smp::eoi();
+    #[cfg(feature = "stage13-9-test")]
+    crate::wifi_runtime::notify_from_irq();
+}
 extern "x86-interrupt" fn lapic_timer_handler(_frame: InterruptStackFrame) {
     if crate::smp::cpu_index() == 0 {
         timer::record_tick();

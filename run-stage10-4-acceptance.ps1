@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 Write-Host "=== WovenHat Stage 10.4 Userspace Async Block I/O Acceptance ==="
 Write-Host ""
 Write-Host "=== 1/2 Preserve the complete validated Stage 10.3 baseline (Stage 10.4 probe disabled) ==="
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\run-stage10-3-acceptance.ps1
+& "$PSScriptRoot\run-stage10-3-acceptance.ps1"
 if ($LASTEXITCODE -ne 0) { throw "Stage 10.3 preservation acceptance failed with exit code $LASTEXITCODE" }
 
 Write-Host ""

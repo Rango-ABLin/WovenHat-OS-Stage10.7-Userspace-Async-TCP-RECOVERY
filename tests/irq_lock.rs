@@ -6,7 +6,9 @@ extern crate self as x86_64;
 pub type MutexGuard<'a, T> = std::sync::MutexGuard<'a, T>;
 pub struct Mutex<T>(std::sync::Mutex<T>);
 impl<T> Mutex<T> {
-    pub const fn new(value: T) -> Self { Self(std::sync::Mutex::new(value)) }
+    pub const fn new(value: T) -> Self {
+        Self(std::sync::Mutex::new(value))
+    }
     pub fn lock(&self) -> MutexGuard<'_, T> {
         assert!(!instructions::interrupts::are_enabled());
         self.0.lock().unwrap()
@@ -20,9 +22,15 @@ pub mod instructions {
     pub mod interrupts {
         use std::cell::Cell;
         thread_local! { static ENABLED: Cell<bool> = const { Cell::new(true) }; }
-        pub fn are_enabled() -> bool { ENABLED.with(Cell::get) }
-        pub fn disable() { ENABLED.with(|state| state.set(false)); }
-        pub fn enable() { ENABLED.with(|state| state.set(true)); }
+        pub fn are_enabled() -> bool {
+            ENABLED.with(Cell::get)
+        }
+        pub fn disable() {
+            ENABLED.with(|state| state.set(false));
+        }
+        pub fn enable() {
+            ENABLED.with(|state| state.set(true));
+        }
     }
 }
 #[path = "../kernel/src/irq_lock.rs"]

@@ -306,9 +306,11 @@ fn import_directory(
                 Err(vfs::Error::AlreadyExists) | Err(vfs::Error::Full) => {}
                 Err(_) => return Err(fat32::Error::DirectoryFull),
             }
-            if depth < MAX_BOOT_IMPORT_DEPTH && entry.first_cluster >= 2
-                && children.len() < crate::config::MAX_VFS_NODES {
-                    children.push((entry.first_cluster, alloc::string::String::from(path)));
+            if depth < MAX_BOOT_IMPORT_DEPTH
+                && entry.first_cluster >= 2
+                && children.len() < crate::config::MAX_VFS_NODES
+            {
+                children.push((entry.first_cluster, alloc::string::String::from(path)));
             }
             return Ok(());
         }
@@ -320,10 +322,7 @@ fn import_directory(
         match vfs::create_disk_file_with_writable(path, entry.size as usize, writable) {
             Ok(()) => {
                 if metadata_paths.len() < crate::config::MAX_VFS_NODES {
-                    metadata_paths.push((
-                        alloc::string::String::from(path),
-                        entry.first_cluster,
-                    ));
+                    metadata_paths.push((alloc::string::String::from(path), entry.first_cluster));
                 }
                 mounted = mounted.saturating_add(1)
             }
@@ -378,8 +377,7 @@ fn import_directory(
                     .ok()
                     .flatten()
             };
-            if let Some(metadata) = metadata
-            {
+            if let Some(metadata) = metadata {
                 let _ = vfs::set_metadata(&path, metadata.uid, metadata.gid, metadata.mode);
                 if inode >= 2
                     && !had_inode_metadata
@@ -404,7 +402,12 @@ fn import_directory(
     // Release the directory iterator's mutable device borrow before recursion.
     for (cluster, path) in children {
         mounted = mounted.saturating_add(import_directory(
-            device, volume, cluster, &path, depth + 1, writable_import,
+            device,
+            volume,
+            cluster,
+            &path,
+            depth + 1,
+            writable_import,
         )?);
     }
     Ok(mounted)
@@ -740,7 +743,10 @@ pub fn live_mutation_self_test() -> LiveMutationTestStatus {
         return LiveMutationTestStatus::Failed("vfs mkdir");
     }
     if let Err(error) = persist_directory(OLD_DIR) {
-        crate::serial::write_line(format_args!("[STORAGE MUTATION] fat mkdir error: {:?}", error));
+        crate::serial::write_line(format_args!(
+            "[STORAGE MUTATION] fat mkdir error: {:?}",
+            error
+        ));
         return LiveMutationTestStatus::Failed("fat mkdir");
     }
     if vfs::write_file(OLD_FILE, CONTENT).is_err() {
@@ -997,7 +1003,8 @@ pub fn persist_path(path: &str) -> Result<(), PersistError> {
     let checksum = data[..length].iter().fold(0xcbf29ce484222325, |h, b| {
         (h ^ u64::from(*b)).wrapping_mul(0x100000001b3)
     });
-    let Some(journal_token) = crate::journal::begin(crate::journal::path_hash(path), checksum) else {
+    let Some(journal_token) = crate::journal::begin(crate::journal::path_hash(path), checksum)
+    else {
         return Err(PersistError::Failed);
     };
     let metadata = vfs::stat(path).ok().map(|stat| fat32::FileMetadata {
@@ -1051,7 +1058,9 @@ pub fn persist_path(path: &str) -> Result<(), PersistError> {
             }
         }
     }
-    if result.is_ok() { let _ = crate::journal::commit(journal_token); }
+    if result.is_ok() {
+        let _ = crate::journal::commit(journal_token);
+    }
     result
 }
 
@@ -1093,10 +1102,13 @@ fn persist_inode_metadata_on_device(
     path: &str,
     metadata: fat32::FileMetadata,
 ) -> Result<bool, PersistError> {
-    let relative = path.strip_prefix("/mnt/").ok_or(PersistError::NotSupported)?;
+    let relative = path
+        .strip_prefix("/mnt/")
+        .ok_or(PersistError::NotSupported)?;
     let written = match fat32::mount(device) {
-        Ok(volume) => write_inode_for_volume(device, volume, relative, metadata)
-            .map_err(map_persist_err)?,
+        Ok(volume) => {
+            write_inode_for_volume(device, volume, relative, metadata).map_err(map_persist_err)?
+        }
         Err(fat32::Error::InvalidBootSector | fat32::Error::UnsupportedGeometry) => {
             if let Ok(Some(part)) = partition::find_fat32(device) {
                 let mut view = partition::PartitionDevice::new(device, part)
@@ -1141,8 +1153,9 @@ fn clear_path_metadata_on_device(
     let hash = fat32::metadata_path_hash(path);
     let tag = fat32::metadata_path_tag(path);
     match fat32::mount(device) {
-        Ok(volume) => fat32::remove_file_metadata(device, volume, hash, tag)
-            .map_err(map_persist_err)?,
+        Ok(volume) => {
+            fat32::remove_file_metadata(device, volume, hash, tag).map_err(map_persist_err)?
+        }
         Err(fat32::Error::InvalidBootSector | fat32::Error::UnsupportedGeometry) => {
             if let Ok(Some(part)) = partition::find_fat32(device) {
                 let mut view = partition::PartitionDevice::new(device, part)
@@ -1401,21 +1414,20 @@ fn remove_metadata_on_device(
     let hash = fat32::metadata_path_hash(path);
     let tag = fat32::metadata_path_tag(path);
     match fat32::mount(device) {
-        Ok(volume) => fat32::remove_file_metadata(device, volume, hash, tag)
-            .map_err(map_mutation_err),
+        Ok(volume) => {
+            fat32::remove_file_metadata(device, volume, hash, tag).map_err(map_mutation_err)
+        }
         Err(fat32::Error::InvalidBootSector | fat32::Error::UnsupportedGeometry) => {
             if let Ok(Some(part)) = partition::find_fat32(device) {
                 let mut view = partition::PartitionDevice::new(device, part)
                     .map_err(|_| MutationError::Failed)?;
                 let volume = fat32::mount(&mut view).map_err(map_mutation_err)?;
-                fat32::remove_file_metadata(&mut view, volume, hash, tag)
-                    .map_err(map_mutation_err)
+                fat32::remove_file_metadata(&mut view, volume, hash, tag).map_err(map_mutation_err)
             } else if let Ok(Some(part)) = gpt::find_fat_partition(device) {
                 let mut view = partition::PartitionDevice::new(device, part)
                     .map_err(|_| MutationError::Failed)?;
                 let volume = fat32::mount(&mut view).map_err(map_mutation_err)?;
-                fat32::remove_file_metadata(&mut view, volume, hash, tag)
-                    .map_err(map_mutation_err)
+                fat32::remove_file_metadata(&mut view, volume, hash, tag).map_err(map_mutation_err)
             } else {
                 Err(MutationError::Failed)
             }
@@ -1463,21 +1475,18 @@ fn remove_inode_metadata_on_device(
     inode: u32,
 ) -> Result<(), MutationError> {
     match fat32::mount(device) {
-        Ok(volume) => fat32::remove_inode_metadata(device, volume, inode)
-            .map_err(map_mutation_err),
+        Ok(volume) => fat32::remove_inode_metadata(device, volume, inode).map_err(map_mutation_err),
         Err(fat32::Error::InvalidBootSector | fat32::Error::UnsupportedGeometry) => {
             if let Ok(Some(part)) = partition::find_fat32(device) {
                 let mut view = partition::PartitionDevice::new(device, part)
                     .map_err(|_| MutationError::Failed)?;
                 let volume = fat32::mount(&mut view).map_err(map_mutation_err)?;
-                fat32::remove_inode_metadata(&mut view, volume, inode)
-                    .map_err(map_mutation_err)
+                fat32::remove_inode_metadata(&mut view, volume, inode).map_err(map_mutation_err)
             } else if let Ok(Some(part)) = gpt::find_fat_partition(device) {
                 let mut view = partition::PartitionDevice::new(device, part)
                     .map_err(|_| MutationError::Failed)?;
                 let volume = fat32::mount(&mut view).map_err(map_mutation_err)?;
-                fat32::remove_inode_metadata(&mut view, volume, inode)
-                    .map_err(map_mutation_err)
+                fat32::remove_inode_metadata(&mut view, volume, inode).map_err(map_mutation_err)
             } else {
                 Err(MutationError::Failed)
             }
@@ -1568,8 +1577,7 @@ fn move_metadata_on_device(
         };
         fat32::write_file_metadata(device, volume, new_hash, new_tag, metadata)
             .map_err(map_mutation_err)?;
-        fat32::remove_file_metadata(device, volume, old_hash, old_tag)
-            .map_err(map_mutation_err)
+        fat32::remove_file_metadata(device, volume, old_hash, old_tag).map_err(map_mutation_err)
     }
     fn move_in_volume(
         device: &mut impl crate::block::BlockDevice,
@@ -1577,7 +1585,9 @@ fn move_metadata_on_device(
         old: &str,
         new: &str,
     ) -> Result<(), MutationError> {
-        let relative = new.strip_prefix("/mnt/").ok_or(MutationError::NotSupported)?;
+        let relative = new
+            .strip_prefix("/mnt/")
+            .ok_or(MutationError::NotSupported)?;
         let entry = fat32::resolve_path(device, volume, relative).map_err(map_mutation_err)?;
         if entry.attributes & 0x10 == 0 {
             return move_record(device, volume, old, new);
@@ -1908,7 +1918,9 @@ pub fn read_disk_file(
         return Err(crate::block::Error::DeviceFault);
     }
     let mut disk = block_io::primary_ata();
-    FILE_PAGES.lock().validate_read(path, offset, output.len())?;
+    FILE_PAGES
+        .lock()
+        .validate_read(path, offset, output.len())?;
     let mut copied = 0usize;
     while copied < output.len() {
         let position = offset + copied;
@@ -1917,29 +1929,32 @@ pub fn read_disk_file(
         let chunk = (crate::page_cache::PAGE_SIZE - within).min(output.len() - copied);
         let (count, page_length) = {
             let mut cache = FILE_PAGES.lock();
-            if let Some(hit) = cache.read_cached_page(
-                path, page, within, &mut output[copied..copied + chunk],
-            ) {
+            if let Some(hit) =
+                cache.read_cached_page(path, page, within, &mut output[copied..copied + chunk])
+            {
                 hit
             } else {
                 let epoch = cache.epoch();
                 drop(cache);
                 let mut bytes = [0u8; crate::page_cache::PAGE_SIZE];
                 let length = read_disk_page(
-                    &mut disk, relative, page * crate::page_cache::PAGE_SIZE, &mut bytes,
-                ).map_err(|_| crate::block::Error::DeviceFault)?;
+                    &mut disk,
+                    relative,
+                    page * crate::page_cache::PAGE_SIZE,
+                    &mut bytes,
+                )
+                .map_err(|_| crate::block::Error::DeviceFault)?;
                 if length > crate::page_cache::PAGE_SIZE {
                     return Err(crate::block::Error::InvalidBuffer);
                 }
-                let published = FILE_PAGES.lock().publish_loaded_page(
-                    path, page, &bytes, length, epoch,
-                )?;
+                let published = FILE_PAGES
+                    .lock()
+                    .publish_loaded_page(path, page, &bytes, length, epoch)?;
                 if !published {
                     return Err(crate::block::Error::DeviceFault);
                 }
                 let count = length.saturating_sub(within).min(chunk);
-                output[copied..copied + count]
-                    .copy_from_slice(&bytes[within..within + count]);
+                output[copied..copied + count].copy_from_slice(&bytes[within..within + count]);
                 (count, length)
             }
         };

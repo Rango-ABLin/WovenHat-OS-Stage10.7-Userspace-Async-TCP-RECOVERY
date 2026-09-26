@@ -39,29 +39,69 @@ pub struct Queue {
 
 impl Queue {
     pub const fn new() -> Self {
-        Self { entries: [None; CAPACITY], next_sequence: 1 }
+        Self {
+            entries: [None; CAPACITY],
+            next_sequence: 1,
+        }
     }
 
     /// Reserve before associating: every accepted producer owns one slot.
     pub fn reserve(&mut self, operation: u64, cookie: u64) -> bool {
-        if self.entries.iter().flatten().any(|e| e.event.operation == operation) {
+        if self
+            .entries
+            .iter()
+            .flatten()
+            .any(|e| e.event.operation == operation)
+        {
             return false;
         }
-        let Some(slot) = self.entries.iter_mut().find(|s| s.is_none()) else { return false; };
+        let Some(slot) = self.entries.iter_mut().find(|s| s.is_none()) else {
+            return false;
+        };
         *slot = Some(Entry {
-            event: Event { operation, cookie, class: 0, flags: 0, status: 0, value: 0 },
+            event: Event {
+                operation,
+                cookie,
+                class: 0,
+                flags: 0,
+                status: 0,
+                value: 0,
+            },
             sequence: None,
         });
         true
     }
 
-    pub fn publish(&mut self, operation: u64, class: u32, flags: u32, status: i32, value: u64) -> bool {
-        let Some(entry) = self.entries.iter_mut().flatten().find(|e| e.event.operation == operation) else { return false; };
-        if entry.sequence.is_some() { return false; }
+    pub fn publish(
+        &mut self,
+        operation: u64,
+        class: u32,
+        flags: u32,
+        status: i32,
+        value: u64,
+    ) -> bool {
+        let Some(entry) = self
+            .entries
+            .iter_mut()
+            .flatten()
+            .find(|e| e.event.operation == operation)
+        else {
+            return false;
+        };
+        if entry.sequence.is_some() {
+            return false;
+        }
         // At most CAPACITY live records: renumbering preserves FIFO order and
         // avoids either dropping completions or wrapping ordering at u64::MAX.
-        if self.next_sequence == u64::MAX { self.renumber(); }
-        let entry = self.entries.iter_mut().flatten().find(|e| e.event.operation == operation).unwrap();
+        if self.next_sequence == u64::MAX {
+            self.renumber();
+        }
+        let entry = self
+            .entries
+            .iter_mut()
+            .flatten()
+            .find(|e| e.event.operation == operation)
+            .unwrap();
         entry.event.class = class;
         entry.event.flags = flags;
         entry.event.status = status;
@@ -75,7 +115,10 @@ impl Queue {
         let mut ordered = [0u64; CAPACITY];
         let mut count = 0;
         for entry in self.entries.iter().flatten() {
-            if let Some(seq) = entry.sequence { ordered[count] = seq; count += 1; }
+            if let Some(seq) = entry.sequence {
+                ordered[count] = seq;
+                count += 1;
+            }
         }
         ordered[..count].sort_unstable();
         for entry in self.entries.iter_mut().flatten() {
@@ -90,10 +133,15 @@ impl Queue {
         let mut after = 0;
         let mut count = 0;
         for target in out {
-            let next = self.entries.iter().flatten()
+            let next = self
+                .entries
+                .iter()
+                .flatten()
                 .filter(|e| e.sequence.is_some_and(|s| s > after))
                 .min_by_key(|e| e.sequence);
-            let Some(entry) = next else { break; };
+            let Some(entry) = next else {
+                break;
+            };
             *target = entry.event;
             after = entry.sequence.unwrap();
             count += 1;
@@ -102,7 +150,13 @@ impl Queue {
     }
 
     pub fn remove(&mut self, operation: u64) -> bool {
-        let Some(slot) = self.entries.iter_mut().find(|s| s.is_some_and(|e| e.event.operation == operation)) else { return false; };
+        let Some(slot) = self
+            .entries
+            .iter_mut()
+            .find(|s| s.is_some_and(|e| e.event.operation == operation))
+        else {
+            return false;
+        };
         *slot = None;
         true
     }
@@ -114,7 +168,9 @@ mod tests {
     #[test]
     fn reserve_backpressure_fifo_retry_and_reuse() {
         let mut q = Queue::new();
-        for op in 1..=CAPACITY as u64 { assert!(q.reserve(op, op + 100)); }
+        for op in 1..=CAPACITY as u64 {
+            assert!(q.reserve(op, op + 100));
+        }
         assert!(!q.reserve(1000, 0));
         assert!(q.publish(2, 1, 0, 0, 22));
         assert!(q.publish(1, 1, CANCELLED, -2, 0));

@@ -92,13 +92,15 @@ impl Table {
     }
 
     fn get(&self, id: PipeId) -> Result<&Pipe, Error> {
-        self.pipes.get(id.slot)
+        self.pipes
+            .get(id.slot)
             .filter(|pipe| pipe.occupied && pipe.epoch == id.epoch)
             .ok_or(Error::Invalid)
     }
 
     fn get_mut(&mut self, id: PipeId) -> Result<&mut Pipe, Error> {
-        self.pipes.get_mut(id.slot)
+        self.pipes
+            .get_mut(id.slot)
             .filter(|pipe| pipe.occupied && pipe.epoch == id.epoch)
             .ok_or(Error::Invalid)
     }
@@ -190,7 +192,8 @@ pub fn write(id: PipeId, buf: &[u8]) -> Result<usize, Error> {
             total += written;
             let waiters = {
                 let mut table = TABLE.lock();
-                table.get_mut(id)
+                table
+                    .get_mut(id)
                     .map(|p| Table::take_waiters(&mut p.read_waiters))
                     .unwrap_or([None; MAX_WAITERS])
             };
@@ -202,7 +205,8 @@ pub fn write(id: PipeId, buf: &[u8]) -> Result<usize, Error> {
         if block {
             let still_block = {
                 let table = TABLE.lock();
-                table.get(id)
+                table
+                    .get(id)
                     .is_ok_and(|p| p.readers > 0 && p.len >= PIPE_BUFFER)
             };
             if !still_block {
@@ -243,7 +247,8 @@ pub fn read(id: PipeId, buf: &mut [u8]) -> Result<usize, Error> {
         if n > 0 {
             let waiters = {
                 let mut table = TABLE.lock();
-                table.get_mut(id)
+                table
+                    .get_mut(id)
                     .map(|p| Table::take_waiters(&mut p.write_waiters))
                     .unwrap_or([None; MAX_WAITERS])
             };
@@ -256,8 +261,7 @@ pub fn read(id: PipeId, buf: &mut [u8]) -> Result<usize, Error> {
         if block {
             let still_block = {
                 let table = TABLE.lock();
-                table.get(id)
-                    .is_ok_and(|p| p.len == 0 && p.writers > 0)
+                table.get(id).is_ok_and(|p| p.len == 0 && p.writers > 0)
             };
             if !still_block {
                 continue;

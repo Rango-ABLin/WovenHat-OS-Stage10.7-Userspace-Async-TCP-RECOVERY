@@ -1,7 +1,7 @@
 //! Physical file pages shared by mappings; cache ownership participates in COW refs.
+use crate::irq_lock::IrqMutex as Mutex;
 use crate::{paging, vfs};
 use core::sync::atomic::{AtomicU64, Ordering};
-use crate::irq_lock::IrqMutex as Mutex;
 const CAPACITY: usize = 64;
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Key {

@@ -3,7 +3,7 @@ $ErrorActionPreference = "Stop"
 Write-Host "=== WovenHat Stage 8.4 Shared Memory Acceptance ==="
 Write-Host ""
 Write-Host "=== 1/2 Preserve the complete validated Stage 8.3 baseline ==="
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\run-stage8-3-acceptance.ps1
+& "$PSScriptRoot\run-stage8-3-acceptance.ps1"
 if ($LASTEXITCODE -ne 0) {
     throw "Stage 8.3 preservation acceptance failed with exit code $LASTEXITCODE"
 }

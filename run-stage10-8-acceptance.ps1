@@ -8,7 +8,7 @@ cargo clippy -p wovenhat-kernel --features stage10-8-test --target x86_64-unknow
 if ($LASTEXITCODE -ne 0) { throw 'Kernel probe lint failed' }
 cargo test
 if ($LASTEXITCODE -ne 0) { throw 'Host tests failed' }
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\run-stage10-7-acceptance.ps1
+& "$PSScriptRoot\run-stage10-7-acceptance.ps1"
 if ($LASTEXITCODE -ne 0) { throw 'Stage 10.7 preservation failed' }
 foreach ($cpu in 1,2,4) {
     python .\scripts\test-stage10-runtime.py --stage 10.8 --cpus $cpu

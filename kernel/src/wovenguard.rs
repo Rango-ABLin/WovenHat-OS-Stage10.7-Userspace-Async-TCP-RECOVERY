@@ -166,7 +166,6 @@ pub fn classify_service(name: &[u8]) -> ServiceClass {
     }
 }
 
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum FileScope {
@@ -207,7 +206,10 @@ impl FilePolicy {
     };
 
     pub const fn scoped(read_mask: u16, write_mask: u16) -> Self {
-        Self { read_mask, write_mask }
+        Self {
+            read_mask,
+            write_mask,
+        }
     }
 
     pub const fn scope_mask(scope: FileScope) -> u16 {
@@ -229,7 +231,11 @@ impl FilePolicy {
 pub fn classify_file_path(path: &str) -> FileScope {
     if path == "/" {
         FileScope::Root
-    } else if path == "/etc" || path.starts_with("/etc/") || path == "/bin" || path.starts_with("/bin/") {
+    } else if path == "/etc"
+        || path.starts_with("/etc/")
+        || path == "/bin"
+        || path.starts_with("/bin/")
+    {
         FileScope::System
     } else if path == "/tmp" || path.starts_with("/tmp/") {
         FileScope::Temporary
@@ -241,7 +247,6 @@ pub fn classify_file_path(path: &str) -> FileScope {
         FileScope::Other
     }
 }
-
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -269,7 +274,9 @@ pub struct DevicePolicy {
 }
 
 impl DevicePolicy {
-    pub const ALL: Self = Self { mask: (1 << DeviceClass::COUNT) - 1 };
+    pub const ALL: Self = Self {
+        mask: (1 << DeviceClass::COUNT) - 1,
+    };
     pub const NONE: Self = Self { mask: 0 };
 
     pub const fn only(class: DeviceClass) -> Self {
@@ -444,7 +451,6 @@ pub fn authorize_sandbox_bind(
     PolicyDecision::allow()
 }
 
-
 /// Stage 9.4B authorization for service-registry publication.
 pub fn authorize_service_publish(profile: SandboxProfile, class: ServiceClass) -> PolicyDecision {
     if profile.allows_service_publish(class) {
@@ -551,21 +557,16 @@ pub fn self_test() -> bool {
             ServiceClass::Ai,
         )
         .allowed
-        && authorize_device_access(
-            user,
-            SandboxProfile::USER_DEFAULT,
-            DeviceClass::Network,
-        ).allowed
-        && !authorize_device_access(
-            user,
-            SandboxProfile::USER_DEFAULT,
-            DeviceClass::Storage,
-        ).allowed
+        && authorize_device_access(user, SandboxProfile::USER_DEFAULT, DeviceClass::Network).allowed
+        && !authorize_device_access(user, SandboxProfile::USER_DEFAULT, DeviceClass::Storage)
+            .allowed
         && !authorize_device_access(
             kernel,
-            SandboxProfile::KERNEL_TRUSTED.with_device_policy(DevicePolicy::only(DeviceClass::Network)),
+            SandboxProfile::KERNEL_TRUSTED
+                .with_device_policy(DevicePolicy::only(DeviceClass::Network)),
             DeviceClass::Storage,
-        ).allowed
+        )
+        .allowed
         && authorize_revoke(kernel).allowed
         && !authorize_revoke(user).allowed
 }
@@ -670,7 +671,11 @@ impl LineageSlot {
 
 const fn next_generation(current: u32) -> u32 {
     let next = (current + 1) & LINEAGE_GENERATION_MASK;
-    if next == 0 { 1 } else { next }
+    if next == 0 {
+        1
+    } else {
+        next
+    }
 }
 
 struct LineageRegistry {
@@ -1131,8 +1136,8 @@ pub fn lineage_self_test() -> bool {
                 }
             }
         }
-        let full_rejected = registry.issue_root(u64::MAX, grandchild_rights)
-            == Err(LineageError::TableFull);
+        let full_rejected =
+            registry.issue_root(u64::MAX, grandchild_rights) == Err(LineageError::TableFull);
         let mut cleaned = true;
         for (index, id) in ids.into_iter().enumerate() {
             if let Some(id) = id {
@@ -1154,7 +1159,6 @@ pub fn lineage_self_test() -> bool {
         && bounded_capacity_ok
         && lineage_count() == baseline
 }
-
 
 /// Production-boot proof for Stage 9.2B recursive capability revocation.
 ///
@@ -1199,8 +1203,8 @@ pub fn revocation_self_test() -> bool {
     };
 
     // A sibling branch has no authority over its peer.
-    let sibling_denied = revoke_lineage_subtree(SIBLING_OWNER, branch)
-        == Err(LineageError::PermissionDenied);
+    let sibling_denied =
+        revoke_lineage_subtree(SIBLING_OWNER, branch) == Err(LineageError::PermissionDenied);
 
     // The root issuer controls descendants of authority it delegated.
     let branch_revoked = revoke_lineage_subtree(ROOT_OWNER, branch) == Ok(3);
@@ -1229,7 +1233,8 @@ pub fn revocation_self_test() -> bool {
     // A reused slot must receive a different generation from a revoked token.
     let generation_after_revoke_ok = match issue_lineage_root(ROOT_OWNER, leaf_rights) {
         Ok(reused) => {
-            let changed = reused != root && reused != branch && reused != leaf && reused != deep_leaf;
+            let changed =
+                reused != root && reused != branch && reused != leaf && reused != deep_leaf;
             let cleanup = revoke_lineage_subtree(ROOT_OWNER, reused) == Ok(1);
             changed && cleanup
         }

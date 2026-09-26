@@ -6,6 +6,126 @@ fully complete while a roadmap requirement remains open.
 
 Authoritative development sequence: [supplied Stage 10.7–36 roadmap](master-development-roadmap.md).
 
+<<<<<<< HEAD
+## TCP close/drain preservation repair - 2026-09-24
+
+This-machine preflight exposed an intermittent 4-CPU Stage 10.7 failure:
+last-reference release removed a TCP socket with 16 bytes still queued.
+Graceful bounded retirement now preserves that transport. Ten corrected
+4-CPU repeats passed, including queued-close cases; the full 75-boot Stage
+10.7 preservation gate passed. Related 10.8/10.9/13.9 checks on 1/2/4 CPUs
+and normal release shell/SMP smoke also passed. Assertions and existing test
+timeouts are unchanged; cleanup now requires transport slots at baseline. See
+[the TCP repair audit](audit-tcp-close-drain-2026-09-24.md).
+
+## Physical integration request - 2026-09-24
+
+Physical integration is incomplete. The latest user instruction selects this
+HP Pavilion x360 as the actual test machine, superseding the earlier AX200
+target choice. Its adapter is AX201 `8086:A0F0`, subsystem `8086:0074`, revision
+`20`. Native AX201 startup and transport remain unimplemented; adding its PCI
+ID to the AX200 activation list is not a valid implementation.
+
+The authorized Kingston USB was cleared and written with the verified inventory
+image. An elevated helper read back all 8,454,144 image bytes and matched the
+SHA-256. Its new GPT layout contains an 8 MiB EFI system partition. The internal
+system disk was not written. Secure Boot is enabled and the image has no PE
+Authenticode certificate; native boot requires a local firmware decision.
+Windows C: is fully encrypted with BitLocker protection on, so the recovery key
+must be available before changing firmware security settings. Neither BitLocker
+nor firmware settings were changed, and no reboot or physical test has run.
+The inventory image passed 1/2/4-CPU configured QEMU boots plus a no-UART
+framebuffer check. No AP startup or physical radio is tested by that mode.
+See [the AX201 machine audit](audit-ax201-machine-2026-09-24.md).
+
+The runtime firmware loader now validates the complete AX200 section layout
+before DMA allocation and copies payloads into an unpublished owned context.
+It skips separators and init-image records and preserves existing DMA bounds.
+Build, warning-denying host/kernel/feature Clippy, all 35 Rust tests and all
+54 Wi-Fi markers on 1/2/4 CPUs passed for this loader increment.
+See [the runtime-loader audit](audit-ax200-runtime-loader-2026-09-24.md).
+
+A real AX200 firmware container exposed parser defects. The corrected
+allocation-free TLV parser passes seven new host tests and the real-image
+probe; all 54 Wi-Fi markers still pass on 1/2/4 CPUs. Build, host-test and
+kernel Clippy, and all 31 Rust tests pass. The full Stage 10.7 preservation
+gate passed after the heap lint cleanup: nine Python tests and 75 QEMU
+boots, plus three focused Wi-Fi boots (78 total for this prerequisite).
+See [the physical preflight audit](audit-physical-wifi-preflight-2026-09-24.md).
+This is prerequisite work, not physical firmware/IRQ/DMA/RF acceptance.
+
+## Current continuation - 2026-09-24
+
+Base commit `0563d0b` introduced the Stage 13.10AC deferred AX200 interrupt
+service candidate. This continuation passed preservation and bounded QEMU
+acceptance; it does not establish production completion of Stage 13.
+
+- Ordinary build and host/freestanding-kernel Clippy passed with warnings
+  denied; 24 Rust host tests and nine Python harness tests passed.
+- The complete Stage 10.7 preservation gate passed, exit code 0: 75 QEMU boots
+  covering 1/2/4 CPUs, live networking, and async block/file/UDP/TCP.
+- Stages 1-5, 10.8-10.9, 11.1-11.5, 12.1-12.5, and 13.1-13.9 passed
+  per-feature freestanding Clippy and 1/2/4-CPU QEMU (66 additional boots).
+  Wi-Fi required all 54 markers through 13.10AC on every CPU configuration.
+- CPU hotplug passed on 2/4 CPUs. The normal release build and 4-CPU
+  shell/PS2/IOAPIC/SMP smoke passed. Total: 144 successful QEMU boots.
+
+The continuation corrected feature boundaries, a misplaced audio check in
+USB HID's error branch, and a nested Cargo release-build artifact-lock
+conflict in the shell harness. Failed/interrupted attempts remain preserved.
+See [the continuation audit](audit-stage13-10ac-continuation-2026-09-23.md)
+for exact evidence directories and validation scope.
+
+Next prerequisites remain production Wi-Fi worker/lifecycle integration,
+secure entropy provisioning, physical AX201 firmware/IRQ/DMA/RF qualification,
+and the earlier unfulfilled roadmap requirements. Do not advance to a later
+stage or treat these synthetic Wi-Fi results as working physical Wi-Fi.
+=======
+## Stage 13.10AC firmware parser follow-up — full gate blocked (2026-09-23)
+
+The [parser follow-up audit](audit-stage13-10ac-firmware-parser.md) records
+repairs for paging metadata, secure runtime/init sections, section grouping,
+input bounds and the Intel container capacity mismatch. A pinned, unmodified
+upstream AX200 image supplies a real container fixture. Build, strict host/kernel
+lint, 34 Rust tests in each configuration and 10 Python tests passed. Focused
+Wi-Fi checks passed on 1/2/4 CPUs. QEMU's host translation cache is bounded and
+27 nested PowerShell launches now execute in one process.
+
+Final-source aggregate `audit-artifacts/ac-full-1790189677915188900` failed
+before its first preservation guest boot: Windows could not allocate QEMU's
+guest RAM. Full acceptance remains blocked until host memory is freed and the
+complete aggregate is rerun. The earlier accepted run below does not certify
+these changes. Physical firmware/RX integration also remains open.
+
+## Stage 13.10AC remediation — software gate accepted (2026-09-23)
+
+Baseline: `0563d0b` on `stage13.9-wifi`. Historical AX200 labels 13.10A–AC
+extend Wi-Fi roadmap Stage 13.9; they do not implement Bluetooth Stage 13.10.
+See the [remediation audit](audit-stage13-10ac-remediation-2026-09-23.md).
+
+The final aggregate run `audit-artifacts/ac-full-1790166196507145600`
+passed all 40 checks, including 157 QEMU boots across the required 1/2/4-CPU
+matrices. Default build, warning-denying host/kernel and feature Clippy,
+27 Rust host tests in each configuration, and 9 Python tests passed. The
+source manifest remained unchanged throughout the run. Full Stage 10.7
+preservation, release, hotplug, runtime, storage and driver gates through AC
+passed in one serial chain.
+
+The opt-in Wi-Fi build has an event-driven CSR worker with epoch-tagged work,
+fatal-error retirement and owner cleanup. The checker requires all 55 Wi-Fi
+markers. Build/feature boundaries, the host heap probe, disabled RX masks,
+nested bootloader Cargo locks, premature queued socket removal and a copied
+HDA block in the USB error path are repaired. Earlier failed evidence is
+retained; neither assertions nor acceptance timeouts were weakened.
+
+Acceptance is for the bounded software foundation. Real firmware compatibility
+(including paging metadata and secure section parsing), RX-ring integration,
+device-written ALIVE delivery and physical AX200 MSI/DMA qualification remain
+open. The available host is AX201, outside the reviewed AX200 identity.
+Production Wi-Fi and Bluetooth are not complete. The next work must address
+these Wi-Fi prerequisites before advancing to a later roadmap stage.
+>>>>>>> ad20d1a331df81e46ae48575036f1f520d5a6270
+
 ## Stage 6 — accepted on 2026-09-16
 
 The bounded SMP foundation passed the complete release matrix: warning-denying

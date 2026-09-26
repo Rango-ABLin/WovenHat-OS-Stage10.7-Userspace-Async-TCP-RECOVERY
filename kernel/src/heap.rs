@@ -1,12 +1,12 @@
+#[cfg(not(test))]
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::{
     alloc::{GlobalAlloc, Layout},
     ptr::null_mut,
 };
-#[cfg(not(test))]
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use alloc::{boxed::Box, vec::Vec};
 use crate::irq_lock::IrqMutex as Mutex;
+use alloc::{boxed::Box, vec::Vec};
 
 use crate::{memory, paging};
 
@@ -127,7 +127,10 @@ impl HeapState {
     }
 
     fn place(start: usize, layout: Layout) -> Option<Placement> {
-        let payload = align_up(start.checked_add(HEADER_SIZE)?, layout.align().max(METADATA_ALIGN))?;
+        let payload = align_up(
+            start.checked_add(HEADER_SIZE)?,
+            layout.align().max(METADATA_ALIGN),
+        )?;
         let end = align_up(payload.checked_add(layout.size().max(1))?, METADATA_ALIGN)?;
         Some(Placement { payload, end })
     }
@@ -153,7 +156,13 @@ impl HeapState {
         }
     }
 
-    fn record_allocation(&mut self, block_start: usize, end: usize, payload: usize, layout: Layout) -> *mut u8 {
+    fn record_allocation(
+        &mut self,
+        block_start: usize,
+        end: usize,
+        payload: usize,
+        layout: Layout,
+    ) -> *mut u8 {
         let header = AllocHeader {
             magic: HEADER_MAGIC,
             block_start,
@@ -175,21 +184,26 @@ impl HeapState {
         while current != 0 {
             let node = Self::read_free(current);
             let block_end = current.checked_add(node.size)?;
-            if let Some(placement) = Self::place(current, layout) {
-                if placement.end <= block_end {
-                    let remaining = block_end - placement.end;
-                    let end = if remaining < FREE_NODE_SIZE { block_end } else { placement.end };
-                    if end < block_end {
-                        Self::write_free(end, FreeNode {
+            if let Some(placement) = Self::place(current, layout).filter(|p| p.end <= block_end) {
+                let remaining = block_end - placement.end;
+                let end = if remaining < FREE_NODE_SIZE {
+                    block_end
+                } else {
+                    placement.end
+                };
+                if end < block_end {
+                    Self::write_free(
+                        end,
+                        FreeNode {
                             size: block_end - end,
                             next: node.next,
-                        });
-                        self.link_after(previous, end);
-                    } else {
-                        self.link_after(previous, node.next);
-                    }
-                    return Some(self.record_allocation(current, end, placement.payload, layout));
+                        },
+                    );
+                    self.link_after(previous, end);
+                } else {
+                    self.link_after(previous, node.next);
                 }
+                return Some(self.record_allocation(current, end, placement.payload, layout));
             }
             previous = current;
             current = node.next;
@@ -247,10 +261,13 @@ impl HeapState {
             self.next = merged_start;
             self.link_after(merged_previous, merged_next);
         } else {
-            Self::write_free(merged_start, FreeNode {
-                size: merged_size,
-                next: merged_next,
-            });
+            Self::write_free(
+                merged_start,
+                FreeNode {
+                    size: merged_size,
+                    next: merged_next,
+                },
+            );
             self.link_after(merged_previous, merged_start);
         }
     }
@@ -275,7 +292,9 @@ impl HeapState {
         // the case where alignment left the header after the span's start.
         unsafe { ((ptr - HEADER_SIZE) as *mut u64).write(0) };
         self.total_allocations = self.total_allocations.saturating_sub(1);
-        self.total_allocated_bytes = self.total_allocated_bytes.saturating_sub(header.requested_size);
+        self.total_allocated_bytes = self
+            .total_allocated_bytes
+            .saturating_sub(header.requested_size);
         self.free_bytes += header.block_size;
         self.insert_free(header.block_start, header.block_size);
     }
@@ -313,10 +332,16 @@ unsafe impl GlobalAlloc for TrackedAllocator {
         let (pointer, low_water) = {
             let mut heap = HEAP.lock();
             let pointer = heap.alloc(layout);
-            (pointer, heap.free_bytes < LOW_WATER || heap.end.saturating_sub(heap.next) < LOW_WATER)
+            (
+                pointer,
+                heap.free_bytes < LOW_WATER || heap.end.saturating_sub(heap.next) < LOW_WATER,
+            )
         };
         #[cfg(test)]
-        { let _ = low_water; pointer }
+        {
+            let _ = low_water;
+            pointer
+        }
         #[cfg(not(test))]
         {
             if low_water {
@@ -423,8 +448,7 @@ fn alloc_with_growth(layout: Layout) -> *mut u8 {
         let heap = HEAP.lock();
         heap.start != 0
             && heap.start.checked_add(MAX_SIZE).is_some_and(|limit| {
-                HeapState::place(heap.next, layout)
-                    .is_some_and(|placement| placement.end <= limit)
+                HeapState::place(heap.next, layout).is_some_and(|placement| placement.end <= limit)
             })
     };
     if !feasible {
@@ -434,7 +458,10 @@ fn alloc_with_growth(layout: Layout) -> *mut u8 {
         let (pointer, low_water) = {
             let mut heap = HEAP.lock();
             let pointer = heap.alloc(layout);
-            (pointer, heap.free_bytes < LOW_WATER || heap.end.saturating_sub(heap.next) < LOW_WATER)
+            (
+                pointer,
+                heap.free_bytes < LOW_WATER || heap.end.saturating_sub(heap.next) < LOW_WATER,
+            )
         };
         if !pointer.is_null() {
             if low_water {
@@ -472,7 +499,11 @@ pub fn maintain_capacity() {
     for _ in 0..4 {
         let (tail, available, size) = {
             let heap = HEAP.lock();
-            (heap.end.saturating_sub(heap.next), heap.free_bytes, heap.end.saturating_sub(heap.start))
+            (
+                heap.end.saturating_sub(heap.next),
+                heap.free_bytes,
+                heap.end.saturating_sub(heap.start),
+            )
         };
         if (tail >= LOW_WATER && available >= LOW_WATER) || size >= MAX_SIZE {
             GROW_PRESSURE.store(false, Ordering::Release);
@@ -537,9 +568,10 @@ pub fn live_metadata_self_test() -> bool {
     }
     let live = stats();
     let valid = live.allocations >= before.allocations + 4097
-        && boxes.iter().enumerate().all(|(index, value)| {
-            **value == index as u64 ^ 0x5748_4845_4150_4C49
-        });
+        && boxes
+            .iter()
+            .enumerate()
+            .all(|(index, value)| **value == index as u64 ^ 0x5748_4845_4150_4C49);
     drop(boxes);
     let after = stats();
     valid
@@ -548,7 +580,9 @@ pub fn live_metadata_self_test() -> bool {
         && after.free_bytes == before.free_bytes
 }
 
-#[cfg(feature = "qemu-test")]
+// This boot probe requires the kernel global allocator and real page mapping;
+// host tests exercise HeapState directly instead.
+#[cfg(all(feature = "qemu-test", not(test)))]
 pub fn runtime_growth_self_test() -> bool {
     let before = stats();
     let mut bytes = Vec::new();
@@ -578,9 +612,8 @@ pub fn runtime_growth_self_test() -> bool {
     let mut reserve = Vec::new();
     reserve.resize(tail - LOW_WATER / 2 - HEADER_SIZE - PAGE_SIZE, 0x3c_u8);
     maintain_capacity();
-    let maintained = stats().size > before_reserve
-        && reserve[0] == 0x3c
-        && reserve[reserve.len() - 1] == 0x3c;
+    let maintained =
+        stats().size > before_reserve && reserve[0] == 0x3c && reserve[reserve.len() - 1] == 0x3c;
     drop(reserve);
     let final_stats = stats();
     maintained
@@ -606,7 +639,10 @@ fn align_up(value: usize, alignment: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::{ops::{Deref, DerefMut}, ptr::NonNull};
+    use core::{
+        ops::{Deref, DerefMut},
+        ptr::NonNull,
+    };
     use std::alloc::{alloc_zeroed, dealloc};
 
     struct TestHeap {
@@ -625,17 +661,25 @@ mod tests {
             let arena = NonNull::new(unsafe { alloc_zeroed(layout) }).unwrap();
             let mut state = HeapState::empty();
             assert!(state.init_at(arena.as_ptr() as usize, MIN_SIZE).is_ok());
-            Self { state, arena, layout }
+            Self {
+                state,
+                arena,
+                layout,
+            }
         }
     }
 
     impl Deref for TestHeap {
         type Target = HeapState;
-        fn deref(&self) -> &HeapState { &self.state }
+        fn deref(&self) -> &HeapState {
+            &self.state
+        }
     }
 
     impl DerefMut for TestHeap {
-        fn deref_mut(&mut self) -> &mut HeapState { &mut self.state }
+        fn deref_mut(&mut self) -> &mut HeapState {
+            &mut self.state
+        }
     }
 
     impl Drop for TestHeap {

@@ -40,10 +40,12 @@ def serve(stop, errors, ready, finished):
                     continue
                 with conn:
                     conn.settimeout(5)
+                    print(f'Host TCP connection {completed + 1}: accepted, awaiting TX', flush=True)
                     payload = recv_exact(conn, len(TX))
                     if payload != TX:
                         raise RuntimeError(f"unexpected guest TCP payload: {payload!r}")
                     completed += 1
+                    print(f'Host TCP connection {completed}: TX verified', flush=True)
                     if completed == 2:
                         conn.sendall(RX)
                         try:
@@ -101,7 +103,7 @@ def main():
         return 1
 
     command = [
-        str(qemu), '-machine', 'q35', '-m', '256M', '-smp', str(args.cpus),
+        str(qemu), '-accel', 'tcg,tb-size=128', '-machine', 'q35', '-m', '256M', '-smp', str(args.cpus),
         '-display', 'none', '-serial', f'file:{serial}', '-no-reboot',
         '-device', 'isa-debug-exit,iobase=0xf4,iosize=0x04',
         '-drive', f'if=pflash,format=raw,readonly=on,file={firmware}',

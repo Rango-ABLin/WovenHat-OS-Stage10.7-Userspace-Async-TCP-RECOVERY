@@ -6,8 +6,11 @@
 //! intentionally polling-based first; MSI-X/interrupt moderation can be added
 //! after the dataplane is stable.
 
-use core::{mem::size_of, sync::atomic::{AtomicU64, fence, Ordering}};
 use crate::irq_lock::IrqMutex as Mutex;
+use core::{
+    mem::size_of,
+    sync::atomic::{fence, AtomicU64, Ordering},
+};
 
 use crate::{hal::pci, memory, paging};
 
@@ -149,7 +152,11 @@ fn dma_phys(offset: usize) -> u64 {
 
 fn reserve_dma() -> Result<DmaReservation, InitError> {
     let frame = memory::allocate_contiguous_frames(DMA_PAGES).ok_or(InitError::DmaNotContiguous)?;
-    let reservation = DmaReservation { frame, pages: DMA_PAGES, committed: false };
+    let reservation = DmaReservation {
+        frame,
+        pages: DMA_PAGES,
+        committed: false,
+    };
     let physical = frame.start_address().as_u64();
     let offset = match paging::physical_memory_offset() {
         Some(offset) => offset,
@@ -160,7 +167,9 @@ fn reserve_dma() -> Result<DmaReservation, InitError> {
         .ok_or(InitError::DmaNotContiguous)?;
     DMA_PHYSICAL.store(physical, Ordering::Release);
     DMA_VIRTUAL.store(virtual_address, Ordering::Release);
-    unsafe { core::ptr::write_bytes(virtual_address as *mut u8, 0, DMA_BYTES); }
+    unsafe {
+        core::ptr::write_bytes(virtual_address as *mut u8, 0, DMA_BYTES);
+    }
     Ok(reservation)
 }
 
@@ -263,16 +272,25 @@ pub fn init() -> Result<(), InitError> {
 
     let dma = reserve_dma()?;
     let rx_queue_size = setup_queue(io_base, RX_QUEUE).inspect_err(|error| {
-        crate::serial::write_line(format_args!("[VIRTIO-NET] RX queue setup failed: {:?}", error));
+        crate::serial::write_line(format_args!(
+            "[VIRTIO-NET] RX queue setup failed: {:?}",
+            error
+        ));
     })?;
     let tx_queue_size = setup_queue(io_base, TX_QUEUE).inspect_err(|error| {
-        crate::serial::write_line(format_args!("[VIRTIO-NET] TX queue setup failed: {:?}", error));
+        crate::serial::write_line(format_args!(
+            "[VIRTIO-NET] TX queue setup failed: {:?}",
+            error
+        ));
     })?;
     post_initial_rx(io_base, rx_queue_size).inspect_err(|error| {
         crate::serial::write_line(format_args!("[VIRTIO-NET] RX posting failed: {:?}", error));
     })?;
     setup_tx_descriptor(tx_queue_size).inspect_err(|error| {
-        crate::serial::write_line(format_args!("[VIRTIO-NET] TX descriptor setup failed: {:?}", error));
+        crate::serial::write_line(format_args!(
+            "[VIRTIO-NET] TX descriptor setup failed: {:?}",
+            error
+        ));
     })?;
 
     let mut mac = [0x02, 0x57, 0x48, 0, 0, 1];
@@ -464,7 +482,11 @@ fn setup_queue(io_base: u16, queue: u16) -> Result<u16, InitError> {
         fail(io_base);
         return Err(InitError::QueueTooLarge);
     }
-    let offset = if queue == RX_QUEUE { RX_QUEUE_OFFSET } else { TX_QUEUE_OFFSET };
+    let offset = if queue == RX_QUEUE {
+        RX_QUEUE_OFFSET
+    } else {
+        TX_QUEUE_OFFSET
+    };
     let ptr = dma_ptr(offset);
     unsafe {
         core::ptr::write_bytes(ptr, 0, QUEUE_MEMORY_BYTES);

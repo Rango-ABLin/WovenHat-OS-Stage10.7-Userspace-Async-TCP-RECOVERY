@@ -78,7 +78,6 @@ pub const MAX_ANONYMOUS_MAPPINGS: usize = 16;
 /// Maximum devices registered in the device table.
 pub const MAX_DEVICES: usize = 32;
 
-
 /// Global open-file description table capacity (refcount-shared across processes).
 pub const MAX_OPEN_FILES: usize = 64;
 

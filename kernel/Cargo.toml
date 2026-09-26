@@ -4,6 +4,7 @@ version = "0.8.0"
 edition = "2021"
 
 [features]
+physical-probe = []
 qemu-test = []
 stage6-hotplug-test = ["qemu-test"]
 network-test = ["qemu-test"]
@@ -25,6 +26,14 @@ stage12-3-test = ["qemu-test"]
 stage12-4-test = ["qemu-test"]
 stage12-5-test = ["qemu-test"]
 stage13-1-test = ["qemu-test"]
+stage13-2-test = ["qemu-test"]
+stage13-3-test = ["qemu-test"]
+stage13-4-test = ["qemu-test"]
+stage13-5-test = ["qemu-test"]
+stage13-6-test = ["qemu-test"]
+stage13-7-test = ["qemu-test"]
+stage13-8-test = ["qemu-test"]
+stage13-9-test = ["qemu-test"]
 stage1-5-test = ["qemu-test"]
 
 [dependencies]
@@ -44,5 +53,10 @@ smoltcp = { version = "0.14", default-features = false, features = [
 ] }
 unicode-normalization = { version = "0.1.25", default-features = false }
 poly1305 = { version = "0.7.2", features = ["force-soft"] }
+hmac = { version = "0.12", default-features = false }
+sha1 = { version = "0.10", default-features = false, features = ["force-soft"] }
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+subtle = { version = "2.6", default-features = false }
+zeroize = { version = "1.8", default-features = false }
 [lints.rust]
 warnings = "deny"

@@ -2,8 +2,9 @@ use x86_64::{
     registers::control::{Cr3, Cr3Flags},
     registers::model_specific::{Efer, EferFlags},
     structures::paging::{
-        mapper::{MapperFlush, TranslateResult}, FrameAllocator, Mapper, OffsetPageTable, Page, PageSize,
-        PageTable, PageTableFlags, PhysFrame, Size4KiB, Translate,
+        mapper::{MapperFlush, TranslateResult},
+        FrameAllocator, Mapper, OffsetPageTable, Page, PageSize, PageTable, PageTableFlags,
+        PhysFrame, Size4KiB, Translate,
     },
     VirtAddr,
 };
@@ -146,7 +147,12 @@ struct TableFrameRecorder<'a> {
 
 impl<'a> TableFrameRecorder<'a> {
     fn new(allocator: &'a mut memory::PhysicalFrameAllocator, limit: usize) -> Self {
-        Self { allocator, frames: [None; 3], count: 0, limit }
+        Self {
+            allocator,
+            frames: [None; 3],
+            count: 0,
+            limit,
+        }
     }
 }
 
@@ -305,7 +311,10 @@ pub fn init(physical_memory_offset: u64) -> Result<(), InitError> {
 /// frames from kernel code and DMA arenas.
 pub fn physical_memory_offset() -> Option<u64> {
     let paging = PAGING.lock();
-    paging.mapper.as_ref().map(|_| paging.physical_memory_offset)
+    paging
+        .mapper
+        .as_ref()
+        .map(|_| paging.physical_memory_offset)
 }
 
 pub fn self_test(addresses: &[u64]) -> bool {
@@ -365,9 +374,8 @@ pub fn mapping_self_test() -> bool {
     crate::smp::shootdown();
 
     let released = allocator.deallocate_frame(frame);
-    let passed = released
-        && value == TEST_VALUE
-        && mapper.translate_addr(page.start_address()).is_none();
+    let passed =
+        released && value == TEST_VALUE && mapper.translate_addr(page.start_address()).is_none();
     paging.mapping_test_passed = passed;
     passed
 }
@@ -430,7 +438,8 @@ pub fn table_allocation_rollback_self_test() -> bool {
                 PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
                 &mut allocator,
                 limit,
-            ).is_err();
+            )
+            .is_err();
             passed &= rejected
                 && mapper.level_4_table()[page.p4_index()].is_unused()
                 && mapper.translate_addr(page.start_address()).is_none()
@@ -983,8 +992,8 @@ fn protect_user_range_in_impl(
     let flags = user_flags(writable, executable);
 
     for page in Page::range_inclusive(start_page, end_page) {
-        let flush = unsafe { mapper.update_flags(page, flags) }
-            .map_err(|_| MapRangeError::NotMapped)?;
+        let flush =
+            unsafe { mapper.update_flags(page, flags) }.map_err(|_| MapRangeError::NotMapped)?;
         if synchronize_tlb {
             if Cr3::read().0 == address_space.level_4_frame {
                 flush.flush();
@@ -1402,12 +1411,7 @@ pub fn allocate_shared_frame() -> Option<u64> {
 /// Stage 8.4 map one shared backing page into a user address space. Shared
 /// memory is always NX; writable mappings are permitted only after the IPC
 /// capability layer has checked WRITE authority.
-pub fn map_shared_frame(
-    space: AddressSpace,
-    address: u64,
-    physical: u64,
-    writable: bool,
-) -> bool {
+pub fn map_shared_frame(space: AddressSpace, address: u64, physical: u64, writable: bool) -> bool {
     map_file_frame(space, address, physical, writable)
 }
 

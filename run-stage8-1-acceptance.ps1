@@ -3,7 +3,7 @@ $ErrorActionPreference = "Stop"
 Write-Host "=== WovenHat Stage 8.1 IPC Endpoint/Handle Foundation Acceptance ==="
 Write-Host ""
 Write-Host "=== 1/2 Preserve the complete validated Stage 7.6 baseline ==="
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\run-stage7-6-acceptance.ps1
+& "$PSScriptRoot\run-stage7-6-acceptance.ps1"
 if ($LASTEXITCODE -ne 0) {
     throw "Stage 7.6 preservation acceptance failed with exit code $LASTEXITCODE"
 }

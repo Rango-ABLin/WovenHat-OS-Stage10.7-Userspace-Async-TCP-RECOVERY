@@ -21,7 +21,27 @@ def main():
     firmware = args.firmware or qemu.parent / 'share' / 'edk2-x86_64-code.fd'
     if not qemu.is_file() or not firmware.is_file():
         parser.error('Set --qemu and --firmware to existing files.')
-    image = subprocess.check_output(['cargo', 'run', '--quiet', '--release', '--', '--print-image'], cwd=root, text=True).strip()
+    # bootloader runs a nested `cargo install` in release mode. Sharing the
+    # parent's release artifact/build directories deadlocks on Cargo's locks.
+    # Keep the main build in the launcher-selected directories; only the nested
+    # installer inherits dedicated project-local subdirectories.
+    build_env = os.environ.copy()
+    cargo_command = ['cargo']
+    target_arguments = []
+    for variable, setting, default in (
+            ('CARGO_TARGET_DIR', 'build.target-dir', 'target'),
+            ('CARGO_BUILD_BUILD_DIR', 'build.build-dir', '.cargo-build')):
+        directory = Path(build_env.get(variable, str(root / default)))
+        if not directory.is_absolute():
+            directory = root / directory
+        if variable == 'CARGO_TARGET_DIR':
+            target_arguments = ['--target-dir', str(directory)]
+        else:
+            cargo_command.extend(['--config', setting + '=' + json.dumps(str(directory))])
+        build_env[variable] = str(directory / 'bootloader')
+    image = subprocess.check_output(
+        cargo_command + ['run', '--quiet', '--release'] + target_arguments + ['--', '--print-image'],
+        cwd=root, env=build_env, text=True).strip()
     out = root / 'target' / 'shell-regression'
     out.mkdir(parents=True, exist_ok=True)
     serial = out / 'serial.log'
@@ -29,7 +49,7 @@ def main():
     with socket.socket() as reservation:
         reservation.bind(('127.0.0.1', 0))
         port = reservation.getsockname()[1]
-    command = [str(qemu), '-machine', 'pc', '-m', '256M', '-smp', str(args.cpus),
+    command = [str(qemu), '-accel', 'tcg,tb-size=128', '-machine', 'pc', '-m', '256M', '-smp', str(args.cpus),
                '-display', 'none', '-serial', f'file:{serial}', '-no-reboot',
                '-qmp', f'tcp:127.0.0.1:{port},server=on,wait=off',
                '-drive', f'if=pflash,format=raw,readonly=on,file={firmware}',
