@@ -28,6 +28,13 @@ pub enum IntelFirmwareImageKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntelFirmwareSectionGroup {
+    Lmac,
+    Umac,
+    Paging,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IntelFirmwareSection<'a> {
     pub image: IntelFirmwareImageKind,
     pub device_offset: u32,
@@ -173,6 +180,68 @@ impl<'a> IntelTlvFirmware<'a> {
     }
     pub const fn paging_size(&self) -> Option<u32> {
         self.paging_size
+    }
+
+    pub fn image_group(
+        &self,
+        image: IntelFirmwareImageKind,
+    ) -> Option<IntelFirmwareSectionGroup> {
+        let mut runtime_group = IntelFirmwareSectionGroup::Lmac;
+        let mut init_group = IntelFirmwareSectionGroup::Lmac;
+        for section in self.sections() {
+            let group = match section.image {
+                IntelFirmwareImageKind::Runtime => &mut runtime_group,
+                IntelFirmwareImageKind::Init => &mut init_group,
+                IntelFirmwareImageKind::Paging => return None,
+            };
+            if section.is_separator() {
+                *group = match (*group, section.device_offset) {
+                    (IntelFirmwareSectionGroup::Lmac, INTEL_CPU_SEPARATOR) => {
+                        IntelFirmwareSectionGroup::Umac
+                    }
+                    (IntelFirmwareSectionGroup::Umac, INTEL_PAGING_SEPARATOR) => {
+                        IntelFirmwareSectionGroup::Paging
+                    }
+                    _ => return None,
+                };
+            }
+        }
+        match image {
+            IntelFirmwareImageKind::Runtime => Some(runtime_group),
+            IntelFirmwareImageKind::Init => Some(init_group),
+            IntelFirmwareImageKind::Paging => None,
+        }
+    }
+
+    pub fn section_group(&self, index: usize) -> Option<IntelFirmwareSectionGroup> {
+        let mut runtime_group = IntelFirmwareSectionGroup::Lmac;
+        let mut init_group = IntelFirmwareSectionGroup::Lmac;
+        for (current, section) in self.sections().enumerate() {
+            let group = match section.image {
+                IntelFirmwareImageKind::Runtime => &mut runtime_group,
+                IntelFirmwareImageKind::Init => &mut init_group,
+                IntelFirmwareImageKind::Paging => return None,
+            };
+            if section.is_separator() {
+                *group = match (*group, section.device_offset) {
+                    (IntelFirmwareSectionGroup::Lmac, INTEL_CPU_SEPARATOR) => {
+                        IntelFirmwareSectionGroup::Umac
+                    }
+                    (IntelFirmwareSectionGroup::Umac, INTEL_PAGING_SEPARATOR) => {
+                        IntelFirmwareSectionGroup::Paging
+                    }
+                    _ => return None,
+                };
+                if current == index {
+                    return None;
+                }
+                continue;
+            }
+            if current == index {
+                return Some(*group);
+            }
+        }
+        None
     }
 
     /// Stream validated immutable records without a stack-sized descriptor table.

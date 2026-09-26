@@ -34,14 +34,10 @@ fn upstream_ax200_image_preserves_all_groups_without_staging_markers() {
     assert_eq!(fw.paging_size(), Some(0x8f000));
     assert_eq!(fw.section_count(), 48);
     let mut counts = [0; 3];
-    for i in 0..fw.section_count() {
-        let section = fw.section(i).unwrap();
+    for (i, section) in fw.sections().enumerate() {
         assert_eq!(section.image, IntelFirmwareImageKind::Runtime);
         assert!(!section.bytes.is_empty());
-        assert!(!matches!(
-            section.device_offset,
-            INTEL_CPU_SEPARATOR | INTEL_PAGING_SEPARATOR
-        ));
+        assert!(!section.is_separator());
         let group = match fw.section_group(i).unwrap() {
             IntelFirmwareSectionGroup::Lmac => 0,
             IntelFirmwareSectionGroup::Umac => 1,
@@ -49,7 +45,12 @@ fn upstream_ax200_image_preserves_all_groups_without_staging_markers() {
         };
         counts[group] += 1;
     }
+    assert_eq!(counts.iter().sum::<usize>(), fw.section_count());
     assert_eq!(counts, [14, 15, 19]);
+    assert_eq!(
+        fw.image_group(IntelFirmwareImageKind::Runtime),
+        Some(IntelFirmwareSectionGroup::Paging)
+    );
     assert_eq!(fw.section(48), None);
     assert_eq!(fw.section_group(usize::MAX), None);
     // The generic image contract is deliberately unchanged.
@@ -69,6 +70,10 @@ fn secure_and_plain_sections_keep_independent_image_groups() {
     assert_eq!(fw.section(2).unwrap().image, IntelFirmwareImageKind::Init);
     assert_eq!(fw.section_group(2), Some(IntelFirmwareSectionGroup::Lmac));
     assert_eq!(fw.section_group(3), Some(IntelFirmwareSectionGroup::Umac));
+    assert_eq!(
+        fw.image_group(IntelFirmwareImageKind::Runtime),
+        Some(IntelFirmwareSectionGroup::Umac)
+    );
     assert_eq!(fw.paging_size(), None);
 }
 
@@ -95,6 +100,24 @@ fn paging_is_exact_bounded_metadata_not_a_section() {
         record(&mut bytes, INTEL_TLV_PAGING, &payload);
         error(&bytes, IntelTlvError::InvalidPagingSize);
     }
+}
+
+#[test]
+fn paging_separator_without_payload_keeps_the_runtime_layout_valid() {
+    let mut bytes = header();
+    section(&mut bytes, INTEL_TLV_SEC_RT, 0x1000, &[1]);
+    section(&mut bytes, INTEL_TLV_SEC_RT, INTEL_CPU_SEPARATOR, &[]);
+    section(&mut bytes, INTEL_TLV_SEC_RT, 0x2000, &[2]);
+    section(&mut bytes, INTEL_TLV_SEC_RT, INTEL_PAGING_SEPARATOR, &[]);
+    let fw = IntelTlvFirmware::parse(&bytes).unwrap();
+    assert_eq!(fw.section_count(), 2);
+    assert_eq!(fw.section_group(0), Some(IntelFirmwareSectionGroup::Lmac));
+    assert_eq!(fw.section_group(1), Some(IntelFirmwareSectionGroup::Umac));
+    assert_eq!(
+        fw.image_group(IntelFirmwareImageKind::Runtime),
+        Some(IntelFirmwareSectionGroup::Paging)
+    );
+    assert_eq!(fw.paging_size(), None);
 }
 
 #[test]

@@ -73,6 +73,7 @@ pub struct IntelTlvFirmware<'a> {
     sections: [Option<IntelFirmwareSection<'a>>; MAX_INTEL_TLV_SECTIONS],
     section_count: usize,
     groups: [IntelFirmwareSectionGroup; MAX_INTEL_TLV_SECTIONS],
+    image_groups: [IntelFirmwareSectionGroup; 2],
     paging_size: Option<u32>,
     version: u32,
     build: u32,
@@ -107,6 +108,7 @@ impl<'a> IntelTlvFirmware<'a> {
             sections: [None; MAX_INTEL_TLV_SECTIONS],
             section_count: 0,
             groups: [IntelFirmwareSectionGroup::Lmac; MAX_INTEL_TLV_SECTIONS],
+            image_groups: [IntelFirmwareSectionGroup::Lmac; 2],
             paging_size: None,
             version,
             build,
@@ -232,10 +234,11 @@ impl<'a> IntelTlvFirmware<'a> {
             return Err(IntelTlvError::NoSections);
         }
         for index in 0..2 {
-            if image_groups[index] != IntelFirmwareSectionGroup::Lmac && !group_has_data[index] {
+            if !group_has_data[index] && image_groups[index] == IntelFirmwareSectionGroup::Umac {
                 return Err(IntelTlvError::InvalidSeparator);
             }
         }
+        parsed.image_groups = image_groups;
         Ok(parsed)
     }
 
@@ -268,6 +271,14 @@ impl<'a> IntelTlvFirmware<'a> {
 
     pub fn section_group(&self, index: usize) -> Option<IntelFirmwareSectionGroup> {
         (index < self.section_count).then(|| self.groups[index])
+    }
+
+    pub fn image_group(&self, image: IntelFirmwareImageKind) -> Option<IntelFirmwareSectionGroup> {
+        let index = match image {
+            IntelFirmwareImageKind::Runtime => 0,
+            IntelFirmwareImageKind::Init => 1,
+        };
+        Some(self.image_groups[index])
     }
 
     pub fn sections(&self) -> IntelSections<'a> {

@@ -40,7 +40,7 @@ impl<'a> Ax200RuntimeImage<'a> {
             let Some(section) = firmware.section(index) else {
                 continue;
             };
-            if section.image != IntelFirmwareImageKind::Runtime {
+            if section.image != IntelFirmwareImageKind::Runtime || section.is_separator() {
                 continue;
             }
             let Some(group) = firmware.section_group(index) else {
@@ -69,7 +69,13 @@ impl<'a> Ax200RuntimeImage<'a> {
             }
             counts[region] += 1;
         }
-        if region != 2 {
+        let Some(runtime_group) = firmware.image_group(IntelFirmwareImageKind::Runtime) else {
+            return Err(Ax200ImageError::SeparatorOrder);
+        };
+        if counts[1] == 0 && runtime_group != IntelFirmwareSectionGroup::Lmac {
+            return Err(Ax200ImageError::EmptyRegion);
+        }
+        if runtime_group != IntelFirmwareSectionGroup::Paging {
             return Err(Ax200ImageError::MissingSeparator);
         }
         if (firmware.paging_size().unwrap_or(0) != 0) != (counts[2] != 0) {
@@ -102,7 +108,7 @@ impl<'a> Iterator for Ax200Payloads<'a> {
             let index = self.index;
             self.index += 1;
             let section = self.firmware.section(index)?;
-            if section.image != IntelFirmwareImageKind::Runtime {
+            if section.image != IntelFirmwareImageKind::Runtime || section.is_separator() {
                 continue;
             }
             let group = self.firmware.section_group(index)?;
