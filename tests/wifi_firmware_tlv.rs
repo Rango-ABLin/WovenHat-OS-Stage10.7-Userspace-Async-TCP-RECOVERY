@@ -34,14 +34,10 @@ fn upstream_ax200_image_preserves_all_groups_without_staging_markers() {
     assert_eq!(fw.paging_size(), Some(0x8f000));
     assert_eq!(fw.section_count(), 48);
     let mut counts = [0; 3];
-    for i in 0..fw.section_count() {
-        let section = fw.section(i).unwrap();
+    for (i, section) in fw.sections().enumerate() {
         assert_eq!(section.image, IntelFirmwareImageKind::Runtime);
         assert!(!section.bytes.is_empty());
-        assert!(!matches!(
-            section.device_offset,
-            INTEL_CPU_SEPARATOR | INTEL_PAGING_SEPARATOR
-        ));
+        assert!(!section.is_separator());
         let group = match fw.section_group(i).unwrap() {
             IntelFirmwareSectionGroup::Lmac => 0,
             IntelFirmwareSectionGroup::Umac => 1,
